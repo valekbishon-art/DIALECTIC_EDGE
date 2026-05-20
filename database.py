@@ -402,6 +402,36 @@ async def init_db():
             "ON funding_term_snapshots (asset, is_inverted) WHERE is_inverted = 1"
         )
 
+        # ─── options_skew_snapshots (Tier A #7) ──────────────────────────────
+        # Снимки опционного skew (Deribit): ATM IV ближнего/дальнего expiry,
+        # 25-delta risk reversal, term slope. См.
+        # market_indicators/options_skew.py для математики.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS options_skew_snapshots (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                currency            TEXT NOT NULL,
+                timestamp_ms        INTEGER NOT NULL,
+                underlying_price    REAL NOT NULL DEFAULT 0,
+                near_expiry_days    INTEGER,
+                near_atm_iv         REAL,
+                near_rr_25d         REAL,
+                far_expiry_days     INTEGER,
+                far_atm_iv          REAL,
+                far_rr_25d          REAL,
+                atm_iv_term_slope   REAL,
+                skew_class          TEXT NOT NULL DEFAULT 'unknown',
+                venues_csv          TEXT
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oskew_currency_ts "
+            "ON options_skew_snapshots (currency, timestamp_ms DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oskew_class "
+            "ON options_skew_snapshots (currency, skew_class, created_at)"
+        )
 
         await db.commit()
 
@@ -1225,6 +1255,89 @@ async def count_funding_term_inversions(*, asset: str, lookback_hours: float = 1
               AND created_at >= datetime('now', ?)
             """,
             (str(asset).upper(), f"-{float(lookback_hours)} hours"),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+# ─── Options skew (Tier A #7) ────────────────────────────────────────────────
+
+
+async def save_options_skew_snapshot(
+    *,
+    currency: str,
+    timestamp_ms: int,
+    underlying_price: float,
+    near_expiry_days: int | None,
+    near_atm_iv: float | None,
+    near_rr_25d: float | None,
+    far_expiry_days: int | None,
+    far_atm_iv: float | None,
+    far_rr_25d: float | None,
+    atm_iv_term_slope: float | None,
+    skew_class: str,
+    venues_csv: str | None,
+) -> int:
+    """Вставка одного снимка options skew. NaN/inf → NULL."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO options_skew_snapshots (
+                currency, timestamp_ms, underlying_price,
+                near_expiry_days, near_atm_iv, near_rr_25d,
+                far_expiry_days, far_atm_iv, far_rr_25d,
+                atm_iv_term_slope, skew_class, venues_csv
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(currency).upper(), int(timestamp_ms),
+                _nan_to_none_real(underlying_price) or 0.0,
+                int(near_expiry_days) if near_expiry_days is not None else None,
+                _nan_to_none_real(near_atm_iv),
+                _nan_to_none_real(near_rr_25d),
+                int(far_expiry_days) if far_expiry_days is not None else None,
+                _nan_to_none_real(far_atm_iv),
+                _nan_to_none_real(far_rr_25d),
+                _nan_to_none_real(atm_iv_term_slope),
+                str(skew_class or "unknown"),
+                venues_csv,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid or 0)
+
+
+async def get_recent_options_skew_snapshots(
+    *, currency: str, limit: int = 10,
+) -> list[dict]:
+    """Последние снимки по currency (DESC по timestamp_ms)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM options_skew_snapshots
+            WHERE currency = ?
+            ORDER BY timestamp_ms DESC
+            LIMIT ?
+            """,
+            (str(currency).upper(), int(limit)),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+
+async def count_options_skew_class(
+    *, currency: str, skew_class: str, lookback_hours: float = 168,
+) -> int:
+    """Счётчик снимков нужного skew_class за последние N часов."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM options_skew_snapshots
+            WHERE currency = ?
+              AND skew_class = ?
+              AND created_at >= datetime('now', ?)
+            """,
+            (str(currency).upper(), str(skew_class), f"-{float(lookback_hours)} hours"),
         ) as cursor:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
