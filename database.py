@@ -308,6 +308,34 @@ async def init_db():
             "ON microstructure_snapshots (asset, vacuum_flag) WHERE vacuum_flag = 1"
         )
 
+        # ─── funding_term_snapshots (Tier A #4) ──────────────────────────────
+        # Снимки funding rate term structure: spot perp funding, 30d basis,
+        # 90d basis, slope, inversion флаг. См. market_indicators/
+        # funding_term_structure.py для математики.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS funding_term_snapshots (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                asset                   TEXT NOT NULL,
+                timestamp_ms            INTEGER NOT NULL,
+                spot_funding_annual     REAL,
+                monthly_basis_annual    REAL,
+                quarterly_basis_annual  REAL,
+                slope_annual            REAL,
+                is_inverted             INTEGER NOT NULL DEFAULT 0,
+                venues_csv              TEXT,
+                CHECK (is_inverted IN (0, 1))
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fts_asset_ts "
+            "ON funding_term_snapshots (asset, timestamp_ms DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fts_inverted "
+            "ON funding_term_snapshots (asset, is_inverted) WHERE is_inverted = 1"
+        )
+
         await db.commit()
 
     logger.info("✅ База данных инициализирована")
@@ -859,6 +887,92 @@ async def get_recent_microstructure_snapshots(
             (str(asset), int(limit)),
         ) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
+
+
+# ─── Funding term structure (Tier A #4) ──────────────────────────────────────
+
+
+def _nan_to_none_real(value: float | None) -> float | None:
+    """NaN / inf → None для безопасного INSERT в SQLite REAL."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f
+
+
+async def save_funding_term_snapshot(
+    *,
+    asset: str,
+    timestamp_ms: int,
+    spot_funding_annual: float | None,
+    monthly_basis_annual: float | None,
+    quarterly_basis_annual: float | None,
+    slope_annual: float | None,
+    is_inverted: int,
+    venues_csv: str | None,
+) -> int:
+    """Вставка одного снимка term structure. NaN/inf → NULL."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO funding_term_snapshots (
+                asset, timestamp_ms,
+                spot_funding_annual, monthly_basis_annual,
+                quarterly_basis_annual, slope_annual,
+                is_inverted, venues_csv
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(asset).upper(), int(timestamp_ms),
+                _nan_to_none_real(spot_funding_annual),
+                _nan_to_none_real(monthly_basis_annual),
+                _nan_to_none_real(quarterly_basis_annual),
+                _nan_to_none_real(slope_annual),
+                1 if is_inverted else 0,
+                venues_csv,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid or 0)
+
+
+async def get_recent_funding_term_snapshots(
+    *, asset: str, limit: int = 10
+) -> list[dict]:
+    """Последние снимки по asset (DESC по timestamp_ms)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM funding_term_snapshots
+            WHERE asset = ?
+            ORDER BY timestamp_ms DESC
+            LIMIT ?
+            """,
+            (str(asset).upper(), int(limit)),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+
+async def count_funding_term_inversions(*, asset: str, lookback_hours: float = 168) -> int:
+    """Счётчик inverted-снимков за последние N часов."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM funding_term_snapshots
+            WHERE asset = ?
+              AND is_inverted = 1
+              AND created_at >= datetime('now', ?)
+            """,
+            (str(asset).upper(), f"-{float(lookback_hours)} hours"),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
 
 
 # ─── Фидбек ───────────────────────────────────────────────────────────────────
