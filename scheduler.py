@@ -140,6 +140,30 @@ try:
 except ImportError:
     OPTIONS_SKEW_ENABLED = False
 
+# Stablecoin flows (Tier A #8). Etherscan (USDT/USDC on Ethereum) + Tronscan
+# (USDT/USDC on Tron). Total supply mints/redemptions как leading indicator.
+try:
+    from market_indicators.stablecoin_flows_io import (
+        feature_enabled as _stablecoin_enabled,
+        fetch_stablecoin_snapshots as _fetch_stablecoin_snapshots,
+        get_etherscan_api_key as _stablecoin_get_etherscan_key,
+        get_interval_seconds as _stablecoin_get_interval_seconds,
+        get_previous_flow_signal as _stablecoin_get_previous_flow_signal,
+        get_previous_supply_usd as _stablecoin_get_previous_supply_usd,
+        get_tokens as _stablecoin_get_tokens,
+        make_aiohttp_http_client as _make_stablecoin_http_client,
+        persist_flow_signal as _persist_stablecoin_flow_signal,
+        persist_supply_snapshots as _persist_stablecoin_supply_snapshots,
+    )
+    from market_indicators.stablecoin_flows import (
+        build_flow_signal as _build_stablecoin_flow_signal,
+        detect_flow_event as _detect_stablecoin_flow_event,
+        format_flow_summary as _format_stablecoin_flow_summary,
+    )
+    STABLECOIN_ENABLED = True
+except ImportError:
+    STABLECOIN_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -256,6 +280,15 @@ class Scheduler:
                 "(symbols=%s, interval=%ss)",
                 ",".join(_options_skew_get_currencies()),
                 _options_skew_get_interval_seconds(),
+            )
+
+        if STABLECOIN_ENABLED and _stablecoin_enabled():
+            tasks.append(self._stablecoin_flows_loop())
+            logger.info(
+                "💵 Stablecoin flows loop включён "
+                "(tokens=%s, interval=%ss)",
+                ",".join(_stablecoin_get_tokens()),
+                _stablecoin_get_interval_seconds(),
             )
 
         await asyncio.gather(*tasks)
@@ -745,6 +778,98 @@ class Scheduler:
                     except Exception as e:  # noqa: BLE001 — per-currency isolation
                         logger.warning(
                             "options skew loop: %s провалился: %s", currency, e,
+                        )
+
+                elapsed = asyncio.get_event_loop().time() - started
+                await asyncio.sleep(max(10, interval - int(elapsed)))
+        finally:
+            try:
+                await session.close()
+            except Exception:
+                pass
+
+    async def _stablecoin_flows_loop(self):
+        """Каждые `STABLECOIN_FLOWS_INTERVAL_SEC` секунд снимает totalSupply
+        стейблов (USDT/USDC) per-chain (Ethereum через Etherscan, Tron через
+        Tronscan), пишет supply_snapshots + flow_snapshots с delta_24h vs
+        предыдущим окном. Запускается только если FEATURE_STABLECOIN_FLOWS=1.
+
+        Per-token error isolation: один токен не блокирует loop.
+        ETHERSCAN_API_KEY обязателен только для ethereum chain — без него
+        работает только Tron-часть.
+        """
+        try:
+            import aiohttp  # noqa: PLC0415 — local import: optional dep
+        except ImportError:
+            logger.error("Stablecoin flows loop отключён: aiohttp недоступен")
+            return
+
+        tokens = _stablecoin_get_tokens()
+        interval = _stablecoin_get_interval_seconds()
+        etherscan_key = _stablecoin_get_etherscan_key()
+        if not tokens:
+            logger.warning(
+                "Stablecoin flows loop: STABLECOIN_FLOWS_TOKENS пуст, exit",
+            )
+            return
+        if etherscan_key is None:
+            logger.warning(
+                "Stablecoin flows loop: ETHERSCAN_API_KEY не задан, "
+                "ethereum chain будет пропущен (только Tron source активен).",
+            )
+
+        await asyncio.sleep(180)  # stagger от других loop'ов на старте
+
+        session = aiohttp.ClientSession()
+        try:
+            http_client = await _make_stablecoin_http_client(session)
+
+            while self._running:
+                started = asyncio.get_event_loop().time()
+                for token in tokens:
+                    try:
+                        snapshots = await _fetch_stablecoin_snapshots(
+                            token=token,
+                            http_client=http_client,
+                            etherscan_api_key=etherscan_key,
+                        )
+                        if not snapshots:
+                            logger.warning(
+                                "stablecoin loop: %s — пусто, skip", token,
+                            )
+                            continue
+
+                        await _persist_stablecoin_supply_snapshots(snapshots)
+
+                        previous_supply_usd = await _stablecoin_get_previous_supply_usd(
+                            token=token, hours_ago=24.0,
+                        )
+                        timestamp_ms = snapshots[0].timestamp_ms
+                        current_flow = _build_stablecoin_flow_signal(
+                            token=token,
+                            current_snapshots=snapshots,
+                            previous_supply_usd=previous_supply_usd,
+                            timestamp_ms=timestamp_ms,
+                        )
+
+                        prev_flow = await _stablecoin_get_previous_flow_signal(token=token)
+                        await _persist_stablecoin_flow_signal(current_flow)
+
+                        event = _detect_stablecoin_flow_event(
+                            current=current_flow, previous=prev_flow,
+                        )
+                        summary = _format_stablecoin_flow_summary(
+                            current_flow, event=event,
+                        )
+                        if event in {"mint_burst", "redeem_burst"}:
+                            logger.warning("⚠️ %s", summary)
+                        elif event in {"mint_cooldown", "redeem_cooldown"}:
+                            logger.info("🟢 %s", summary)
+                        else:
+                            logger.info("%s", summary)
+                    except Exception as e:  # noqa: BLE001 — per-token isolation
+                        logger.warning(
+                            "stablecoin flows loop: %s провалился: %s", token, e,
                         )
 
                 elapsed = asyncio.get_event_loop().time() - started
