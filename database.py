@@ -308,6 +308,72 @@ async def init_db():
             "ON microstructure_snapshots (asset, vacuum_flag) WHERE vacuum_flag = 1"
         )
 
+        # ─── narrative_documents / narrative_clusters (killer 3/8) ───────────
+        # Хранит «документы» (статьи/посты) с их embeddings (JSON-list of floats)
+        # и онлайн-кластеризованные нарративные треды (centroid, n_docs, reach,
+        # anchor centroid для drift detection). См.
+        # market_indicators/narratives.py для математики.
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS narrative_documents (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                doc_id          TEXT    NOT NULL UNIQUE,
+                source          TEXT    NOT NULL,
+                title           TEXT    NOT NULL DEFAULT '',
+                content         TEXT    NOT NULL DEFAULT '',
+                asset_hint      TEXT,
+                published_at    TEXT,
+                embedding_json  TEXT    NOT NULL,
+                cluster_id      INTEGER NOT NULL,
+                CHECK (length(doc_id) > 0)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_narr_doc_cluster_created "
+            "ON narrative_documents (cluster_id, created_at)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_narr_doc_source_created "
+            "ON narrative_documents (source, created_at)"
+        )
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS narrative_clusters (
+                cluster_id              INTEGER PRIMARY KEY,
+                created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                last_seen_at            TEXT,
+                centroid_json           TEXT NOT NULL,
+                n_docs                  INTEGER NOT NULL DEFAULT 0,
+                sources_json            TEXT NOT NULL DEFAULT '[]',
+                anchor_centroid_json    TEXT,
+                anchor_at               TEXT,
+                label                   TEXT,
+                CHECK (n_docs >= 0)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_narr_cluster_lastseen "
+            "ON narrative_clusters (last_seen_at)"
+        )
+
+        # Snapshots of cluster centroids over time — для drift detection
+        # (anchor — это centroid на момент N часов назад). Pruning делается
+        # отдельным retention-job'ом.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS narrative_cluster_snapshots (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                cluster_id      INTEGER NOT NULL,
+                n_docs          INTEGER NOT NULL,
+                centroid_json   TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_narr_snap_cluster_created "
+            "ON narrative_cluster_snapshots (cluster_id, created_at)"
+        )
+
         await db.commit()
 
     logger.info("✅ База данных инициализирована")
@@ -859,6 +925,194 @@ async def get_recent_microstructure_snapshots(
             (str(asset), int(limit)),
         ) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
+
+
+# ─── Narrative drift tracker (killer 3/8) ────────────────────────────────────
+#
+# См. market_indicators/narratives.py + narratives_io.py для семантики.
+# Здесь — только тонкие async-обёртки над SQL.
+
+async def narrative_document_exists(*, doc_id: str) -> bool:
+    """True если doc_id уже сохранён (dedup)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM narrative_documents WHERE doc_id = ? LIMIT 1",
+            (str(doc_id),),
+        ) as cursor:
+            return (await cursor.fetchone()) is not None
+
+
+async def save_narrative_document(
+    *,
+    doc_id: str,
+    source: str,
+    title: str,
+    content: str,
+    asset_hint: str | None,
+    published_at: str | None,
+    embedding_json: str,
+    cluster_id: int,
+) -> int:
+    """Сохранить документ. Возвращает id (или существующую запись если doc_id
+    уже есть — INSERT OR IGNORE)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT OR IGNORE INTO narrative_documents (
+                doc_id, source, title, content,
+                asset_hint, published_at, embedding_json, cluster_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(doc_id), str(source), str(title or ""), str(content or ""),
+                asset_hint, published_at, str(embedding_json), int(cluster_id),
+            ),
+        )
+        await db.commit()
+        rowid = cursor.lastrowid or 0
+        if rowid == 0:
+            # запись уже была — возьмём её id
+            async with db.execute(
+                "SELECT id FROM narrative_documents WHERE doc_id = ?",
+                (str(doc_id),),
+            ) as cur:
+                row = await cur.fetchone()
+                return int(row[0]) if row else 0
+        return int(rowid)
+
+
+async def upsert_narrative_cluster(
+    *,
+    cluster_id: int,
+    centroid_json: str,
+    n_docs: int,
+    sources_json: str,
+    created_at: str | None,
+    last_seen_at: str | None,
+    label: str | None,
+) -> None:
+    """Upsert кластера. При insert также пишет snapshot центроида (для drift)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO narrative_clusters
+                (cluster_id, centroid_json, n_docs, sources_json,
+                 created_at, last_seen_at, label)
+            VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')), ?, ?)
+            ON CONFLICT(cluster_id) DO UPDATE SET
+                centroid_json   = excluded.centroid_json,
+                n_docs          = excluded.n_docs,
+                sources_json    = excluded.sources_json,
+                last_seen_at    = excluded.last_seen_at,
+                label           = COALESCE(excluded.label, label)
+            """,
+            (
+                int(cluster_id), str(centroid_json), int(n_docs), str(sources_json),
+                created_at, last_seen_at, label,
+            ),
+        )
+        await db.execute(
+            """
+            INSERT INTO narrative_cluster_snapshots (cluster_id, n_docs, centroid_json)
+            VALUES (?, ?, ?)
+            """,
+            (int(cluster_id), int(n_docs), str(centroid_json)),
+        )
+        await db.commit()
+
+
+async def load_narrative_clusters(*, limit: int = 5000) -> list[dict]:
+    """Все кластера для онлайн assignment (centroids нужны в памяти)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM narrative_clusters ORDER BY last_seen_at DESC LIMIT ?",
+            (int(limit),),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+
+async def load_narrative_anchor_centroid(
+    *, cluster_id: int, hours_ago: float
+) -> list[float] | None:
+    """Centroid из snapshot'а, который был ≥ `hours_ago` часов назад. Берём
+    ближайший по времени (наиболее свежий из «достаточно старых»). None если
+    нет такого snapshot'а."""
+    import json as _json
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT centroid_json
+            FROM narrative_cluster_snapshots
+            WHERE cluster_id = ?
+              AND created_at <= datetime('now', ?)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (int(cluster_id), f"-{float(hours_ago)} hours"),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row or not row["centroid_json"]:
+                return None
+            try:
+                vec = _json.loads(row["centroid_json"])
+            except (_json.JSONDecodeError, TypeError):
+                return None
+            return [float(x) for x in vec]
+
+
+async def get_recent_narrative_documents(
+    *, cluster_id: int, limit: int = 20
+) -> list[dict]:
+    """Последние N документов в кластере. Используется CLI / future agents."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, created_at, source, title, content, asset_hint,
+                   published_at, cluster_id
+            FROM narrative_documents
+            WHERE cluster_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (int(cluster_id), int(limit)),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_active_narratives(*, limit: int = 10) -> list[dict]:
+    """Top-N кластеров по последней активности (last_seen_at DESC)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT cluster_id, n_docs, sources_json, label,
+                   created_at, last_seen_at
+            FROM narrative_clusters
+            ORDER BY last_seen_at DESC NULLS LAST
+            LIMIT ?
+            """,
+            (int(limit),),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+
+async def cleanup_old_narrative_data(*, retention_days: int = 180) -> int:
+    """Удалить документы и snapshot'ы старше retention_days. Возвращает
+    общее число удалённых строк."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur1 = await db.execute(
+            "DELETE FROM narrative_documents WHERE created_at < datetime('now', ?)",
+            (f"-{int(retention_days)} days",),
+        )
+        cur2 = await db.execute(
+            "DELETE FROM narrative_cluster_snapshots WHERE created_at < datetime('now', ?)",
+            (f"-{int(retention_days)} days",),
+        )
+        await db.commit()
+        return int((cur1.rowcount or 0) + (cur2.rowcount or 0))
 
 
 # ─── Фидбек ───────────────────────────────────────────────────────────────────
