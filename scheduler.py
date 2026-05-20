@@ -85,6 +85,23 @@ try:
 except ImportError:
     MICROSTRUCTURE_ENABLED = False
 
+# Narrative drift tracker (Killer #3). Embedding API (Gemini/Mistral) +
+# online clustering поверх SQLite. Ядро stdlib-only, HTTP — лениво в loop'е.
+try:
+    from market_indicators.narratives_io import (
+        SqliteNarrativeDBAdapter,
+        feature_enabled as _narrative_enabled,
+        format_drift_summary,
+        get_active_provider as _narrative_get_active_provider,
+        get_interval_seconds as _narrative_get_interval_seconds,
+        get_retention_days as _narrative_get_retention_days,
+        ingest_documents,
+        make_embedding_client,
+    )
+    NARRATIVE_ENABLED = True
+except ImportError:
+    NARRATIVE_ENABLED = False
+
 # Funding term structure (Tier A #4). Bybit + Binance funding + deliverable
 # фьючерсы. Lazy aiohttp.
 try:
@@ -192,6 +209,15 @@ class Scheduler:
                 "(snapshot L2-orderbook'ов %s раз в %ss)",
                 "/".join(get_enabled_venues()),
                 get_interval_seconds(),
+            )
+
+        if NARRATIVE_ENABLED and _narrative_enabled():
+            tasks.append(self._narrative_drift_loop())
+            logger.info(
+                "🌐 Narrative drift loop включён "
+                "(provider=%s, interval=%ss)",
+                _narrative_get_active_provider(),
+                _narrative_get_interval_seconds(),
             )
 
         if FUNDING_TERM_ENABLED and _funding_term_enabled():
@@ -630,6 +656,140 @@ class Scheduler:
 
                 elapsed = asyncio.get_event_loop().time() - started
                 await asyncio.sleep(max(10, interval - int(elapsed)))
+        finally:
+            try:
+                await session.close()
+            except Exception:
+                pass
+
+    async def _narrative_drift_loop(self):
+        """Каждый час подтягивает свежие новости через TavilyProvider (если
+        ключ задан), embed'ит через Gemini/Mistral, кластеризует онлайн и
+        пишет в narrative_documents/narrative_clusters. Раз в сутки также
+        прогоняет cleanup старых документов.
+
+        Под фичефлагом FEATURE_NARRATIVE_DRIFT — loop регистрируется только
+        если включён. Без новых deps в requirements.txt.
+        """
+        try:
+            import aiohttp  # noqa: PLC0415
+        except ImportError:
+            logger.error("Narrative drift loop отключён: aiohttp недоступен")
+            return
+
+        from datetime import datetime  # noqa: PLC0415
+
+        tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
+        if not tavily_key:
+            logger.warning(
+                "Narrative drift: TAVILY_API_KEY не задан — "
+                "источник документов отсутствует, loop пропускается"
+            )
+            return
+
+        await asyncio.sleep(180)  # сдвиг от стартовых loop'ов
+
+        interval = _narrative_get_interval_seconds()
+        retention = _narrative_get_retention_days()
+        db_adapter = SqliteNarrativeDBAdapter()
+        last_cleanup_day: str | None = None
+
+        session = aiohttp.ClientSession()
+        try:
+            embedding_client = make_embedding_client(http_session=session)
+
+            from refactor.providers.news_providers import TavilyProvider  # noqa: PLC0415
+            from market_indicators.narratives_io import (  # noqa: PLC0415
+                NarrativeDocument,
+                classify_asset_hint,
+                make_doc_id,
+            )
+
+            tavily = TavilyProvider(api_key=tavily_key)
+            tavily.session = session  # переиспользуем уже открытый session
+
+            queries = [
+                ("BTC", "Bitcoin ETF flows on-chain whales price news"),
+                ("ETH", "Ethereum spot ETF restaking layer-2 news"),
+                (None, "crypto market liquidations regulation macro"),
+            ]
+
+            while self._running:
+                started = asyncio.get_event_loop().time()
+                aggregated_docs: list = []
+
+                for asset, query in queries:
+                    try:
+                        articles = await tavily.search_news(
+                            query=query, max_results=15, search_depth="basic",
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("narrative tavily %r упал: %s", query, e)
+                        continue
+
+                    for art in articles:
+                        try:
+                            published = art.publish_date or datetime.utcnow()
+                            asset_hint = (
+                                asset
+                                or classify_asset_hint(
+                                    art.title or "", art.content or ""
+                                )
+                            )
+                            doc = NarrativeDocument(
+                                doc_id=make_doc_id(
+                                    source="tavily",
+                                    url=art.url or "",
+                                    title=art.title or "",
+                                ),
+                                source="tavily",
+                                title=art.title or "",
+                                content=art.content or "",
+                                published_at=published,
+                                asset_hint=asset_hint,
+                            )
+                            aggregated_docs.append(doc)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("narrative parse failed: %s", e)
+                            continue
+
+                if aggregated_docs:
+                    try:
+                        result = await ingest_documents(
+                            docs=aggregated_docs,
+                            embedding_client=embedding_client,
+                            db_adapter=db_adapter,
+                        )
+                        logger.info(
+                            "🌐 narrative: ingest %d docs "
+                            "(skip_dup=%d, new=%d, joined=%d, drift=%d)",
+                            result.docs_processed, result.docs_skipped_dup,
+                            result.new_clusters, result.joined_existing,
+                            len(result.drift_events),
+                        )
+                        for drift in result.drift_events:
+                            logger.warning(format_drift_summary(drift))
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception("narrative ingest_documents упал: %s", e)
+                else:
+                    logger.info("🌐 narrative: новых документов нет")
+
+                # Daily cleanup (раз в сутки)
+                today = datetime.utcnow().strftime("%Y-%m-%d")
+                if last_cleanup_day != today:
+                    try:
+                        from database import cleanup_old_narrative_data  # noqa: PLC0415
+                        deleted = await cleanup_old_narrative_data(retention_days=retention)
+                        logger.info(
+                            "🌐 narrative cleanup: удалено %d строк (retention=%dd)",
+                            deleted, retention,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("narrative cleanup упал: %s", e)
+                    last_cleanup_day = today
+
+                elapsed = asyncio.get_event_loop().time() - started
+                await asyncio.sleep(max(60, interval - int(elapsed)))
         finally:
             try:
                 await session.close()
