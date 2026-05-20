@@ -68,6 +68,23 @@ try:
 except ImportError:
     AGENT_CALIB_ENABLED = False
 
+# Cross-exchange microstructure loop. Опять же stdlib-only ядро, aiohttp нужен
+# только при настоящем запросе venue — импортится внутри loop'а.
+try:
+    from market_indicators.microstructure_io import (
+        compute_microstructure_signal,
+        feature_enabled as _microstructure_enabled,
+        get_baseline_depth,
+        get_enabled_venues,
+        get_interval_seconds,
+        get_symbols,
+        make_aiohttp_http_client,
+        persist_signal as _persist_microstructure_signal,
+    )
+    MICROSTRUCTURE_ENABLED = True
+except ImportError:
+    MICROSTRUCTURE_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +165,15 @@ class Scheduler:
             logger.info(
                 "📊 Agent calibration loop включён "
                 "(резолв probabilistic forecast'ов раз в 30 мин)"
+            )
+
+        if MICROSTRUCTURE_ENABLED and _microstructure_enabled():
+            tasks.append(self._microstructure_loop())
+            logger.info(
+                "🌊 Microstructure loop включён "
+                "(snapshot L2-orderbook'ов %s раз в %ss)",
+                "/".join(get_enabled_venues()),
+                get_interval_seconds(),
             )
 
         await asyncio.gather(*tasks)
@@ -429,6 +455,93 @@ class Scheduler:
             await chain.binance.close()
         except Exception:
             pass
+
+    async def _microstructure_loop(self):
+        """Каждые `MICROSTRUCTURE_INTERVAL_SEC` секунд снимает L2-стакан с
+        Binance/Bybit/OKX/Bitget/Hyperliquid и пишет агрегированный snapshot
+        в `microstructure_snapshots`. Запускается только если
+        FEATURE_MICROSTRUCTURE=1.
+
+        Внутри:
+          1. Лениво подключаем aiohttp.ClientSession (одну на loop).
+          2. Для каждого asset из MICROSTRUCTURE_SYMBOLS:
+             a. compute_microstructure_signal(...) → MicrostructureSignal.
+             b. persist_signal в БД.
+          3. Если vacuum_flag — логируем WARNING (через logger), будущий PR
+             прокинет в alert_system.
+
+        Loop устойчив к ошибкам venue: одна биржа упала — остальные продолжают.
+        """
+        try:
+            import aiohttp  # noqa: PLC0415 — local import: optional dep
+        except ImportError:
+            logger.error("Microstructure loop отключён: aiohttp недоступен")
+            return
+
+        symbols = get_symbols()
+        interval = get_interval_seconds()
+
+        if not symbols:
+            logger.warning("Microstructure loop: MICROSTRUCTURE_SYMBOLS пуст, exit")
+            return
+
+        # Sleep чтобы не толкаться с другими loop'ами на старте.
+        await asyncio.sleep(90)
+
+        session = aiohttp.ClientSession()
+        try:
+            http_client = await make_aiohttp_http_client(session)
+
+            while self._running:
+                started = asyncio.get_event_loop().time()
+                for asset in symbols:
+                    try:
+                        signal = await compute_microstructure_signal(
+                            asset=asset,
+                            http_client=http_client,
+                            baseline_provider=get_baseline_depth,
+                        )
+                        if signal is None:
+                            logger.info(
+                                "🌊 microstructure %s: нет данных ни от одного venue",
+                                asset,
+                            )
+                            continue
+                        await _persist_microstructure_signal(signal)
+                        if signal.vacuum:
+                            logger.warning(
+                                "⚠️ microstructure VACUUM %s: drop=%.1f%% "
+                                "(depth=$%.0fM, baseline=$%.0fM, bias=%+d, sev=%.2f)",
+                                asset,
+                                float(signal.drop_pct_observed or 0.0),
+                                signal.aggregate.total_depth_usd() / 1e6,
+                                (signal.baseline_depth_usd or 0.0) / 1e6,
+                                signal.direction_bias,
+                                signal.severity,
+                            )
+                        else:
+                            logger.info(
+                                "🌊 microstructure %s: bias=%+d sev=%.2f "
+                                "depth=$%.0fM spread=%.2fbps venues=%d",
+                                asset,
+                                signal.direction_bias,
+                                signal.severity,
+                                signal.aggregate.total_depth_usd() / 1e6,
+                                signal.aggregate.quoted_spread_bps_weighted,
+                                signal.aggregate.venue_count,
+                            )
+                    except Exception as e:  # noqa: BLE001 — per-asset isolation
+                        logger.warning(
+                            "microstructure loop: %s провалился: %s", asset, e
+                        )
+
+                elapsed = asyncio.get_event_loop().time() - started
+                await asyncio.sleep(max(5, interval - int(elapsed)))
+        finally:
+            try:
+                await session.close()
+            except Exception:
+                pass
 
     async def export_now(self):
         """
