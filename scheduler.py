@@ -120,6 +120,26 @@ try:
 except ImportError:
     FUNDING_TERM_ENABLED = False
 
+# Options skew (Tier A #7). Deribit public API: 25-delta risk reversal +
+# ATM IV term structure. Lazy aiohttp.
+try:
+    from market_indicators.options_skew_io import (
+        feature_enabled as _options_skew_enabled,
+        fetch_options_skew as _fetch_options_skew,
+        get_currencies as _options_skew_get_currencies,
+        get_interval_seconds as _options_skew_get_interval_seconds,
+        get_previous_signal as _options_skew_get_previous_signal,
+        make_aiohttp_http_client as _make_options_skew_http_client,
+        persist_signal as _persist_options_skew_signal,
+    )
+    from market_indicators.options_skew import (
+        detect_skew_event,
+        format_skew_summary,
+    )
+    OPTIONS_SKEW_ENABLED = True
+except ImportError:
+    OPTIONS_SKEW_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -227,6 +247,15 @@ class Scheduler:
                 "(symbols=%s, interval=%ss)",
                 ",".join(_funding_term_get_symbols()),
                 _funding_term_get_interval_seconds(),
+            )
+
+        if OPTIONS_SKEW_ENABLED and _options_skew_enabled():
+            tasks.append(self._options_skew_loop())
+            logger.info(
+                "🎲 Options skew loop включён "
+                "(symbols=%s, interval=%ss)",
+                ",".join(_options_skew_get_currencies()),
+                _options_skew_get_interval_seconds(),
             )
 
         await asyncio.gather(*tasks)
@@ -652,6 +681,70 @@ class Scheduler:
                     except Exception as e:  # noqa: BLE001 — per-asset isolation
                         logger.warning(
                             "funding term loop: %s провалился: %s", asset, e,
+                        )
+
+                elapsed = asyncio.get_event_loop().time() - started
+                await asyncio.sleep(max(10, interval - int(elapsed)))
+        finally:
+            try:
+                await session.close()
+            except Exception:
+                pass
+
+    async def _options_skew_loop(self):
+        """Каждые `OPTIONS_SKEW_INTERVAL_SEC` секунд собирает options skew
+        (Deribit): ATM IV near/far и 25Δ risk-reversal, пишет в
+        `options_skew_snapshots` и логирует put_skew/call_skew onset/recovery.
+        Запускается только если FEATURE_OPTIONS_SKEW=1.
+
+        Per-currency error isolation: одна валюта не блокирует loop.
+        """
+        try:
+            import aiohttp  # noqa: PLC0415 — local import: optional dep
+        except ImportError:
+            logger.error("Options skew loop отключён: aiohttp недоступен")
+            return
+
+        currencies = _options_skew_get_currencies()
+        interval = _options_skew_get_interval_seconds()
+        if not currencies:
+            logger.warning("Options skew loop: OPTIONS_SKEW_SYMBOLS пуст, exit")
+            return
+
+        await asyncio.sleep(150)  # stagger от других loop'ов на старте
+
+        session = aiohttp.ClientSession()
+        try:
+            http_client = await _make_options_skew_http_client(session)
+
+            while self._running:
+                started = asyncio.get_event_loop().time()
+                for currency in currencies:
+                    try:
+                        prev = await _options_skew_get_previous_signal(currency=currency)
+                        current = await _fetch_options_skew(
+                            currency=currency, http_client=http_client,
+                        )
+                        await _persist_options_skew_signal(current)
+
+                        event = detect_skew_event(current=current, previous=prev)
+                        if event in {"put_skew_onset", "call_skew_onset"}:
+                            logger.warning(
+                                "⚠️ %s",
+                                format_skew_summary(current, event=event),
+                            )
+                        elif event in {"put_skew_recovery", "call_skew_recovery"}:
+                            logger.info(
+                                "🟢 %s",
+                                format_skew_summary(current, event=event),
+                            )
+                        else:
+                            logger.info(
+                                "%s", format_skew_summary(current),
+                            )
+                    except Exception as e:  # noqa: BLE001 — per-currency isolation
+                        logger.warning(
+                            "options skew loop: %s провалился: %s", currency, e,
                         )
 
                 elapsed = asyncio.get_event_loop().time() - started
