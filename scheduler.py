@@ -102,6 +102,24 @@ try:
 except ImportError:
     NARRATIVE_ENABLED = False
 
+# Funding term structure (Tier A #4). Bybit + Binance funding + deliverable
+# фьючерсы. Lazy aiohttp.
+try:
+    from market_indicators.funding_term_io import (
+        feature_enabled as _funding_term_enabled,
+        fetch_term_structure as _fetch_term_structure,
+        format_term_summary,
+        get_interval_seconds as _funding_term_get_interval_seconds,
+        get_previous_signal as _funding_term_get_previous_signal,
+        get_symbols as _funding_term_get_symbols,
+        make_aiohttp_http_client as _make_funding_term_http_client,
+        persist_signal as _persist_funding_term_signal,
+    )
+    from market_indicators.funding_term_structure import detect_inversion_event
+    FUNDING_TERM_ENABLED = True
+except ImportError:
+    FUNDING_TERM_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,6 +218,15 @@ class Scheduler:
                 "(provider=%s, interval=%ss)",
                 _narrative_get_active_provider(),
                 _narrative_get_interval_seconds(),
+            )
+
+        if FUNDING_TERM_ENABLED and _funding_term_enabled():
+            tasks.append(self._funding_term_loop())
+            logger.info(
+                "📉 Funding term structure loop включён "
+                "(symbols=%s, interval=%ss)",
+                ",".join(_funding_term_get_symbols()),
+                _funding_term_get_interval_seconds(),
             )
 
         await asyncio.gather(*tasks)
@@ -563,6 +590,72 @@ class Scheduler:
 
                 elapsed = asyncio.get_event_loop().time() - started
                 await asyncio.sleep(max(5, interval - int(elapsed)))
+        finally:
+            try:
+                await session.close()
+            except Exception:
+                pass
+
+    async def _funding_term_loop(self):
+        """Каждые `FUNDING_TERM_INTERVAL_SEC` секунд собирает funding rate term
+        structure (spot perp funding + 30d / 90d basis carry) с Bybit и Binance,
+        пишет в `funding_term_snapshots` и логирует inversion onset/recovery
+        события. Запускается только если FEATURE_FUNDING_TERM=1.
+
+        Per-asset error isolation: один упавший asset не блокирует loop.
+        """
+        try:
+            import aiohttp  # noqa: PLC0415 — local import: optional dep
+        except ImportError:
+            logger.error("Funding term loop отключён: aiohttp недоступен")
+            return
+
+        symbols = _funding_term_get_symbols()
+        interval = _funding_term_get_interval_seconds()
+        if not symbols:
+            logger.warning("Funding term loop: FUNDING_TERM_SYMBOLS пуст, exit")
+            return
+
+        await asyncio.sleep(120)  # stagger от других loop'ов на старте
+
+        session = aiohttp.ClientSession()
+        try:
+            http_client = await _make_funding_term_http_client(session)
+
+            while self._running:
+                started = asyncio.get_event_loop().time()
+                for asset in symbols:
+                    try:
+                        prev = await _funding_term_get_previous_signal(asset=asset)
+                        current = await _fetch_term_structure(
+                            asset=asset, http_client=http_client,
+                        )
+                        await _persist_funding_term_signal(current)
+
+                        event = detect_inversion_event(
+                            current=current, previous=prev,
+                        )
+                        if event == "inversion_onset":
+                            logger.warning(
+                                "⚠️ %s",
+                                format_term_summary(current, event=event),
+                            )
+                        elif event == "inversion_recovery":
+                            logger.info(
+                                "✅ %s",
+                                format_term_summary(current, event=event),
+                            )
+                        else:
+                            logger.info(
+                                "%s", format_term_summary(current),
+                            )
+                    except Exception as e:  # noqa: BLE001 — per-asset isolation
+                        logger.warning(
+                            "funding term loop: %s провалился: %s", asset, e,
+                        )
+
+                elapsed = asyncio.get_event_loop().time() - started
+                await asyncio.sleep(max(10, interval - int(elapsed)))
         finally:
             try:
                 await session.close()
