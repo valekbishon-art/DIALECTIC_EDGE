@@ -433,6 +433,49 @@ async def init_db():
             "ON options_skew_snapshots (currency, skew_class, created_at)"
         )
 
+        # ─── stablecoin_supply_snapshots (Tier A #8) ────────────────────────
+        # Снимки totalSupply стейблов (USDT/USDC) per-chain.
+        # raw_supply_units_str — строкой, т.к. может превышать INT64.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS stablecoin_supply_snapshots (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+                token                 TEXT NOT NULL,
+                chain                 TEXT NOT NULL,
+                raw_supply_units_str  TEXT NOT NULL,
+                decimals              INTEGER NOT NULL,
+                timestamp_ms          INTEGER NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sc_supply_token_chain_ts "
+            "ON stablecoin_supply_snapshots (token, chain, timestamp_ms DESC)"
+        )
+
+        # ─── stablecoin_flow_snapshots (Tier A #8) ──────────────────────────
+        # Аггрегированные flow signals по токену (по всем chains).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS stablecoin_flow_snapshots (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                token               TEXT NOT NULL,
+                timestamp_ms        INTEGER NOT NULL,
+                supply_total_usd    REAL NOT NULL DEFAULT 0,
+                delta_24h_usd       REAL,
+                delta_pct_24h       REAL,
+                flow_class          TEXT NOT NULL DEFAULT 'unknown',
+                chains_csv          TEXT
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sc_flow_token_ts "
+            "ON stablecoin_flow_snapshots (token, timestamp_ms DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sc_flow_class "
+            "ON stablecoin_flow_snapshots (token, flow_class, created_at)"
+        )
+
         await db.commit()
 
     logger.info("✅ База данных инициализирована")
@@ -1338,6 +1381,135 @@ async def count_options_skew_class(
               AND created_at >= datetime('now', ?)
             """,
             (str(currency).upper(), str(skew_class), f"-{float(lookback_hours)} hours"),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+# ─── Stablecoin flows (Tier A #8) ────────────────────────────────────────────
+
+
+async def save_stablecoin_supply_snapshot(
+    *,
+    token: str,
+    chain: str,
+    raw_supply_units_str: str,
+    decimals: int,
+    timestamp_ms: int,
+) -> int:
+    """Вставка одного supply-snapshot'а (per token+chain).
+
+    raw_supply_units_str — строкой, т.к. реальные значения USDT > 2^63.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO stablecoin_supply_snapshots (
+                token, chain, raw_supply_units_str, decimals, timestamp_ms
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                str(token).upper(),
+                str(chain).lower(),
+                str(raw_supply_units_str),
+                int(decimals),
+                int(timestamp_ms),
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid or 0)
+
+
+async def get_supply_snapshot_at_or_before(
+    *, token: str, chain: str, hours_ago: float = 24.0,
+) -> dict | None:
+    """Ближайший snapshot до (now - hours_ago) для пары token+chain.
+
+    Возвращает None если ничего нет.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM stablecoin_supply_snapshots
+            WHERE token = ? AND chain = ?
+              AND created_at <= datetime('now', ?)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (
+                str(token).upper(),
+                str(chain).lower(),
+                f"-{float(hours_ago)} hours",
+            ),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def save_stablecoin_flow_snapshot(
+    *,
+    token: str,
+    timestamp_ms: int,
+    supply_total_usd: float,
+    delta_24h_usd: float | None,
+    delta_pct_24h: float | None,
+    flow_class: str,
+    chains_csv: str | None,
+) -> int:
+    """Вставка одного flow-snapshot'а. NaN/inf → NULL."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO stablecoin_flow_snapshots (
+                token, timestamp_ms, supply_total_usd,
+                delta_24h_usd, delta_pct_24h, flow_class, chains_csv
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(token).upper(), int(timestamp_ms),
+                _nan_to_none_real(supply_total_usd) or 0.0,
+                _nan_to_none_real(delta_24h_usd),
+                _nan_to_none_real(delta_pct_24h),
+                str(flow_class or "unknown"),
+                chains_csv,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid or 0)
+
+
+async def get_recent_stablecoin_flow_snapshots(
+    *, token: str, limit: int = 10,
+) -> list[dict]:
+    """Последние flow-снимки по токену (DESC по timestamp_ms)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM stablecoin_flow_snapshots
+            WHERE token = ?
+            ORDER BY timestamp_ms DESC
+            LIMIT ?
+            """,
+            (str(token).upper(), int(limit)),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+
+async def count_stablecoin_flow_class(
+    *, token: str, flow_class: str, lookback_hours: float = 168,
+) -> int:
+    """Счётчик flow-снимков нужного flow_class за последние N часов."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM stablecoin_flow_snapshots
+            WHERE token = ?
+              AND flow_class = ?
+              AND created_at >= datetime('now', ?)
+            """,
+            (str(token).upper(), str(flow_class), f"-{float(lookback_hours)} hours"),
         ) as cursor:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
