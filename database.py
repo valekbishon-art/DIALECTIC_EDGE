@@ -265,6 +265,49 @@ async def init_db():
             "ON agent_predictions (asset, created_at)"
         )
 
+        # ─── microstructure_snapshots: cross-exchange L2 depth metrics ───────
+        # Каждый snapshot — это уже агрегированная сводка по всем venue
+        # (Binance/Bybit/OKX/Bitget/Hyperliquid). Сырые per-venue стаканы
+        # не сохраняем — они слишком объёмные. Здесь только финальные метрики.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS microstructure_snapshots (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+                asset               TEXT    NOT NULL,
+                timestamp_ms        INTEGER NOT NULL,
+                mid_price           REAL    NOT NULL,
+                bid_depth_usd       REAL    NOT NULL,
+                ask_depth_usd       REAL    NOT NULL,
+                asymmetry           REAL,
+                quoted_spread_bps   REAL,
+                venue_count         INTEGER NOT NULL,
+                venues_csv          TEXT,
+                vacuum_flag         INTEGER NOT NULL DEFAULT 0,
+                direction_bias      INTEGER NOT NULL DEFAULT 0,
+                severity            REAL    NOT NULL DEFAULT 0.0,
+                baseline_depth_usd  REAL,
+                drop_pct_observed   REAL,
+                CHECK (mid_price >= 0),
+                CHECK (bid_depth_usd >= 0),
+                CHECK (ask_depth_usd >= 0),
+                CHECK (venue_count >= 0),
+                CHECK (severity >= 0 AND severity <= 1),
+                CHECK (direction_bias IN (-1, 0, 1))
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ms_snapshot_asset_ts "
+            "ON microstructure_snapshots (asset, timestamp_ms)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ms_snapshot_asset_created "
+            "ON microstructure_snapshots (asset, created_at)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ms_snapshot_vacuum "
+            "ON microstructure_snapshots (asset, vacuum_flag) WHERE vacuum_flag = 1"
+        )
+
         await db.commit()
 
     logger.info("✅ База данных инициализирована")
@@ -707,6 +750,115 @@ async def get_agent_calibration_history(
         async with db.execute(q, params) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+
+# ─── Microstructure snapshots (cross-exchange L2 depth) ──────────────────────
+#
+# См. market_indicators/microstructure.py для смысла полей. Здесь — голые
+# CRUD-обёртки. Хранятся уже agregated по venue метрики; сырые стаканы не
+# сохраняем (слишком объёмные).
+
+async def save_microstructure_snapshot(
+    *,
+    asset: str,
+    timestamp_ms: int,
+    mid_price: float,
+    bid_depth_usd: float,
+    ask_depth_usd: float,
+    asymmetry: float | None,
+    quoted_spread_bps: float | None,
+    venue_count: int,
+    venues_csv: str,
+    vacuum_flag: bool,
+    direction_bias: int,
+    severity: float,
+    baseline_depth_usd: float | None,
+    drop_pct_observed: float | None,
+) -> int:
+    """Сохранить agregated microstructure snapshot. Возвращает id строки.
+
+    NaN/inf в asymmetry/quoted_spread_bps конвертим в NULL (SQLite-friendly).
+    """
+    import math as _math
+
+    def _nan_to_none(v: float | None) -> float | None:
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (_math.isnan(f) or _math.isinf(f)) else f
+        except (TypeError, ValueError):
+            return None
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO microstructure_snapshots (
+                asset, timestamp_ms, mid_price,
+                bid_depth_usd, ask_depth_usd,
+                asymmetry, quoted_spread_bps,
+                venue_count, venues_csv,
+                vacuum_flag, direction_bias, severity,
+                baseline_depth_usd, drop_pct_observed
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(asset), int(timestamp_ms), float(mid_price),
+                float(bid_depth_usd), float(ask_depth_usd),
+                _nan_to_none(asymmetry), _nan_to_none(quoted_spread_bps),
+                int(venue_count), str(venues_csv or ""),
+                1 if vacuum_flag else 0,
+                int(direction_bias),
+                max(0.0, min(1.0, float(severity))),
+                _nan_to_none(baseline_depth_usd),
+                _nan_to_none(drop_pct_observed),
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_microstructure_baseline_depth(
+    *, asset: str, lookback_hours: int = 24
+) -> float | None:
+    """Среднее total_depth (bid+ask USD) за окно. None если < 3 точек."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT AVG(bid_depth_usd + ask_depth_usd) AS avg_depth,
+                   COUNT(*) AS n
+            FROM microstructure_snapshots
+            WHERE asset = ?
+              AND created_at >= datetime('now', ?)
+            """,
+            (str(asset), f"-{int(lookback_hours)} hours"),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            avg_depth, n = row
+            if n is None or int(n) < 3 or avg_depth is None:
+                return None
+            return float(avg_depth)
+
+
+async def get_recent_microstructure_snapshots(
+    *, asset: str, limit: int = 50
+) -> list[dict]:
+    """Последние snapshot'ы (для /microstructure CLI / dashboard в будущем)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM microstructure_snapshots
+            WHERE asset = ?
+            ORDER BY timestamp_ms DESC
+            LIMIT ?
+            """,
+            (str(asset), int(limit)),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
 
 
 # ─── Фидбек ───────────────────────────────────────────────────────────────────
