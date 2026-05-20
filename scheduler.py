@@ -56,6 +56,18 @@ except ImportError:
     FEATURE_POST_MORTEM = False
     POST_MORTEM_RUN_TIME_UTC = "23:50"
 
+# Per-agent calibration loop (резолв probabilistic forecast'ов агентов).
+# Сам модуль stdlib-only, но MarketDataChain нужен только в рантайме —
+# импорт лениво в самой задаче.
+try:
+    from core.agent_calibration_io import (
+        evaluate_pending_predictions as _evaluate_agent_predictions,
+        feature_enabled as _agent_calib_enabled,
+    )
+    AGENT_CALIB_ENABLED = True
+except ImportError:
+    AGENT_CALIB_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +80,7 @@ class Scheduler:
         self._last_export_date: date | None = None
         self._alert_system = None
         self._signals_system = None
-        
+
         if ALERT_SYSTEM_ENABLED:
             try:
                 github_repo = os.getenv("GITHUB_REPO", "ANAEHY/dialectic_edge")
@@ -76,7 +88,7 @@ class Scheduler:
                 logger.info("✅ Alert system инициализирован")
             except Exception as e:
                 logger.warning(f"Alert system init error: {e}")
-        
+
         if SIGNALS_SYSTEM_ENABLED:
             try:
                 github_repo = os.getenv("GITHUB_REPO", "ANAEHY/dialectic_edge")
@@ -84,7 +96,7 @@ class Scheduler:
                 logger.info("✅ Signals system инициализирован")
             except Exception as e:
                 logger.warning(f"Signals system init error: {e}")
-        
+
         self._auto_tracker = None
         if AUTO_TRACKER_ENABLED:
             try:
@@ -111,13 +123,13 @@ class Scheduler:
             self._midnight_reset_loop(),
             self._daily_github_export_loop(),
         ]
-        
+
         if ALERT_SYSTEM_ENABLED and self._alert_system:
             tasks.append(self._alert_checker_loop())
-        
+
         if SIGNALS_SYSTEM_ENABLED and self._signals_system:
             tasks.append(self._signals_checker_loop())
-        
+
         if AUTO_TRACKER_ENABLED and self._auto_tracker:
             tasks.append(self._auto_tracker_loop())
 
@@ -129,6 +141,13 @@ class Scheduler:
             logger.info(
                 "🔬 Post-mortem loop включён (запуск в %s UTC ежедневно)",
                 POST_MORTEM_RUN_TIME_UTC,
+            )
+
+        if AGENT_CALIB_ENABLED and _agent_calib_enabled():
+            tasks.append(self._agent_calibration_loop())
+            logger.info(
+                "📊 Agent calibration loop включён "
+                "(резолв probabilistic forecast'ов раз в 30 мин)"
             )
 
         await asyncio.gather(*tasks)
@@ -194,7 +213,7 @@ class Scheduler:
         while self._running:
             try:
                 now = datetime.now()
-                today = now.date()
+                _today = now.date()  # noqa: F841 — оставлен для возможного включения экспорта
 
                 # Экспорт ОТКЛЮЧЕН — теперь вручную
                 # Включить: раскомментировать ниже
@@ -287,21 +306,21 @@ class Scheduler:
             try:
                 now = datetime.now()
                 current_time = now.strftime("%H:%M")
-                
+
                 # Запускаем в 00:10 UTC каждый день
                 if current_time == "00:10":
                     logger.info("🔄 Запускаю авто-проверку прогнозов...")
-                    
+
                     results = await self._auto_tracker.check_all_forecasts()
-                    
+
                     if results:
                         md = self._auto_tracker.generate_markdown(results)
                         await self._auto_tracker.upload_to_github(md, "AUTO_TRACK.md")
                         logger.info(f"✅ Auto track обновлён")
-                    
+
                     # Ждём минуту чтобы не запустить дважды
                     await asyncio.sleep(60)
-                    
+
             except Exception as e:
                 logger.error(f"Auto tracker error: {e}")
 
@@ -352,6 +371,64 @@ class Scheduler:
                 logger.error(f"Post-mortem loop error: {e}")
 
             await asyncio.sleep(60)
+
+    async def _agent_calibration_loop(self):
+        """Каждые 30 минут резолвит «созревшие» прогнозы агентов.
+
+        Используется только если FEATURE_AGENT_CALIBRATION=1. Внутри:
+          1. Лениво создаёт MarketDataChain (Binance → Yahoo fallback).
+          2. evaluate_pending_predictions() сам читает pending из БД,
+             фетчит реализованные цены, считает Brier, помечает resolved.
+          3. Кеширование цены on a per-asset basis внутри одной итерации
+             избегает повторных HTTP-запросов.
+
+        Loop устойчив к ошибкам price-провайдеров — failed → skip строки.
+        """
+        # Лениво импортируем market provider — он зависит от aiohttp, который
+        # есть в unit-fast, но сам класс может ругнуться при инициализации
+        # в полностью пустом окружении.
+        try:
+            from refactor.providers.market_providers import MarketDataChain  # noqa: PLC0415
+        except Exception as e:
+            logger.error(
+                "Agent calibration loop отключён: MarketDataChain недоступен (%s)",
+                e,
+            )
+            return
+
+        chain = MarketDataChain()
+
+        async def _fetch_price(asset: str) -> float | None:
+            try:
+                data = await chain.get_price(asset)
+                return float(data.price) if data and data.price else None
+            except Exception as e:
+                logger.warning("Calib price fetch для %s упал: %s", asset, e)
+                return None
+
+        # Sleep на запуске чтобы не толкаться с другими loop'ами.
+        await asyncio.sleep(120)
+
+        while self._running:
+            try:
+                result = await _evaluate_agent_predictions(
+                    price_fetcher=_fetch_price,
+                    max_per_run=50,
+                )
+                if result.resolved or result.skipped or result.failed:
+                    logger.info(
+                        "📊 Agent calib resolve: resolved=%d skipped=%d failed=%d",
+                        result.resolved, result.skipped, result.failed,
+                    )
+            except Exception as e:
+                logger.error("Agent calibration loop error: %s", e)
+            await asyncio.sleep(30 * 60)  # 30 минут
+
+        # graceful shutdown
+        try:
+            await chain.binance.close()
+        except Exception:
+            pass
 
     async def export_now(self):
         """

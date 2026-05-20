@@ -7,9 +7,8 @@ database.py — SQLite база данных.
 """
 
 import aiosqlite
-import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 # ИСПРАВЛЕНО: импортируем из config чтобы все модули использовали один путь
@@ -96,7 +95,7 @@ async def init_db():
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
-        
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS portfolio (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,7 +107,7 @@ async def init_db():
                 UNIQUE(user_id, symbol)
             )
         """)
-        
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS backtest_signals (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,7 +125,7 @@ async def init_db():
                 trade_log   TEXT  -- JSON log of trade actions
             )
         """)
-        
+
         # Backtest config table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS backtest_config (
@@ -136,12 +135,12 @@ async def init_db():
                 last_updated TEXT DEFAULT (datetime('now'))
             )
         """)
-        
+
         # Initialize default config if not exists
         await db.execute("""
             INSERT OR IGNORE INTO backtest_config (id, capital, enabled) VALUES (1, 100.0, 1)
         """)
-        
+
         # Daily context table - stores verdict and price levels for signal trading
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_context (
@@ -217,6 +216,53 @@ async def init_db():
         )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_prov_type     ON decision_provenance (decision_type)"
+        )
+
+        # ─── agent_predictions: per-agent probabilistic forecast tracking ────
+        # Хранит probabilistic forecast'ы Bull/Bear/Verifier/Synth (а также
+        # любых других ролей в будущем) после каждого дебата. Через `horizon_h`
+        # часов фоновая задача в scheduler.py резолвит прогноз: фетчит
+        # реализованную цену, считает Brier score. По истории считается
+        # калибровка агента — см. core/agent_calibration.py.
+        #
+        # Отличие от существующей таблицы `predictions`:
+        #   * `predictions` — это **итоговый** trade-call дебата (один на
+        #     отчёт, с direction/entry/target/stop).
+        #   * `agent_predictions` — **per-agent**, probabilistic (только p_up
+        #     и threshold). Используется для калибровки конкретных голосов.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_predictions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                debate_id       TEXT,
+                asset           TEXT    NOT NULL,
+                agent_role      TEXT    NOT NULL,
+                horizon_minutes INTEGER NOT NULL,
+                p_up            REAL    NOT NULL,
+                threshold_pct   REAL    NOT NULL,
+                ref_price       REAL    NOT NULL,
+                resolve_at      TEXT    NOT NULL,
+                resolved        INTEGER NOT NULL DEFAULT 0,
+                resolved_at     TEXT,
+                realized_price  REAL,
+                realized_y      INTEGER,
+                brier_score     REAL,
+                CHECK (p_up >= 0.0 AND p_up <= 1.0),
+                CHECK (horizon_minutes > 0),
+                CHECK (threshold_pct >= 0.0)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_pred_resolve_at "
+            "ON agent_predictions (resolve_at) WHERE resolved = 0"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_pred_role_resolved "
+            "ON agent_predictions (agent_role, resolved)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_pred_asset_created "
+            "ON agent_predictions (asset, created_at)"
         )
 
         await db.commit()
@@ -450,12 +496,12 @@ async def import_forecasts_from_markdown():
                 result = "win"
             date_obj = datetime.strptime(date_str, "%d.%m.%Y")
             created_at = date_obj.strftime("%Y-%m-%d %H:%M:%S")
-            
+
             if "russia" in pred_type.lower() or "edge" in pred_type.lower():
                 report_type = "russia"
             else:
                 report_type = "global"
-                
+
             predictions.append({
                 "created_at": created_at,
                 "asset": asset,
@@ -547,6 +593,120 @@ async def get_track_record(report_type: str = None) -> dict:
             by_asset = [dict(r) for r in await cursor.fetchall()]
 
         return {"stats": stats, "recent": recent, "by_asset": by_asset}
+
+
+# ─── Per-agent calibration (agent_predictions) ───────────────────────────────
+#
+# См. подробное обоснование в core/agent_calibration.py docstring. CRUD-helpers
+# для probabilistic forecast'ов отдельных агентов (Bull/Bear/Verifier/Synth).
+
+async def save_agent_prediction(
+    *,
+    debate_id: str | None,
+    asset: str,
+    agent_role: str,
+    horizon_minutes: int,
+    p_up: float,
+    threshold_pct: float,
+    ref_price: float,
+    resolve_at: str,
+) -> int:
+    """Сохранить probabilistic forecast агента. Возвращает id строки.
+
+    resolve_at — ISO-timestamp когда прогноз должен быть резолвнут (created_at + horizon).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO agent_predictions
+                (debate_id, asset, agent_role, horizon_minutes,
+                 p_up, threshold_pct, ref_price, resolve_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (debate_id, asset, agent_role, int(horizon_minutes),
+             float(p_up), float(threshold_pct), float(ref_price), resolve_at),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_pending_agent_predictions(
+    *, now_iso: str | None = None, limit: int = 200
+) -> list[dict]:
+    """Прогнозы, у которых resolve_at уже прошёл, но resolved=0."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cond = "resolve_at <= ?" if now_iso else "resolve_at <= datetime('now')"
+        params: tuple = (now_iso, limit) if now_iso else (limit,)
+        async with db.execute(
+            f"""
+            SELECT * FROM agent_predictions
+            WHERE resolved = 0 AND {cond}
+            ORDER BY resolve_at ASC
+            LIMIT ?
+            """,
+            params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def resolve_agent_prediction(
+    *,
+    prediction_id: int,
+    realized_price: float,
+    realized_y: bool,
+    brier_score: float,
+) -> None:
+    """Помечает прогноз как resolved + пишет реализованную цену и Brier."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE agent_predictions SET
+                resolved       = 1,
+                resolved_at    = datetime('now'),
+                realized_price = ?,
+                realized_y     = ?,
+                brier_score    = ?
+            WHERE id = ? AND resolved = 0
+            """,
+            (float(realized_price), int(bool(realized_y)),
+             float(brier_score), int(prediction_id)),
+        )
+        await db.commit()
+
+
+async def get_agent_calibration_history(
+    *,
+    agent_role: str,
+    asset: str | None = None,
+    lookback_days: int = 30,
+    limit: int = 500,
+) -> list[dict]:
+    """Resolved прогнозы агента за окно. Используется compute_agent_stats."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if asset:
+            q = """
+                SELECT * FROM agent_predictions
+                WHERE resolved = 1 AND agent_role = ? AND asset = ?
+                  AND resolved_at >= datetime('now', ?)
+                ORDER BY resolved_at DESC
+                LIMIT ?
+            """
+            params = (agent_role, asset, f"-{int(lookback_days)} days", limit)
+        else:
+            q = """
+                SELECT * FROM agent_predictions
+                WHERE resolved = 1 AND agent_role = ?
+                  AND resolved_at >= datetime('now', ?)
+                ORDER BY resolved_at DESC
+                LIMIT ?
+            """
+            params = (agent_role, f"-{int(lookback_days)} days", limit)
+        async with db.execute(q, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 
 # ─── Фидбек ───────────────────────────────────────────────────────────────────
@@ -839,9 +999,9 @@ async def get_backtest_stats() -> dict:
     """Get backtest statistics."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        
+
         async with db.execute("""
-            SELECT 
+            SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                 SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
@@ -1073,7 +1233,7 @@ async def get_recent_predictions(days: int = 5, limit: int = 10) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(f"""
-            SELECT * FROM predictions 
+            SELECT * FROM predictions
             WHERE created_at > datetime('now', '-{days} days')
             ORDER BY created_at DESC
             LIMIT ?
@@ -1085,12 +1245,12 @@ async def get_recent_predictions(days: int = 5, limit: int = 10) -> list[dict]:
 async def get_predictions_summary(days: int = 5) -> str:
     """Get formatted summary of recent predictions for AI context."""
     predictions = await get_recent_predictions(days=days, limit=20)
-    
+
     if not predictions:
         return "Нет прошлых прогнозов за последние дни."
-    
+
     lines = ["=== ПРОШЛЫЕ ПРОГНОЗЫ ==="]
-    
+
     # Group by asset
     by_asset = {}
     for p in predictions:
@@ -1098,7 +1258,7 @@ async def get_predictions_summary(days: int = 5) -> str:
         if asset not in by_asset:
             by_asset[asset] = []
         by_asset[asset].append(p)
-    
+
     for asset, preds in by_asset.items():
         lines.append(f"\n{asset}:")
         for p in preds[:3]:  # Max 3 per asset
@@ -1107,7 +1267,7 @@ async def get_predictions_summary(days: int = 5) -> str:
             target = p.get("target_price") or 0
             result = p.get("result", "pending")
             date = p.get("created_at", "")[:10]
-            
+
             if result == "pending":
                 lines.append(f"  {date}: {direction} вход=${entry:.0f} цель=${target:.0f} — в ожидании")
             elif result == "win":
@@ -1116,13 +1276,13 @@ async def get_predictions_summary(days: int = 5) -> str:
                 lines.append(f"  {date}: {direction} вход=${entry:.0f} цель=${target:.0f} — 🔴 LOSS")
             else:
                 lines.append(f"  {date}: {direction} вход=${entry:.0f} цель=${target:.0f} — {result}")
-    
+
     # Calculate accuracy
     closed = [p for p in predictions if p.get("result") in ("win", "loss")]
     wins = len([p for p in closed if p.get("result") == "win"])
     accuracy = (wins / len(closed) * 100) if closed else 0
-    
+
     lines.append(f"\nТочность: {wins}/{len(closed)} = {accuracy:.0f}%")
     lines.append("=========================")
-    
+
     return "\n".join(lines)
