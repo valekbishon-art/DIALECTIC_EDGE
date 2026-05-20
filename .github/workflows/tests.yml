@@ -1,5 +1,9 @@
 name: tests
 
+# Workflow re-activation touch — mirror-push не индексирует workflow-файлы
+# у нового владельца репозитория, нужен явный commit, изменяющий файл, чтобы
+# GitHub Actions их «увидел». Поведение workflow не меняется.
+
 on:
   push:
     branches: [master]
