@@ -27,6 +27,7 @@
 |---------|----------------|
 | `/daily` | Полный AI-анализ рынка с дебатами, smart-money сигналами, торговый план |
 | `/markets` | Real-time контекст + сигналы + цены |
+| `/p2p [ASSET] [FIAT] [payments]` | P2P arbitrage scanner: net spread, лимиты, payment overlap, риск контрагентов |
 | `/autotrade_status` | Performance: PnL, win-rate, R-ratio, Kelly, vol-target, drawdown |
 | `/audit [N дней]` | AI-аудит закрытых сделок: «что работает / что нет / правило на завтра» |
 | `/usage` | Расход AI-токенов по провайдерам |
@@ -217,6 +218,7 @@ python main.py
 | `/starttrade` | Запуск автотрейдера |
 | `/stop` | Остановка автотрейдера |
 | `/screener` | Сканер аномалий TOP-15 монет |
+| `/p2p [ASSET] [FIAT] [payments]` | P2P-арбитраж: buy→sell spread после buffer + фильтры качества |
 | `/why <SYMBOL>` | Почему открыта эта позиция |
 | `/close <SYMBOL>` | Закрыть позицию вручную |
 | `/health` | Health check (БД + GitHub + uptime) |
