@@ -5771,6 +5771,8 @@ async def main():
     await set_bot_commands(bot)
 
     await init_db()
+    from core.ai_metrics import init_ai_metrics_db
+    await init_ai_metrics_db()
     await import_forecasts_from_markdown()
     await init_profiles_table()
     setup_admins(ADMIN_IDS)
