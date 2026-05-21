@@ -119,6 +119,7 @@ from refactor.handlers import (
     handle_logs_command,
     handle_sysinfo_command,
     handle_funding_command,
+    handle_p2p_command,
     register_funding_handlers,
     register_p2p_arbitrage_handlers,
     register_sniping_handlers,
@@ -246,6 +247,7 @@ PERSISTENT_BTN_MARKETS  = "🏛 Рынки"
 PERSISTENT_BTN_SETTINGS = "⚙️ Настройки"
 PERSISTENT_BTN_SIGNAL   = "🎯 Лучшая сделка"
 PERSISTENT_BTN_SCREENER = "🧪 Скринер"
+PERSISTENT_BTN_P2P      = "🧭 P2P арбитраж"
 PERSISTENT_BTN_HELP     = "❓ Помощь"
 
 
@@ -261,10 +263,11 @@ def persistent_kb() -> ReplyKeyboardMarkup:
             [
                 KeyboardButton(text=PERSISTENT_BTN_PITCH),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
-                KeyboardButton(text=PERSISTENT_BTN_HELP),
+                KeyboardButton(text=PERSISTENT_BTN_P2P),
             ],
             [
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
+                KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
         ],
         resize_keyboard=True,
@@ -3021,6 +3024,11 @@ async def _kb_signal(message: Message):
 @dp.message(F.text == PERSISTENT_BTN_SCREENER)
 async def _kb_screener(message: Message):
     await cmd_screener(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_P2P)
+async def _kb_p2p(message: Message):
+    await handle_p2p_command(message)
 
 
 @dp.message(F.text == PERSISTENT_BTN_HELP)
