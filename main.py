@@ -120,6 +120,7 @@ from refactor.handlers import (
     handle_sysinfo_command,
     handle_funding_command,
     register_funding_handlers,
+    register_p2p_arbitrage_handlers,
     register_sniping_handlers,
     sniping_callback_data,
 )
@@ -5742,6 +5743,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="trackrecord", description="📊 Вся статистика"),
         BotCommand(command="markets", description="Рынки + сигналы, подписка"),
         BotCommand(command="funding", description="💸 Funding top-10 futures"),
+        BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
         BotCommand(command="status", description="Краткий статус"),
         BotCommand(command="tt", description="🧪 Тест"),
         BotCommand(command="signalstatus", description="📊 Статус трейдера"),
@@ -5770,6 +5772,7 @@ async def main():
     bot = get_bot()
 
     register_funding_handlers(dp)
+    register_p2p_arbitrage_handlers(dp)
     register_sniping_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()
