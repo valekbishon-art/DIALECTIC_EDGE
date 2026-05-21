@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, date, time, timedelta
+from config import ADMIN_IDS
 from database import (
     get_daily_subscribers,
     reset_daily_counts,
@@ -164,6 +165,32 @@ try:
 except ImportError:
     STABLECOIN_ENABLED = False
 
+# P2P arbitrage alerts. Manual command lives in refactor/handlers; scheduler
+# only sends admin alerts when a clean window appears.
+try:
+    from p2p_arbitrage import (
+        alerts_enabled as _p2p_alerts_enabled,
+        feature_enabled as _p2p_feature_enabled,
+        find_p2p_opportunities as _find_p2p_opportunities,
+        format_p2p_report as _format_p2p_report,
+        get_alert_chat_ids as _p2p_get_alert_chat_ids,
+        get_alert_cooldown_sec as _p2p_get_alert_cooldown_sec,
+        get_alert_interval_sec as _p2p_get_alert_interval_sec,
+        get_assets as _p2p_get_assets,
+        get_fiats as _p2p_get_fiats,
+        get_max_results as _p2p_get_max_results,
+        get_min_completion_rate_pct as _p2p_get_min_completion_rate_pct,
+        get_min_orders as _p2p_get_min_orders,
+        get_min_spread_pct as _p2p_get_min_spread_pct,
+        get_pay_types as _p2p_get_pay_types,
+        get_settlement_buffer_pct as _p2p_get_settlement_buffer_pct,
+        merchant_only as _p2p_merchant_only,
+    )
+    from refactor.handlers.p2p_arbitrage_handler import fetch_binance_p2p_ads as _fetch_p2p_ads
+    P2P_ARBITRAGE_ENABLED = True
+except ImportError:
+    P2P_ARBITRAGE_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -174,6 +201,7 @@ class Scheduler:
         self.check_predictions = check_predictions_fn
         self._running = False
         self._last_export_date: date | None = None
+        self._last_p2p_alert_keys: dict[str, datetime] = {}
         self._alert_system = None
         self._signals_system = None
 
@@ -289,6 +317,16 @@ class Scheduler:
                 "(tokens=%s, interval=%ss)",
                 ",".join(_stablecoin_get_tokens()),
                 _stablecoin_get_interval_seconds(),
+            )
+
+        if P2P_ARBITRAGE_ENABLED and _p2p_feature_enabled() and _p2p_alerts_enabled():
+            tasks.append(self._p2p_arbitrage_alert_loop())
+            logger.info(
+                "🧭 P2P arbitrage alerts включены "
+                "(assets=%s, fiats=%s, interval=%ss)",
+                ",".join(_p2p_get_assets()),
+                ",".join(_p2p_get_fiats()),
+                _p2p_get_alert_interval_sec(),
             )
 
         await asyncio.gather(*tasks)
@@ -438,6 +476,83 @@ class Scheduler:
                 logger.error(f"Smart-money alert loop error: {e}")
 
             await asyncio.sleep(3600)  # каждый час
+
+    async def _p2p_arbitrage_alert_loop(self):
+        """Сканирует P2P окна и шлёт только новые clean alerts админам."""
+        await asyncio.sleep(120)
+
+        while self._running:
+            try:
+                chat_ids = _p2p_get_alert_chat_ids(ADMIN_IDS)
+                if not chat_ids:
+                    logger.info("p2p alerts: нет ADMIN_IDS/P2P_ARBITRAGE_ALERT_CHAT_IDS")
+                    await asyncio.sleep(_p2p_get_alert_interval_sec())
+                    continue
+
+                sent = await self._run_p2p_alert_scan(chat_ids)
+                if sent:
+                    logger.info("🧭 P2P arbitrage alerts отправлены: %s", sent)
+            except Exception as e:
+                logger.error(f"P2P arbitrage alert loop error: {e}")
+
+            await asyncio.sleep(_p2p_get_alert_interval_sec())
+
+    async def _run_p2p_alert_scan(self, chat_ids: tuple[int, ...]) -> int:
+        sent = 0
+        now = datetime.now()
+        pay_types = _p2p_get_pay_types()
+        for asset in _p2p_get_assets():
+            for fiat in _p2p_get_fiats():
+                buy_ads, sell_ads, errors = await _fetch_p2p_ads(
+                    asset=asset,
+                    fiat=fiat,
+                    pay_types=pay_types,
+                )
+                opportunities = _find_p2p_opportunities(
+                    buy_ads,
+                    sell_ads,
+                    min_spread_pct=_p2p_get_min_spread_pct(),
+                    settlement_buffer_pct=_p2p_get_settlement_buffer_pct(),
+                    min_completion_rate_pct=_p2p_get_min_completion_rate_pct(),
+                    min_orders=_p2p_get_min_orders(),
+                    merchant_required=_p2p_merchant_only(),
+                    preferred_pay_types=pay_types,
+                    max_results=_p2p_get_max_results(),
+                )
+                if not opportunities:
+                    if errors:
+                        logger.info("p2p alerts %s/%s source errors: %s", asset, fiat, errors)
+                    continue
+
+                best = opportunities[0]
+                alert_key = (
+                    f"{asset}:{fiat}:{best.buy_ad.advertiser}:{best.sell_ad.advertiser}:"
+                    f"{round(best.net_spread_pct, 2)}"
+                )
+                last_sent = self._last_p2p_alert_keys.get(alert_key)
+                if last_sent and (now - last_sent).total_seconds() < _p2p_get_alert_cooldown_sec():
+                    continue
+
+                text = "🚨 *P2P arbitrage alert*\n\n" + _format_p2p_report(
+                    opportunities,
+                    asset=asset,
+                    fiat=fiat,
+                    pay_types=pay_types,
+                    errors=errors,
+                )
+                for chat_id in chat_ids:
+                    try:
+                        await self.bot.send_message(
+                            chat_id,
+                            text,
+                            parse_mode="Markdown",
+                            disable_web_page_preview=True,
+                        )
+                        sent += 1
+                    except Exception as exc:
+                        logger.warning("p2p alert send failed chat_id=%s: %s", chat_id, exc)
+                self._last_p2p_alert_keys[alert_key] = now
+        return sent
 
     async def _auto_tracker_loop(self):
         """Проверяет прогнозы в 00:10 UTC (через 10 минут после дайджеста)."""
