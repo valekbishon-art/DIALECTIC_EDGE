@@ -97,6 +97,7 @@ from weekly_report import build_weekly_report
 from russia_data import fetch_russia_context, fetch_cbr_data
 from russia_agents import run_russia_analysis
 from debate_storage import ping_redis, save_debate_redis
+from refactor.middleware.rate_limiter import RateLimitMiddleware
 
 # Phase 3 Handler Imports — Market, Debate, Profile, Admin
 from refactor.handlers import (
@@ -5767,6 +5768,16 @@ async def main():
 
     register_funding_handlers(dp)
     register_sniping_handlers(dp)
+
+    _rate_limiter = RateLimitMiddleware()
+    dp.message.middleware(_rate_limiter)
+    if _rate_limiter.enabled:
+        logger.info(
+            "⏱ RateLimitMiddleware on: window=%ds, commands=%s",
+            _rate_limiter.window_sec, ",".join(_rate_limiter.heavy_commands),
+        )
+    else:
+        logger.info("⏱ RateLimitMiddleware off (FEATURE_RATE_LIMITER=0)")
 
     await set_bot_commands(bot)
 
