@@ -35,6 +35,22 @@ from .smart_money import (
     smart_money_score_contribution,
     SmartMoneySignals,
 )
+from .regime import (
+    RegimeClassification,
+    classify_regime,
+    LABEL_CRISIS,
+    LABEL_RANGING,
+    LABEL_TRENDING,
+    LABEL_UNKNOWN,
+    LABEL_VOLATILE,
+)
+from .regime_io import (
+    RegimeSignals,
+    feature_enabled as regime_feature_enabled,
+    fetch_regime_signals,
+    format_regime_for_agents,
+    regime_score_contribution,
+)
 from .aggregator import (
     build_enriched_context,
     enrich_prices_with_scores,
@@ -62,6 +78,19 @@ __all__ = [
     "format_smart_money_for_agents",
     "smart_money_score_contribution",
     "SmartMoneySignals",
+    # Regime classifier (BOCPD)
+    "RegimeClassification",
+    "RegimeSignals",
+    "classify_regime",
+    "fetch_regime_signals",
+    "format_regime_for_agents",
+    "regime_feature_enabled",
+    "regime_score_contribution",
+    "LABEL_CRISIS",
+    "LABEL_RANGING",
+    "LABEL_TRENDING",
+    "LABEL_UNKNOWN",
+    "LABEL_VOLATILE",
     # Aggregator
     "build_enriched_context",
     "enrich_prices_with_scores",
