@@ -133,10 +133,9 @@ from refactor.handlers.utils import (
     strip_digest_summary_text,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+from refactor.observability.logging_setup import setup_logging
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 bot: Optional[Bot] = None
