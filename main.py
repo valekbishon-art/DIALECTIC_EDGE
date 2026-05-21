@@ -139,6 +139,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from refactor.observability.sentry_setup import setup_sentry  # noqa: E402
+setup_sentry()  # no-op if SENTRY_DSN unset or sentry-sdk not installed
+
 bot: Optional[Bot] = None
 dp = Dispatcher()
 storage = Storage()
