@@ -20,16 +20,29 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aiogram.types import Message
+# unit-fast CI job ставит минимальный набор зависимостей без aiogram.
+# refactor.middleware.rate_limiter импортит aiogram на верхнем уровне, поэтому
+# весь модуль тестов нужно гардить — иначе ImportError при `unittest discover`.
+# Паттерн повторяет tests/test_funding_handler.py.
+try:
+    import aiogram  # noqa: F401
 
-from refactor.middleware.rate_limiter import (
-    DEFAULT_HEAVY_COMMANDS,
-    RateLimitMiddleware,
-    _extract_bare_command,
-    _is_truthy,
-)
+    HAS_AIOGRAM = True
+except Exception:
+    HAS_AIOGRAM = False
+
+if HAS_AIOGRAM:
+    from aiogram.types import Message
+
+    from refactor.middleware.rate_limiter import (
+        DEFAULT_HEAVY_COMMANDS,
+        RateLimitMiddleware,
+        _extract_bare_command,
+        _is_truthy,
+    )
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class ExtractCommandTestCase(unittest.TestCase):
     def test_plain_slash_command(self) -> None:
         self.assertEqual(_extract_bare_command("/daily"), "daily")
@@ -58,6 +71,7 @@ class ExtractCommandTestCase(unittest.TestCase):
         self.assertIsNone(_extract_bare_command("/"))
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class IsTruthyTestCase(unittest.TestCase):
     def test_truthy(self) -> None:
         for v in ("1", "true", "TRUE", "Yes", "on", "Y", "t"):
@@ -85,6 +99,7 @@ def _make_message(text: str, user_id: int = 100) -> MagicMock:
     return msg
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class RateLimitMiddlewareCoreTestCase(unittest.IsolatedAsyncioTestCase):
     """Behavioural tests using a fake monotonic clock for deterministic windows."""
 
@@ -218,6 +233,7 @@ class RateLimitMiddlewareCoreTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.handler.await_count, 1)
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class RateLimitEnvOverridesTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_window_from_env(self) -> None:
         with patch.dict("os.environ", {"RATE_LIMITER_WINDOW_SEC": "60"}, clear=False):
@@ -245,6 +261,7 @@ class RateLimitEnvOverridesTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(mw.enabled)
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class RateLimitDefaultsTestCase(unittest.TestCase):
     def test_default_heavy_commands_match_documented_set(self) -> None:
         # If this changes, update AUTONOMY_ROADMAP and PR description.
