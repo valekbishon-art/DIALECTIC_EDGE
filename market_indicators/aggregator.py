@@ -41,6 +41,15 @@ from .regime_io import (
     regime_score_contribution,
     RegimeSignals,
 )
+from .smart_money_wallets import SmartMoneyWalletsSignal
+from .smart_money_wallets_io import (
+    feature_enabled as smart_money_wallets_feature_enabled,
+    fetch_smart_money_wallet_flows,
+    format_smart_money_wallets_for_agents,
+    get_inter_call_delay_s as smw_get_inter_call_delay_s,
+    get_lookback_hours as smw_get_lookback_hours,
+    smart_money_wallets_score_contribution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +64,9 @@ class EnrichedData:
     # Regime classifier (BOCPD + label). Заполняется только при
     # FEATURE_REGIME_CLASSIFIER=1; иначе остаётся дефолтным (label=UNKNOWN).
     regime: RegimeSignals = None
+    # Smart-money wallets (Etherscan API v2). Заполняется только при
+    # FEATURE_SMART_MONEY_WALLETS=1 и наличии ETHERSCAN_API_KEY.
+    smart_money_wallets: SmartMoneyWalletsSignal = None
 
     def __post_init__(self):
         if self.onchain is None:
@@ -67,6 +79,8 @@ class EnrichedData:
             self.smart_money = SmartMoneySignals()
         if self.regime is None:
             self.regime = RegimeSignals()
+        if self.smart_money_wallets is None:
+            self.smart_money_wallets = SmartMoneyWalletsSignal()
 
 
 async def build_enriched_context(
@@ -105,26 +119,51 @@ async def build_enriched_context(
         else None
     )
 
+    # Smart-money wallets (on-chain ETH flow via Etherscan v2) — за фичефлагом.
+    # Требует ETHERSCAN_API_KEY; без него fetch вернёт UNKNOWN и ничего
+    # не сломает (graceful disable).
+    smw_enabled = smart_money_wallets_feature_enabled()
+    smw_task = (
+        fetch_smart_money_wallet_flows(
+            lookback_hours=smw_get_lookback_hours(),
+            inter_call_delay_s=smw_get_inter_call_delay_s(),
+        )
+        if smw_enabled
+        else None
+    )
+
+    # Динамический gather: всегда 3 core-task + опциональные extras в фикс. порядке.
+    extras_labels: list[str] = []
+    extras_tasks: list = []
+    if regime_task is not None:
+        extras_labels.append("regime")
+        extras_tasks.append(regime_task)
+    if smw_task is not None:
+        extras_labels.append("sm-wallets")
+        extras_tasks.append(smw_task)
+
+    extras_suffix = (" + " + " + ".join(extras_labels)) if extras_labels else ""
     logger.info(
         "[AGGREGATOR] Fetching on-chain + macro + smart-money%s in parallel...",
-        " + regime" if regime_enabled else "",
+        extras_suffix,
     )
-    if regime_task is not None:
-        onchain_data, macro_data, smart_money_data, regime_data = await asyncio.gather(
-            onchain_task, macro_task, smart_money_task, regime_task
-        )
-        enriched.regime = regime_data
-    else:
-        onchain_data, macro_data, smart_money_data = await asyncio.gather(
-            onchain_task, macro_task, smart_money_task
-        )
+    results = await asyncio.gather(
+        onchain_task, macro_task, smart_money_task, *extras_tasks
+    )
+    onchain_data, macro_data, smart_money_data = results[0], results[1], results[2]
+    extras_results = list(results[3:])
+    for label, value in zip(extras_labels, extras_results):
+        if label == "regime":
+            enriched.regime = value
+        elif label == "sm-wallets":
+            enriched.smart_money_wallets = value
 
     enriched.onchain = onchain_data
     enriched.macro = macro_data
     enriched.smart_money = smart_money_data
     logger.info(
         "[AGGREGATOR] On-chain + macro + smart-money%s fetched OK",
-        " + regime" if regime_enabled else "",
+        extras_suffix,
     )
 
     # Проверяем критические стоп-факторы
@@ -183,6 +222,24 @@ async def build_enriched_context(
                 f"[AGGREGATOR] Regime score delta: {rg_delta:+d} (bull={len(rg_bull)} bear={len(rg_bear)})"
             )
 
+    # Smart-money wallets (on-chain) вклад — ±2 max. Leading on-chain
+    # индикатор, шум возможен — поэтому консервативные веса.
+    if smw_enabled:
+        smw_delta, smw_bull, smw_bear = smart_money_wallets_score_contribution(
+            enriched.smart_money_wallets
+        )
+        if smw_delta != 0:
+            score.total_score += smw_delta
+        if smw_bull:
+            score.bullish_signals.extend(smw_bull)
+        if smw_bear:
+            score.bearish_signals.extend(smw_bear)
+        if smw_delta != 0 or smw_bull or smw_bear:
+            logger.info(
+                f"[AGGREGATOR] SM-wallets score delta: {smw_delta:+d} "
+                f"(bull={len(smw_bull)} bear={len(smw_bear)})"
+            )
+
         # Пересчитываем preliminary verdict после добавки smart-money
         if score.total_score >= 4:
             score.preliminary_verdict = "BULLISH"
@@ -235,6 +292,12 @@ async def build_enriched_context(
         regime_str = format_regime_for_agents(enriched.regime)
         context_parts.append("")
         context_parts.append(regime_str)
+
+    # 4c. SMART-MONEY WALLETS (on-chain ETH flows) — только если fetched.
+    if smw_enabled and enriched.smart_money_wallets is not None:
+        smw_str = format_smart_money_wallets_for_agents(enriched.smart_money_wallets)
+        context_parts.append("")
+        context_parts.append(smw_str)
 
     # 5. СИГНАЛ БЛОК для Bull/Bear дебатов
     signal_block = format_signal_block_for_debates(enriched.score, enriched.onchain, enriched.macro)
