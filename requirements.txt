@@ -32,3 +32,7 @@ redis>=5.0
 # Trading CLI + dashboard (optional)
 pandas>=2.0
 streamlit>=1.28
+
+# Опционально — error reporting. Активируется, только если задан SENTRY_DSN.
+# Если ключа нет — модуль не импортируется и зависимость не нужна.
+sentry-sdk>=2.0
