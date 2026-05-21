@@ -87,6 +87,7 @@ from database import (
     get_predictions_summary,
 )
 from tracker import check_pending_predictions
+from core.healthz import run_healthz_server
 from scheduler import Scheduler
 from user_profile import (
     init_profiles_table, get_profile,
@@ -5824,12 +5825,14 @@ async def main():
             dp.start_polling(bot),
             scheduler.start(),
             signal_trader_task,   # ← теперь в gather — падение будет видно
+            run_healthz_server(),  # /healthz на $PORT для Railway restart policy
         )
     else:
         logger.info("⏸ Signal trader выключен (FEATURE_AUTOTRADE=0)")
         await asyncio.gather(
             dp.start_polling(bot),
             scheduler.start(),
+            run_healthz_server(),  # /healthz на $PORT для Railway restart policy
         )
 
 
