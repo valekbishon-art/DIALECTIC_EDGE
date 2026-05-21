@@ -51,6 +51,23 @@ from .regime_io import (
     format_regime_for_agents,
     regime_score_contribution,
 )
+from .smart_money_wallets import (
+    SmartMoneyWalletsSignal,
+    WalletNetFlow,
+    aggregate_wallet_flows,
+    compute_wallet_flow,
+    LABEL_ACCUMULATING as SMW_LABEL_ACCUMULATING,
+    LABEL_DISTRIBUTING as SMW_LABEL_DISTRIBUTING,
+    LABEL_MIXED as SMW_LABEL_MIXED,
+    LABEL_QUIET as SMW_LABEL_QUIET,
+    LABEL_UNKNOWN as SMW_LABEL_UNKNOWN,
+)
+from .smart_money_wallets_io import (
+    feature_enabled as smart_money_wallets_feature_enabled,
+    fetch_smart_money_wallet_flows,
+    format_smart_money_wallets_for_agents,
+    smart_money_wallets_score_contribution,
+)
 from .aggregator import (
     build_enriched_context,
     enrich_prices_with_scores,
@@ -91,6 +108,20 @@ __all__ = [
     "LABEL_TRENDING",
     "LABEL_UNKNOWN",
     "LABEL_VOLATILE",
+    # Smart-money wallets (on-chain via Etherscan v2)
+    "SmartMoneyWalletsSignal",
+    "WalletNetFlow",
+    "aggregate_wallet_flows",
+    "compute_wallet_flow",
+    "smart_money_wallets_feature_enabled",
+    "fetch_smart_money_wallet_flows",
+    "format_smart_money_wallets_for_agents",
+    "smart_money_wallets_score_contribution",
+    "SMW_LABEL_ACCUMULATING",
+    "SMW_LABEL_DISTRIBUTING",
+    "SMW_LABEL_MIXED",
+    "SMW_LABEL_QUIET",
+    "SMW_LABEL_UNKNOWN",
     # Aggregator
     "build_enriched_context",
     "enrich_prices_with_scores",
