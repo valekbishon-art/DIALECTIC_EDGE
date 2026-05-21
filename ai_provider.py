@@ -784,6 +784,51 @@ async def _call_for_agent(
     *,
     skip_primary: bool = False,
 ) -> str:
+    """Wrapper: записывает (provider, model, role, latency, ok) в ai_call_metrics.
+
+    Делегирует на :func:`_call_for_agent_impl`. Любая ошибка/успех
+    логируются как одна строка в SQLite (через ``core.ai_metrics``),
+    провал записи метрик не должен влиять на debate-loop — поэтому
+    обёрнуто в широкий ``except Exception: pass``.
+    """
+    config = AGENT_MODELS.get(agent_key)
+    started = time.monotonic()
+    primary_provider = config["provider"] if config else "fallback"
+    primary_model = config["model"] if config else None
+    try:
+        result = await _call_for_agent_impl(
+            agent_key, prompt, system, temperature, skip_primary=skip_primary
+        )
+    except Exception as exc:
+        try:
+            from core.ai_metrics import record_ai_call
+            await record_ai_call(
+                provider=primary_provider, model=primary_model, role=agent_key,
+                latency_ms=int((time.monotonic() - started) * 1000), ok=False,
+                error=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+        except Exception:
+            pass
+        raise
+    try:
+        from core.ai_metrics import record_ai_call
+        await record_ai_call(
+            provider=primary_provider, model=primary_model, role=agent_key,
+            latency_ms=int((time.monotonic() - started) * 1000), ok=True,
+        )
+    except Exception:
+        pass
+    return result
+
+
+async def _call_for_agent_impl(
+    agent_key: str,
+    prompt: str,
+    system: str,
+    temperature: float,
+    *,
+    skip_primary: bool = False,
+) -> str:
     """Получить ответ от агента (bull/bear/verifier/synth).
 
     skip_primary=True пропускает первичную модель из AGENT_MODELS и
