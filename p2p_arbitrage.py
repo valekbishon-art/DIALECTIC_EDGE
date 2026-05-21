@@ -19,6 +19,8 @@ DEFAULT_SETTLEMENT_BUFFER_PCT = 0.35
 DEFAULT_MIN_COMPLETION_RATE_PCT = 90.0
 DEFAULT_MIN_ORDERS = 50
 DEFAULT_MAX_RESULTS = 5
+DEFAULT_ALERT_INTERVAL_SEC = 1800
+DEFAULT_ALERT_COOLDOWN_SEC = 7200
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,10 @@ def feature_enabled() -> bool:
     return _env_bool("FEATURE_P2P_ARBITRAGE", False)
 
 
+def alerts_enabled() -> bool:
+    return _env_bool("FEATURE_P2P_ARBITRAGE_ALERTS", False)
+
+
 def get_assets() -> tuple[str, ...]:
     return _env_csv("P2P_ARBITRAGE_ASSETS", DEFAULT_P2P_ASSETS)
 
@@ -173,6 +179,41 @@ def get_min_orders() -> int:
 
 def get_max_results() -> int:
     return _env_int("P2P_ARBITRAGE_MAX_RESULTS", DEFAULT_MAX_RESULTS, min_val=1, max_val=20)
+
+
+def get_alert_interval_sec() -> int:
+    return _env_int(
+        "P2P_ARBITRAGE_ALERT_INTERVAL_SEC",
+        DEFAULT_ALERT_INTERVAL_SEC,
+        min_val=300,
+        max_val=86_400,
+    )
+
+
+def get_alert_cooldown_sec() -> int:
+    return _env_int(
+        "P2P_ARBITRAGE_ALERT_COOLDOWN_SEC",
+        DEFAULT_ALERT_COOLDOWN_SEC,
+        min_val=300,
+        max_val=86_400,
+    )
+
+
+def get_alert_chat_ids(admin_ids: list[int] | tuple[int, ...]) -> tuple[int, ...]:
+    raw = os.getenv("P2P_ARBITRAGE_ALERT_CHAT_IDS", "").strip()
+    ids: list[int] = []
+    if raw:
+        for part in raw.split(","):
+            item = part.strip()
+            if not item:
+                continue
+            try:
+                ids.append(int(item))
+            except ValueError:
+                continue
+    if not ids:
+        ids = [int(x) for x in admin_ids if int(x) > 0]
+    return tuple(dict.fromkeys(ids))
 
 
 def merchant_only() -> bool:

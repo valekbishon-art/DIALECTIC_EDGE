@@ -6,9 +6,13 @@ from unittest.mock import patch
 
 from p2p_arbitrage import (
     P2PAdvert,
+    alerts_enabled,
     feature_enabled,
     find_p2p_opportunities,
     format_p2p_report,
+    get_alert_chat_ids,
+    get_alert_cooldown_sec,
+    get_alert_interval_sec,
     get_assets,
     parse_binance_ad,
 )
@@ -22,6 +26,27 @@ class TestP2PEnv(unittest.TestCase):
     def test_feature_enabled(self):
         with patch.dict(os.environ, {"FEATURE_P2P_ARBITRAGE": "1"}, clear=True):
             self.assertTrue(feature_enabled())
+
+    def test_alerts_default_off(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(alerts_enabled())
+
+    def test_alert_env_helpers(self):
+        env = {
+            "FEATURE_P2P_ARBITRAGE_ALERTS": "1",
+            "P2P_ARBITRAGE_ALERT_INTERVAL_SEC": "600",
+            "P2P_ARBITRAGE_ALERT_COOLDOWN_SEC": "900",
+            "P2P_ARBITRAGE_ALERT_CHAT_IDS": "123,bad,456,123",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertTrue(alerts_enabled())
+            self.assertEqual(get_alert_interval_sec(), 600)
+            self.assertEqual(get_alert_cooldown_sec(), 900)
+            self.assertEqual(get_alert_chat_ids([999]), (123, 456))
+
+    def test_alert_chat_ids_fallback_to_admins(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(get_alert_chat_ids([0, 123, 123]), (123,))
 
     def test_assets_dedup_uppercase(self):
         with patch.dict(os.environ, {"P2P_ARBITRAGE_ASSETS": "usdt,btc,USDT"}, clear=True):
