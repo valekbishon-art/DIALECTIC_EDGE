@@ -68,6 +68,24 @@ from .smart_money_wallets_io import (
     format_smart_money_wallets_for_agents,
     smart_money_wallets_score_contribution,
 )
+from .liquidation_magnet import (
+    LiquidationMagnetSignal,
+    OIHistoryPoint,
+    TopTraderRatio,
+    build_liquidation_magnet_signal,
+    classify_liquidation_magnet,
+    compute_oi_change_pct,
+    LABEL_UP_MAGNET,
+    LABEL_DOWN_MAGNET,
+    LABEL_NEUTRAL as LIQ_LABEL_NEUTRAL,
+    LABEL_UNKNOWN as LIQ_LABEL_UNKNOWN,
+)
+from .liquidation_magnet_io import (
+    feature_enabled as liquidation_magnet_feature_enabled,
+    fetch_liquidation_magnet_signal,
+    format_liquidation_magnet_for_agents,
+    liquidation_magnet_score_contribution,
+)
 from .aggregator import (
     build_enriched_context,
     enrich_prices_with_scores,
@@ -122,6 +140,21 @@ __all__ = [
     "SMW_LABEL_MIXED",
     "SMW_LABEL_QUIET",
     "SMW_LABEL_UNKNOWN",
+    # Liquidation magnet (leveraged positioning + OI velocity)
+    "LiquidationMagnetSignal",
+    "OIHistoryPoint",
+    "TopTraderRatio",
+    "build_liquidation_magnet_signal",
+    "classify_liquidation_magnet",
+    "compute_oi_change_pct",
+    "liquidation_magnet_feature_enabled",
+    "fetch_liquidation_magnet_signal",
+    "format_liquidation_magnet_for_agents",
+    "liquidation_magnet_score_contribution",
+    "LABEL_UP_MAGNET",
+    "LABEL_DOWN_MAGNET",
+    "LIQ_LABEL_NEUTRAL",
+    "LIQ_LABEL_UNKNOWN",
     # Aggregator
     "build_enriched_context",
     "enrich_prices_with_scores",
