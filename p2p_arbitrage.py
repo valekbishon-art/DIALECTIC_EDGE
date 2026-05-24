@@ -52,6 +52,28 @@ DEFAULT_RISK_WEIGHT_LOW = 1.0
 DEFAULT_RISK_WEIGHT_MEDIUM = 0.7
 DEFAULT_RISK_WEIGHT_HIGH = 0.4
 
+# M9-C P2P smart filters — крупные надёжные банки CIS-региона. Используются
+# фильтром «только TIER-1» (`P2P_TIER1_ONLY=1`) когда юзеру важна гарантия
+# что counterparty не использует серый/мелкий банк (риск отказов, AML, и
+# просто долгого вывода). Override через `P2P_TIER1_BANKS=sber,tinkoff,...`.
+#
+# Список включает топ-10 RU-банков по активам + крупные kz/ua рейлы, плюс
+# универсальные fast-payment системы (СБП в РФ, Kaspi Gold в Казахстане).
+# Не включает: yoomoney/qiwi/mts_bank/akbars (мелкие или payment-only),
+# vtb/psb/sovcombank (часто санкционные / лимиты на P2P).
+DEFAULT_TIER1_BANKS: tuple[str, ...] = (
+    "sber",        # Сбер РФ
+    "tinkoff",     # Т-Банк РФ
+    "alfabank",    # Альфа-Банк РФ
+    "raiffeisen",  # Райффайзен РФ (RBA)
+    "sbp",         # Система Быстрых Платежей (СБП) РФ
+    "kaspi",       # Kaspi Bank KZ (по умолчанию для kz)
+    "monobank",    # Монобанк UA
+    "privat24",    # ПриватБанк UA
+)
+DEFAULT_MIN_EXECUTABLE_FIAT = 0.0
+DEFAULT_MAX_AD_AGE_MIN = 0  # 0 = выкл
+
 PAYMENT_METHOD_ALIASES = {
     "tinkoffnew": "tinkoff",
     "tinkoff": "tinkoff",
@@ -491,6 +513,84 @@ def get_alert_chat_ids(admin_ids: list[int] | tuple[int, ...]) -> tuple[int, ...
     if not ids:
         ids = [int(x) for x in admin_ids if int(x) > 0]
     return tuple(dict.fromkeys(ids))
+
+
+def get_tier1_only() -> bool:
+    """M9-C: фильтр «только TIER-1 банки».
+
+    Если `P2P_TIER1_ONLY=1` — оставляем только объявления, где хотя бы
+    один payment method входит в TIER-1 список (см. DEFAULT_TIER1_BANKS
+    или override `P2P_TIER1_BANKS=sber,tinkoff,...`).
+    """
+    return _env_bool("P2P_TIER1_ONLY", False)
+
+
+def get_tier1_banks() -> tuple[str, ...]:
+    """Возвращает canonical list TIER-1 банков (override через env)."""
+    raw = os.getenv("P2P_TIER1_BANKS", "").strip()
+    if not raw:
+        return DEFAULT_TIER1_BANKS
+    parts = tuple(p.strip().lower() for p in raw.split(",") if p.strip())
+    return parts or DEFAULT_TIER1_BANKS
+
+
+def get_min_executable_fiat() -> float:
+    """M9-C: минимальный объём opportunity в fiat. 0 = без ограничения.
+
+    Например, для RUB можно поставить 50000 чтобы видеть только сделки
+    где исполнимый объём ≥ 50k RUB (отсекаем мелочь).
+    """
+    return _env_float(
+        "P2P_MIN_EXECUTABLE_FIAT",
+        DEFAULT_MIN_EXECUTABLE_FIAT,
+        min_val=0.0,
+        max_val=1e12,
+    )
+
+
+def get_max_ad_age_minutes() -> int:
+    """M9-C: max возраст объявления в минутах. 0 = без ограничения.
+
+    Использует `fetched_at` который сканер ставит на момент HTTP fetch.
+    Например, 5 минут = только свежак (быстро затухает после relist'а).
+    """
+    return _env_int(
+        "P2P_MAX_AD_AGE_MIN",
+        DEFAULT_MAX_AD_AGE_MIN,
+        min_val=0,
+        max_val=1440,
+    )
+
+
+def is_tier1_payment_method(method: str) -> bool:
+    """True если canonical payment-method входит в TIER-1 список."""
+    if not method:
+        return False
+    return method.strip().lower() in get_tier1_banks()
+
+
+def ad_has_tier1_method(ad: P2PAdvert) -> bool:
+    """True если хотя бы один payment method у объявления — TIER-1."""
+    for m in ad.payment_methods:
+        if is_tier1_payment_method(canonical_payment_method(m)):
+            return True
+    return False
+
+
+def ad_is_fresh(ad: P2PAdvert, *, now: float | None = None) -> bool:
+    """True если ad свежее лимита `P2P_MAX_AD_AGE_MIN`.
+
+    Если лимит = 0 или `fetched_at` не выставлен — всегда True (фильтр
+    выключен / нет данных для оценки).
+    """
+    max_age = get_max_ad_age_minutes()
+    if max_age <= 0:
+        return True
+    if not ad.fetched_at or ad.fetched_at <= 0:
+        return True
+    now = now if now is not None else time.time()
+    age_sec = now - ad.fetched_at
+    return age_sec <= max_age * 60
 
 
 def merchant_only() -> bool:
@@ -1043,9 +1143,26 @@ def find_p2p_opportunities(
     max_results: int = DEFAULT_MAX_RESULTS,
 ) -> list[P2POpportunity]:
     legacy_buffer_pct = get_settlement_buffer_pct() if settlement_buffer_pct is None else settlement_buffer_pct
+
+    # M9-C smart filters: TIER-1 банки + max age объявления. Применяются ДО
+    # quality filter чтобы не считать R-score для очевидно нерелевантных
+    # ad'ов. min_executable_fiat применяется ПОСЛЕ расчёта executable_fiat
+    # (нужны оба ada чтобы знать общий объём).
+    tier1_only = get_tier1_only()
+    now_ts = time.time()
+
+    def _passes_m9c_filters(ad: P2PAdvert) -> bool:
+        if tier1_only and not ad_has_tier1_method(ad):
+            return False
+        if not ad_is_fresh(ad, now=now_ts):
+            return False
+        return True
+
     buys = [
         ad for ad in buy_ads
-        if ad.trade_type == "BUY" and passes_quality_filter(
+        if ad.trade_type == "BUY"
+        and _passes_m9c_filters(ad)
+        and passes_quality_filter(
             ad,
             min_completion_rate_pct=min_completion_rate_pct,
             min_orders=min_orders,
@@ -1054,13 +1171,16 @@ def find_p2p_opportunities(
     ]
     sells = [
         ad for ad in sell_ads
-        if ad.trade_type == "SELL" and passes_quality_filter(
+        if ad.trade_type == "SELL"
+        and _passes_m9c_filters(ad)
+        and passes_quality_filter(
             ad,
             min_completion_rate_pct=min_completion_rate_pct,
             min_orders=min_orders,
             merchant_required=merchant_required,
         )
     ]
+    min_exec_fiat = get_min_executable_fiat()
     out: list[P2POpportunity] = []
     for buy_ad in buys:
         for sell_ad in sells:
@@ -1073,6 +1193,12 @@ def find_p2p_opportunities(
                 continue
             executable_fiat = _executable_fiat(buy_ad, sell_ad)
             if executable_fiat <= 0:
+                continue
+            # M9-C: фильтр минимального объёма (env P2P_MIN_EXECUTABLE_FIAT).
+            # 0 = выкл. Применяется к executable_fiat (общий потолок объёма
+            # сделки), а не к min_amount_fiat — чтобы исключать сделки с
+            # потолком < N RUB/USD/EUR, а не сделки где min ≥ N.
+            if min_exec_fiat > 0 and executable_fiat < min_exec_fiat:
                 continue
             gross = ((sell_ad.price - buy_ad.price) / buy_ad.price) * 100
             executable_asset = executable_fiat / buy_ad.price
