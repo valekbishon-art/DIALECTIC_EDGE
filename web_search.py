@@ -38,12 +38,107 @@ PRICE_SANITY = {
     "SOL":     (10,      3_000),
     "BNB":     (100,     5_000),
     "XRP":     (0.2,     50),
+    # Расширение крипто-листа /markets и /signal до 15 активов (top по
+    # mcap, доступны на Binance Spot и Bybit Spot). Юзер: «расширить
+    # крипту в маркетс до 15-20 чтобы листать можно было». Диапазоны
+    # умышленно широкие, чтобы не выкидывать актив на pump/dump.
+    "ADA":     (0.05,    50),
+    "DOGE":    (0.005,   5),
+    "AVAX":    (5,       2_000),
+    "LINK":    (3,       500),
+    "DOT":     (1,       500),
+    "TRX":     (0.01,    5),
+    "TON":     (0.5,     100),
+    "LTC":     (20,      5_000),
+    "NEAR":    (1,       500),
+    "SUI":     (0.1,     100),
     "SPX":     (4_000,   12_000),
     "NDX":     (10_000,  35_000),
     "VIX":     (5,       90),
     "DXY":     (80,      130),
     "OIL_WTI": (30,      200),
     "GOLD":    (2_000,   8_000),
+}
+
+# Расширенный список крипто-активов (Binance Spot symbol → ключ в prices dict).
+# Используется как fetch_realtime_prices, так и postprocessing'ом. Юзер
+# просил расширение до 10-15+, мы кладём 15.
+EXTENDED_CRYPTO_SYMBOLS: tuple[tuple[str, str], ...] = (
+    ("BTCUSDT",  "BTC"),
+    ("ETHUSDT",  "ETH"),
+    ("SOLUSDT",  "SOL"),
+    ("BNBUSDT",  "BNB"),
+    ("XRPUSDT",  "XRP"),
+    ("ADAUSDT",  "ADA"),
+    ("DOGEUSDT", "DOGE"),
+    ("AVAXUSDT", "AVAX"),
+    ("LINKUSDT", "LINK"),
+    ("DOTUSDT",  "DOT"),
+    ("TRXUSDT",  "TRX"),
+    ("TONUSDT",  "TON"),
+    ("LTCUSDT",  "LTC"),
+    ("NEARUSDT", "NEAR"),
+    ("SUIUSDT",  "SUI"),
+)
+
+CRYPTO_KEYS: tuple[str, ...] = tuple(k for _, k in EXTENDED_CRYPTO_SYMBOLS)
+
+# CoinGecko ID-fallback для расширенного списка.
+CRYPTO_COINGECKO_IDS: dict[str, str] = {
+    "BTC":  "bitcoin",
+    "ETH":  "ethereum",
+    "SOL":  "solana",
+    "BNB":  "binancecoin",
+    "XRP":  "ripple",
+    "ADA":  "cardano",
+    "DOGE": "dogecoin",
+    "AVAX": "avalanche-2",
+    "LINK": "chainlink",
+    "DOT":  "polkadot",
+    "TRX":  "tron",
+    "TON":  "the-open-network",
+    "LTC":  "litecoin",
+    "NEAR": "near",
+    "SUI":  "sui",
+}
+
+# Yahoo Finance fallback для MA50/MA200, когда Binance klines падает
+# (часто блокируется в РФ или rate-limit).
+CRYPTO_YAHOO_TICKERS: dict[str, str] = {
+    "BTC":  "BTC-USD",
+    "ETH":  "ETH-USD",
+    "SOL":  "SOL-USD",
+    "BNB":  "BNB-USD",
+    "XRP":  "XRP-USD",
+    "ADA":  "ADA-USD",
+    "DOGE": "DOGE-USD",
+    "AVAX": "AVAX-USD",
+    "LINK": "LINK-USD",
+    "DOT":  "DOT-USD",
+    "TRX":  "TRX-USD",
+    "TON":  "TON11419-USD",
+    "LTC":  "LTC-USD",
+    "NEAR": "NEAR-USD",
+    "SUI":  "SUI20947-USD",
+}
+
+# Лейблы (Asset → human-readable name) для UI-рендера.
+CRYPTO_LABELS: dict[str, str] = {
+    "BTC":  "Bitcoin",
+    "ETH":  "Ethereum",
+    "SOL":  "Solana",
+    "BNB":  "BNB",
+    "XRP":  "XRP",
+    "ADA":  "Cardano",
+    "DOGE": "Dogecoin",
+    "AVAX": "Avalanche",
+    "LINK": "Chainlink",
+    "DOT":  "Polkadot",
+    "TRX":  "Tron",
+    "TON":  "Toncoin",
+    "LTC":  "Litecoin",
+    "NEAR": "Near",
+    "SUI":  "Sui",
 }
 
 def _sane(key: str, price: float) -> bool:
@@ -241,14 +336,14 @@ async def _coingecko_crypto(session) -> dict:
     out = {}
     try:
         url    = "https://api.coingecko.com/api/v3/simple/price"
-        params = {"ids": "bitcoin,ethereum,solana,binancecoin,ripple",
+        ids_csv = ",".join(CRYPTO_COINGECKO_IDS.values())
+        params = {"ids": ids_csv,
                   "vs_currencies": "usd",
                   "include_24hr_change": "true"}
         async with session.get(url, params=params, timeout=TIMEOUT) as r:
             if r.status == 200:
                 data = await r.json()
-                for cg_id, key in [("bitcoin","BTC"),("ethereum","ETH"),("solana","SOL"),
-                                    ("binancecoin","BNB"),("ripple","XRP")]:
+                for key, cg_id in CRYPTO_COINGECKO_IDS.items():
                     if cg_id in data:
                         p = float(data[cg_id].get("usd", 0))
                         c = float(data[cg_id].get("usd_24h_change", 0))
@@ -418,7 +513,6 @@ async def _fetch_trend_data(session, symbol_binance: str, key: str) -> dict:
             result["above_ma200"] = current > ma200
 
         # Структура тренда — смотрим последние 14 свечей
-        recent = closes[-14:]
         highs = [float(k[2]) for k in klines[-14:]]  # индекс 2 = high
         lows  = [float(k[3]) for k in klines[-14:]]  # индекс 3 = low
 
@@ -756,18 +850,29 @@ async def _fear_greed(session) -> dict:
 # ─── Агрегатор ────────────────────────────────────────────────────────────────
 
 async def fetch_realtime_prices() -> dict:
-    prices = {}
+    prices: dict = {}
     async with aiohttp.ClientSession(headers=HEADERS) as session:
-        (btc, eth, sol, bnb, xrp,
-         spx, ndx, vix, dxy, oil, gold,
-         fed_rate, cpi_raw, fng,
-         trend_btc, trend_eth, trend_sol, trend_bnb, trend_xrp,
-         trend_spx, trend_ndx, trend_vix, trend_dxy, trend_oil, trend_gold) = await asyncio.gather(
-            _binance(session, "BTCUSDT", "BTC"),
-            _binance(session, "ETHUSDT", "ETH"),
-            _binance(session, "SOLUSDT", "SOL"),
-            _binance(session, "BNBUSDT", "BNB"),
-            _binance(session, "XRPUSDT", "XRP"),
+        # ── Tier 0: per-asset crypto tickers + trend (EXTENDED_CRYPTO_SYMBOLS) ──
+        # Список расширен с 5 до 15 активов (юзер просил «расширить крипту в
+        # маркетс до 15-20»). Запросы идут параллельно, поэтому wall-time не
+        # увеличивается значимо (~+200мс на новые tickers vs 5).
+        crypto_price_tasks = [
+            _binance(session, sym, key) for sym, key in EXTENDED_CRYPTO_SYMBOLS
+        ]
+        crypto_trend_tasks = [
+            _fetch_trend_data(session, sym, key)
+            for sym, key in EXTENDED_CRYPTO_SYMBOLS
+        ]
+
+        (
+            crypto_prices,
+            crypto_trends,
+            spx, ndx, vix, dxy, oil, gold,
+            fed_rate, cpi_raw, fng,
+            trend_spx, trend_ndx, trend_vix, trend_dxy, trend_oil, trend_gold,
+        ) = await asyncio.gather(
+            asyncio.gather(*crypto_price_tasks, return_exceptions=True),
+            asyncio.gather(*crypto_trend_tasks, return_exceptions=True),
             _yahoo(session, "^GSPC",    "SPX"),
             _yahoo(session, "^NDX",     "NDX"),
             _yahoo(session, "^VIX",     "VIX"),
@@ -777,11 +882,6 @@ async def fetch_realtime_prices() -> dict:
             _fred(session, "FEDFUNDS"),
             _fred(session, "CPIAUCSL"),
             _fear_greed(session),
-            _fetch_trend_data(session, "BTCUSDT", "BTC"),
-            _fetch_trend_data(session, "ETHUSDT", "ETH"),
-            _fetch_trend_data(session, "SOLUSDT", "SOL"),
-            _fetch_trend_data(session, "BNBUSDT", "BNB"),
-            _fetch_trend_data(session, "XRPUSDT", "XRP"),
             _fetch_yahoo_trend(session, "^GSPC",    "SPX"),
             _fetch_yahoo_trend(session, "^NDX",     "NDX"),
             _fetch_yahoo_trend(session, "^VIX",     "VIX"),
@@ -791,10 +891,10 @@ async def fetch_realtime_prices() -> dict:
             return_exceptions=True,
         )
 
-        # Крипта с fallback
-        missing = []
-        for key, val in [("BTC", btc), ("ETH", eth), ("SOL", sol),
-                         ("BNB", bnb), ("XRP", xrp)]:
+        # Крипта с fallback. CRYPTO_KEYS — упорядоченный список ключей,
+        # zip с crypto_prices/crypto_trends сохраняет соответствие.
+        missing: list[str] = []
+        for key, val in zip(CRYPTO_KEYS, crypto_prices):
             if val and not isinstance(val, Exception):
                 prices[key] = val
             else:
@@ -806,8 +906,7 @@ async def fetch_realtime_prices() -> dict:
                     prices[k] = cg[k]
 
         # Добавляем тренд+MA к крипто данным
-        for key, trend_val in [("BTC", trend_btc), ("ETH", trend_eth), ("SOL", trend_sol),
-                                ("BNB", trend_bnb), ("XRP", trend_xrp)]:
+        for key, trend_val in zip(CRYPTO_KEYS, crypto_trends):
             if key in prices and trend_val and not isinstance(trend_val, Exception) and trend_val:
                 prices[key].update(trend_val)
                 # Прокидываем ATR в top-level для SL-guard (market_prices["ATR_BTC"])
@@ -824,16 +923,9 @@ async def fetch_realtime_prices() -> dict:
         # "ТРЕНД: ... | MA50 ... | MA200 ...". Причина: Binance klines API
         # упал/таймаут (часто блокируется в РФ или rate-limit), `_fetch_trend_data`
         # тихо вернул {}. CoinGecko даёт цену но не MA. Подстраховка — Yahoo.
-        crypto_yahoo_tickers = {
-            "BTC": "BTC-USD",
-            "ETH": "ETH-USD",
-            "SOL": "SOL-USD",
-            "BNB": "BNB-USD",
-            "XRP": "XRP-USD",
-        }
         crypto_missing_ma = [
-            k for k in ("BTC", "ETH", "SOL", "BNB", "XRP")
-            if k in prices and "ma200" not in prices[k]
+            k for k in CRYPTO_KEYS
+            if k in prices and "ma200" not in prices[k] and k in CRYPTO_YAHOO_TICKERS
         ]
         if crypto_missing_ma:
             logger.debug(
@@ -841,7 +933,7 @@ async def fetch_realtime_prices() -> dict:
             )
             yahoo_results = await asyncio.gather(
                 *[
-                    _fetch_yahoo_trend(session, crypto_yahoo_tickers[k], k)
+                    _fetch_yahoo_trend(session, CRYPTO_YAHOO_TICKERS[k], k)
                     for k in crypto_missing_ma
                 ],
                 return_exceptions=True,
@@ -873,7 +965,7 @@ async def fetch_realtime_prices() -> dict:
                 if "BTC" in prices
                 else None
             )
-            for k in ("BTC", "ETH", "SOL", "BNB", "XRP"):
+            for k in CRYPTO_KEYS:
                 if k not in prices:
                     continue
                 own_closes = prices[k].get("_closes_daily")
@@ -1360,8 +1452,10 @@ def format_prices_for_agents(
         lines.append(f"=== ВЕРИФИЦИРОВАННЫЕ РЫНОЧНЫЕ ДАННЫЕ ({now}) ===")
 
     lines.append("\n[КРИПТОРЫНОК]")
-    for k, label in [("BTC","Bitcoin"),("ETH","Ethereum"),("SOL","Solana"),
-                     ("BNB","BNB"),("XRP","XRP")]:
+    crypto_iter: list[tuple[str, str]] = [
+        (k, CRYPTO_LABELS.get(k, k)) for k in CRYPTO_KEYS
+    ]
+    for k, label in crypto_iter:
         if k in prices:
             p  = prices[k]
             ch = p["change_24h"]
@@ -1545,11 +1639,21 @@ def format_prices_for_agents(
 # отображения, тот же data-источник что и в `format_prices_for_agents`.
 
 ASSET_ICONS_MIN: dict[str, str] = {
-    "BTC": "₿",
-    "ETH": "Ξ",
-    "SOL": "◎",
-    "BNB": "◆",
-    "XRP": "✕",
+    "BTC":  "₿",
+    "ETH":  "Ξ",
+    "SOL":  "◎",
+    "BNB":  "◆",
+    "XRP":  "✕",
+    "ADA":  "₳",
+    "DOGE": "Ð",
+    "AVAX": "▲",
+    "LINK": "⛓",
+    "DOT":  "●",
+    "TRX":  "Ⓣ",
+    "TON":  "◈",
+    "LTC":  "Ł",
+    "NEAR": "Ⓝ",
+    "SUI":  "≈",
 }
 
 
@@ -1566,7 +1670,7 @@ def _fmt_change_min(ch: float | int | None, *, decimals: int = 2) -> str:
 
 def _crypto_lines_minimal(prices: dict) -> list[str]:
     lines: list[str] = []
-    for k in ("BTC", "ETH", "SOL", "BNB", "XRP"):
+    for k in CRYPTO_KEYS:
         if k not in prices:
             continue
         p = prices[k]
@@ -1663,7 +1767,7 @@ def format_prices_minimal(
     """Минималистичный per-секционный рендер цен.
 
     `section`:
-      • ``crypto`` — BTC/ETH/SOL/BNB/XRP + ▲/▼ MA-триггеры
+      • ``crypto`` — 15 топ-активов (BTC/ETH/SOL/BNB/XRP + ADA/DOGE/AVAX/LINK/DOT/TRX/TON/LTC/NEAR/SUI) + ▲/▼ MA-триггеры
       • ``macro``  — ФРС / CPI / F&G
       • ``indices``— SPX / NDX / VIX + ▲/▼
       • ``commod`` — Oil WTI / Gold / DXY + ▲/▼
@@ -1713,7 +1817,7 @@ def format_prices_section(
     SL/TP LONG/SHORT, Quant-вердикт, ТРЕНД+MA50/200, Random walk/Markov, объём).
 
     `section`:
-      • ``crypto`` — BTC/ETH/SOL/BNB/XRP блок
+      • ``crypto`` — 15 топ-активов (BTC/ETH/SOL/BNB/XRP + ADA/DOGE/AVAX/LINK/DOT/TRX/TON/LTC/NEAR/SUI)
       • ``macro``  — ФРС / CPI / F&G
       • ``indices``— SPX / NDX / VIX
       • ``commod`` — Oil WTI / Gold / DXY
@@ -1749,7 +1853,7 @@ async def get_full_realtime_context(*, for_user: bool = False) -> tuple[dict, st
     строками между активами)."""
     prices    = await fetch_realtime_prices()
     formatted = format_prices_for_agents(prices, for_user=for_user)
-    
+
     try:
         from cot_data import format_cot_for_agents, get_cot_for_assets
         cot_data = await get_cot_for_assets(["Bitcoin", "Gold", "Crude Oil"])
@@ -1757,16 +1861,16 @@ async def get_full_realtime_context(*, for_user: bool = False) -> tuple[dict, st
         formatted += "\n\n" + cot_formatted
     except Exception as e:
         logger.warning(f"COT data error: {e}")
-    
+
     try:
         from etf_flows import format_etf_flows_for_agents, get_market_breadth, get_etf_flows
         etf_data = await get_etf_flows()
         etf_formatted = format_etf_flows_for_agents(etf_data)
         formatted += "\n\n" + etf_formatted
-        
+
         breadth = await get_market_breadth()
         prices["BREADTH"] = breadth
     except Exception as e:
         logger.warning(f"ETF flows error: {e}")
-    
+
     return prices, formatted

@@ -4191,13 +4191,32 @@ def _signal_glossary_text() -> str:
         "\n"
         "*Что НЕ торгуется.*  VIX / GOLD / SPX часто в топе по score, "
         "но это индексы/сырьё — не торгуются на споте Bybit.  Бот "
-        "пропускает их, ищет лучший среди `BTC/ETH/SOL/BNB/XRP`.\n"
+        "пропускает их, ищет лучший среди 15 крипто-активов "
+        "(`BTC/ETH/SOL/BNB/XRP/ADA/DOGE/AVAX/LINK/DOT/TRX/TON/LTC/NEAR/SUI`).\n"
         "\n"
         "*Главное правило.*  *⚠️ Это suggestion, не приказ.*  "
         "Подтверждай вход в Bybit вручную.  Если score < 60 — лучше "
         "пропустить чем входить «потому что хочется».  «Сегодня "
         "сидим» — это нормальный исход, не баг."
     )
+
+
+def _tradable_assets_inline() -> str:
+    """Список tradable-активов в виде `BTC/ETH/SOL/...` для UI-рендера.
+
+    Порядок — по mcap (как в EXTENDED_CRYPTO_SYMBOLS) чтобы BTC был первым.
+    Обычно оборачивается в backtick'и в кахка в тексте — MD V1 внутри
+    code-span'а не парсит разметку, слеши безопасны.
+    """
+    from core.signal_scorer import TRADABLE_ASSETS
+
+    try:
+        from web_search import CRYPTO_KEYS
+    except ImportError:
+        CRYPTO_KEYS = tuple(sorted(TRADABLE_ASSETS))
+    # Сохраняем порядок из CRYPTO_KEYS, фильтруем по TRADABLE_ASSETS —
+    # так UI всегда совпадает с реальным list'ом из scorer'а.
+    return "/".join(k for k in CRYPTO_KEYS if k in TRADABLE_ASSETS)
 
 
 def _md_escape_underscores(s: str) -> str:
@@ -4272,12 +4291,12 @@ def _render_setup_block(
     )
     if higher_non_tradable is not None:
         # VIX/GOLD/SPX и пр. — в топе по score, но не торгуются на споте Bybit.
-        # `BTC/ETH/SOL/BNB/XRP` в backtick'ах — MD V1 внутри code-span'а не
-        # парсит разметку, так что слеши и прочее безопасны.
+        # backtick'и вокруг списка tradable-активов — MD V1 внутри
+        # code-span'а не парсит разметку, так что слеши и прочее безопасны.
         lines.append(
             f"• Выше по score: {higher_non_tradable.asset} "
             f"{higher_non_tradable.total}/100 — но это индекс/сырьё, не торгуется "
-            f"на споте Bybit (торгуем только `BTC/ETH/SOL/BNB/XRP`)."
+            f"на споте Bybit (торгуем `{_tradable_assets_inline()}`)."
         )
     elif runner_up is not None:
         gap = top.score - runner_up.total
@@ -4363,20 +4382,60 @@ def _render_setup_block(
     return lines
 
 
+def _render_extra_setup_compact(
+    setup,
+    rank: int,
+    capital: float,
+    sl_pct_sigma: float | None = None,
+) -> list[str]:
+    """Компактный рендер дополнительного tradable setup'а (одна сделка из топа).
+
+    Используется когда `tradable_setups` содержит больше одной сделки —
+    лидер идёт полным блоком `_render_setup_block`, остальные сюда
+    компактным «3-строчным» форматом, иначе Telegram 4096 limit утонет.
+
+    Формат::
+
+        🥈 #2 SOL LONG 📈 — score 68/100 (R/R 2.0x)
+           Entry $215.40 | SL $208.50 (-3.2%) | TP $229.20 (+6.4%)
+           Размер ~$30 | Топ-причина: UPTREND ✓ (vs MA50 +5.3%, MA200 +13.2%)
+    """
+    if rank <= 1:
+        medal = "🥇"
+    elif rank == 2:
+        medal = "🥈"
+    elif rank == 3:
+        medal = "🥉"
+    else:
+        medal = "🔸"
+    arrow = "📈" if setup.direction == "LONG" else "📉"
+    top_reason = setup.reasons[0] if setup.reasons else "—"
+    cap_pct = (setup.size_usd / capital * 100) if capital > 0 else 0.0
+    return [
+        f"{medal} *#{rank}* *{setup.asset}* *{setup.direction}* {arrow} — "
+        f"score *{setup.score}/100* (R/R {setup.rr_ratio}x)",
+        f"   Entry `${setup.entry}` | SL `${setup.stop}` ({setup.stop_pct:+.1f}%) | "
+        f"TP `${setup.target}` ({setup.target_pct:+.1f}%)",
+        f"   Размер ~${setup.size_usd} ({cap_pct:.0f}%) | "
+        f"Топ-причина: {_md_escape_underscores(top_reason)}",
+    ]
+
+
 def _fmt_signal_message(result: dict) -> str:
     """Рендерит результат `rank_signals(...)` в Telegram-сообщение.
 
     Format:
-      • Если top != None → один setup с уровнями SL/TP, R/R, size, score
-        и списком обоснований.
+      • Если есть ≥1 tradable setup → ТОП setup полным блоком + список
+        ВСЕХ остальных tradable setups компактно (по запросу юзера:
+        «показывал ВСЕ лучшие сделки, а не только 1-2»).
       • Если top == None И preview_top != None → preview-блок: те же
         уровни но с пометкой «🟡 ниже порога — повышенный риск».
       • Иначе → «сегодня сидим» + top-3 кандидатов по score
         (нет tradable кандидата вообще — все SIDEWAYS или non-TRADABLE).
 
-    Это даёт пользователю либо одну конкретную рекомендацию (одно
-    нажатие в Bybit), либо preview лучшего варианта с уровнями, либо
-    честный «сегодня нечего».
+    Это даёт пользователю либо полную картину торгуемых сделок (с
+    компактным форматом для №2-N), либо preview лучшего варианта с
+    уровнями, либо честный «сегодня нечего».
     """
     from core.signal_scorer import SignalSetup
 
@@ -4385,11 +4444,19 @@ def _fmt_signal_message(result: dict) -> str:
     scored = result.get("scored") or []
     top = result.get("top")
     preview_top = result.get("preview_top")
+    tradable_setups = result.get("tradable_setups") or []
 
     lines: list[str] = []
     lines.append("🎯 *АВТО-СИГНАЛ* (детерминированный scoring)")
     lines.append("")
-    lines.append(f"Скан: {len(scored)} актив(ов) | Порог: {min_score}/100")
+    n_tradable = len(tradable_setups)
+    if n_tradable >= 1:
+        lines.append(
+            f"Скан: *{len(scored)}* актив(ов) | Порог: *{min_score}/100* | "
+            f"Tradable: *{n_tradable}*"
+        )
+    else:
+        lines.append(f"Скан: *{len(scored)}* актив(ов) | Порог: *{min_score}/100*")
     lines.append("")
 
     if isinstance(top, SignalSetup):
@@ -4399,6 +4466,28 @@ def _fmt_signal_message(result: dict) -> str:
                 top, scored, capital, min_score, is_preview=False,
             )
         )
+        # Если есть другие tradable setup'ы — рендерим их компактно.
+        # Telegram 4096 char limit: топ-блок ~25 строк ≈ 1500 chars,
+        # каждый компактный entry ~3 строки ≈ 200 chars → запас на 12 entries
+        # хватает с лихвой. На расширенной 15-крипто корзине в сильный тренд
+        # реалистично 3-7 tradable одновременно.
+        if n_tradable >= 2:
+            lines.append("")
+            lines.append(
+                f"📋 *Ещё {n_tradable - 1} tradable сделок* (компактно, score ↓):"
+            )
+            lines.append("")
+            for idx, extra in enumerate(tradable_setups[1:], start=2):
+                lines.extend(_render_extra_setup_compact(extra, idx, capital))
+                lines.append("")
+            # убираем последнюю пустую строку перед следующим блоком
+            if lines and lines[-1] == "":
+                lines.pop()
+            lines.append("")
+            lines.append(
+                "_Каждая сделка независимая — можно входить во все сразу "
+                "(если хватает капитала) или выбрать одну/несколько._"
+            )
     elif isinstance(preview_top, SignalSetup):
         # ── Preview: есть tradable кандидат с σ̂, но score ниже порога ──
         lines.append("⚪ *Чистого setup нет — score ниже порога.* Сидим.")
@@ -4417,7 +4506,7 @@ def _fmt_signal_message(result: dict) -> str:
             for s in scored[:3]:
                 top_reason = s.reasons[0] if s.reasons else "—"
                 lines.append(
-                    f"• *{s.asset}* {s.total}/100 — {top_reason}"
+                    f"• *{s.asset}* {s.total}/100 — {_md_escape_underscores(top_reason)}"
                 )
             lines.append("")
         lines.append("Запусти `/markets` чтобы посмотреть полную картину.")

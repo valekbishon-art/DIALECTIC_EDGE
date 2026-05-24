@@ -584,7 +584,18 @@ class TestConstants(unittest.TestCase):
         self.assertEqual(ASSET_TICK_SIZE["XRP"], 0.0001)
 
     def test_tradable_assets_are_crypto_only(self):
-        self.assertEqual(TRADABLE_ASSETS, frozenset({"BTC", "ETH", "SOL", "BNB", "XRP"}))
+        # Расширенная криптокорзина (15 топ-активов по mcap, доступны на
+        # Binance Spot и Bybit Spot). Юзер просил «смотреть на всю крипту
+        # и говорить ВСЕ лучшие сделки», поэтому список расширен с 5 до 15.
+        expected = frozenset({
+            "BTC", "ETH", "SOL", "BNB", "XRP",
+            "ADA", "DOGE", "AVAX", "LINK", "DOT",
+            "TRX", "TON", "LTC", "NEAR", "SUI",
+        })
+        self.assertEqual(TRADABLE_ASSETS, expected)
+        # Гарантия что индексы / сырьё не торгуются (нет на споте Bybit).
+        for non_tradable in ("SPX", "NDX", "VIX", "GOLD", "OIL_WTI", "DXY"):
+            self.assertNotIn(non_tradable, TRADABLE_ASSETS)
 
 
 if __name__ == "__main__":

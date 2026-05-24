@@ -352,8 +352,12 @@ class TestFmtSignalMessagePreview(unittest.TestCase):
         """`TRADABLE_ASSETS = ...` ломал MD V1 двумя `_`. Должно быть в backticks."""
         msg = self._render()
         self.assertNotIn("TRADABLE_ASSETS =", msg)
-        # Новая форма — список активов в backtick-code-span'е.
-        self.assertIn("`BTC/ETH/SOL/BNB/XRP`", msg)
+        # Новая форма — список tradable-активов в backtick-code-span'е.
+        # Расширили список до 15 крипто-активов (BTC..SUI), внутри code-span'а
+        # MD V1 не парсит разметку — слеши безопасны.
+        self.assertIn("`BTC/ETH/SOL", msg)
+        # SUI — последний из расширенной корзины, должен быть в списке.
+        self.assertIn("SUI`", msg)
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")

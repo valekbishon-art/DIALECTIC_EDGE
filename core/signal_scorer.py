@@ -74,25 +74,42 @@ DEFAULT_SIZE_FRACTION = 0.25
 # XRP/USDT на Bybit Spot имеет шаг 0.0001 USDT (4 знака после запятой) —
 # смотри цену entry $1.3933 в открытой позиции у юзера. Остальные тики не
 # трогаем, для них σ̂ × цена ≫ tick'a и округление не критично.
+#
+# Тики для расширенного списка (ADA..SUI) — консервативные оценки на
+# основе шагов на Bybit Spot / Binance Spot. Для low-price coins (DOGE,
+# TRX) ставим 0.00001 чтобы σ̂≈5% × цена ≫ tick'a.
 ASSET_TICK_SIZE: dict[str, float] = {
-    "BTC": 0.01,
-    "ETH": 0.01,
-    "SOL": 0.001,
-    "BNB": 0.01,
-    "XRP": 0.0001,    # Bybit Spot XRP/USDT — 4 знака после точки.
-    "SPX": 0.01,
-    "NDX": 0.01,
-    "VIX": 0.01,
+    "BTC":  0.01,
+    "ETH":  0.01,
+    "SOL":  0.001,
+    "BNB":  0.01,
+    "XRP":  0.0001,    # Bybit Spot XRP/USDT — 4 знака после точки.
+    "ADA":  0.0001,
+    "DOGE": 0.00001,
+    "AVAX": 0.001,
+    "LINK": 0.001,
+    "DOT":  0.001,
+    "TRX":  0.00001,
+    "TON":  0.001,
+    "LTC":  0.01,
+    "NEAR": 0.001,
+    "SUI":  0.0001,
+    "SPX":  0.01,
+    "NDX":  0.01,
+    "VIX":  0.01,
     "OIL_WTI": 0.01,
     "GOLD": 0.1,
-    "DXY": 0.001,
+    "DXY":  0.001,
 }
 
 # Активы для которых имеет смысл строить trading setup. Исключаем
 # индексы и сырьё (на них надо CFD/фьючи — не у всех есть доступ);
-# крипта доступна на любой бирже.
+# крипта доступна на любой бирже. Список расширен с 5 до 15 активов
+# (юзер: «смотрел на всю крипту и говорил ВСЕ лучшие сделки»).
 TRADABLE_ASSETS: frozenset[str] = frozenset({
     "BTC", "ETH", "SOL", "BNB", "XRP",
+    "ADA", "DOGE", "AVAX", "LINK", "DOT",
+    "TRX", "TON", "LTC", "NEAR", "SUI",
 })
 
 
@@ -395,6 +412,10 @@ def rank_signals(
                                                  # сегодня сидим». None если top
                                                  # найден или нет ни одного
                                                  # tradable кандидата с σ̂.
+        "tradable_setups": list[SignalSetup],   # ВСЕ tradable setup'ы (score ≥ min_score),
+                                                 # отсортированы по score ↓. Используется
+                                                 # /signal чтобы показать ВСЕ лучшие
+                                                 # сделки, а не только №1.
         "scored":       list[AssetScore],       # все активы, по total ↓
         "capital":      float,
         "min_score":    int,
@@ -414,12 +435,17 @@ def rank_signals(
 
     scored.sort(key=lambda s: s.total, reverse=True)
 
-    top: Optional[SignalSetup] = None
+    # tradable_setups — ВСЕ setup'ы что прошли порог. На расширенной
+    # криптокорзине (15 активов) сильный тренд может дать сразу 3-5
+    # tradable кандидатов, и юзер хочет видеть весь список, а не одну
+    # сделку. Сохраняем порядок по score ↓ (= порядок scored).
+    tradable_setups: list[SignalSetup] = []
     for s in scored:
         setup = make_setup(s, prices[s.asset], capital, min_score, size_fraction)
         if setup is not None:
-            top = setup
-            break
+            tradable_setups.append(setup)
+
+    top: Optional[SignalSetup] = tradable_setups[0] if tradable_setups else None
 
     # preview_top: лучший tradable кандидат с σ̂, даже если score ниже порога.
     # Нужен формату «Лучшая сделка» чтобы и в «сидим» режиме показывать
@@ -438,6 +464,7 @@ def rank_signals(
     return {
         "top": top,
         "preview_top": preview_top,
+        "tradable_setups": tradable_setups,
         "scored": scored,
         "capital": float(capital),
         "min_score": int(min_score),
