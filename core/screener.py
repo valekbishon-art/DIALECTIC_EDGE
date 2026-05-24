@@ -16,7 +16,7 @@ from typing import List, Optional
 
 import aiohttp
 
-from backtester import Candle, get_candles
+from backtester import get_candles
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class MarketScreener:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for res in results:
-            if isinstance(res, dict) and res.get("signal"):
+            if isinstance(res, dict) and res.get("signals"):
                 opportunities.append(res)
 
         return opportunities
@@ -71,7 +71,7 @@ class MarketScreener:
     async def _check_symbol(self, symbol: str) -> dict:
         """Проверить одну монету на аномалии."""
         signals = []
-        
+
         # Данные
         rsi = await self._get_rsi(symbol)
         vol_spike = await self._check_volume_spike(symbol)
@@ -83,10 +83,10 @@ class MarketScreener:
                 signals.append(f"📉 RSI Перекуплен ({rsi:.1f})")
             elif rsi > 70:
                 signals.append(f"📈 RSI Перекуплен ({rsi:.1f})")
-        
+
         if vol_spike:
             signals.append(f"🔥 Объем x{vol_spike:.1f}")
-            
+
         if funding:
             if funding > 0.002: # > 0.2% за 8ч — очень много
                 signals.append(f"⚠️ Funding перегрет ({funding*100:.3f}%)")
@@ -110,7 +110,7 @@ class MarketScreener:
                 return None
             closes = [c.close for c in candles]
             return self._calc_rsi(closes)
-        except:
+        except Exception:
             return None
 
     async def _check_volume_spike(self, symbol: str) -> Optional[float]:
@@ -123,7 +123,7 @@ class MarketScreener:
             avg_vol = sum(c.volume for c in candles[:-1]) / 20
             if avg_vol > 0 and current_vol > avg_vol * 2:
                 return current_vol / avg_vol
-        except:
+        except Exception:
             return None
         return None
 
@@ -134,7 +134,7 @@ class MarketScreener:
                     if resp.status == 200:
                         data = await resp.json()
                         return float(data.get("lastFundingRate", 0))
-        except:
+        except Exception:
             return None
         return None
 
@@ -148,10 +148,10 @@ class MarketScreener:
             delta = closes[i] - closes[i-1]
             gains.append(max(0, delta))
             losses.append(max(0, -delta))
-        
+
         avg_gain = sum(gains[-period:]) / period
         avg_loss = sum(losses[-period:]) / period
-        
+
         if avg_loss == 0: return 100.0
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
