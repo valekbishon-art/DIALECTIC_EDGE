@@ -248,6 +248,27 @@ try:
 except ImportError:
     P2P_AUDIT_ENABLED = False
 
+# BTC outlook auto-alerts. Periodically computes the same verdict as /btc and
+# proactively sends a Telegram alert when lean flips or confidence jumps,
+# subject to cooldown. Feature flag FEATURE_BTC_OUTLOOK_ALERTS (default ON).
+try:
+    from core.btc_alerts import (
+        BTCAlertSnapshot as _BTCAlertSnapshot,
+        feature_enabled as _btc_alerts_enabled,
+        format_btc_alert_headline as _btc_format_headline,
+        get_alert_chat_ids as _btc_alert_chat_ids,
+        get_alert_interval_sec as _btc_alert_interval_sec,
+        should_fire_btc_alert as _btc_should_fire,
+    )
+    from core.btc_outlook import compute_btc_outlook as _btc_compute_outlook
+    from core.btc_outlook import format_btc_outlook_markdown as _btc_format_markdown
+    from refactor.handlers.btc_handler import (
+        fetch_btc_outlook_inputs as _btc_fetch_inputs,
+    )
+    BTC_OUTLOOK_ALERTS_LOADED = True
+except ImportError:
+    BTC_OUTLOOK_ALERTS_LOADED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -259,6 +280,10 @@ class Scheduler:
         self._running = False
         self._last_export_date: date | None = None
         self._last_p2p_alert_keys: dict[str, datetime] = {}
+        # BTC outlook alerts: in-memory snapshot of last fired verdict. Reset on
+        # restart, which is fine — first run после рестарта всё равно пойдёт
+        # по first-fire ветке если confidence ≥ min.
+        self._last_btc_alert: _BTCAlertSnapshot | None = None
         self._alert_system = None
         self._signals_system = None
         # Cascade post-mortem: shared stop-event для WS-listener'ов и agg-loop.
@@ -389,6 +414,13 @@ class Scheduler:
                 ",".join(_p2p_get_assets()),
                 ",".join(_p2p_get_fiats()),
                 _p2p_get_alert_interval_sec(),
+            )
+
+        if BTC_OUTLOOK_ALERTS_LOADED and _btc_alerts_enabled():
+            tasks.append(self._btc_outlook_alert_loop())
+            logger.info(
+                "🟧 BTC outlook alerts включены (interval=%ss)",
+                _btc_alert_interval_sec(),
             )
 
         if ALERT_ENGINE_LOADED and _alert_engine_enabled():
@@ -725,6 +757,80 @@ class Scheduler:
                         logger.warning("p2p alert send failed chat_id=%s: %s", chat_id, exc)
                 self._last_p2p_alert_keys[alert_key] = now
         return sent
+
+    async def _btc_outlook_alert_loop(self):
+        """Periodically compute BTC outlook and push alerts on flips / jumps.
+
+        Идея: «биток вниз — всё идёт вниз». Не ждём команды `/btc` — сами
+        мониторим verdict и пушим как только confidence ≥ min и lean
+        изменился (или confidence резко прыгнул). Cooldown'ом давим спам.
+        """
+        # Warm-up: дать другим источникам прогреться + не штурмовать Binance
+        # при старте бота (когда AI debate и /daily тоже стартуют).
+        await asyncio.sleep(180)
+
+        while self._running:
+            try:
+                chat_ids = _btc_alert_chat_ids() or tuple(ADMIN_IDS)
+                if not chat_ids:
+                    logger.info("btc alerts: нет ADMIN_IDS/BTC_OUTLOOK_ALERT_CHAT_IDS — sleep")
+                    await asyncio.sleep(_btc_alert_interval_sec())
+                    continue
+
+                inputs = await _btc_fetch_inputs()
+                verdict = _btc_compute_outlook(inputs)
+
+                now_ts = asyncio.get_event_loop().time()
+                decision = _btc_should_fire(
+                    current=verdict,
+                    previous=self._last_btc_alert,
+                    now_ts=now_ts,
+                )
+                if not decision.should_fire:
+                    if decision.suppressed_reason:
+                        logger.debug(
+                            "btc alerts hold: %s (lean=%s, conf=%s%%)",
+                            decision.suppressed_reason,
+                            verdict.lean,
+                            verdict.confidence_pct,
+                        )
+                    await asyncio.sleep(_btc_alert_interval_sec())
+                    continue
+
+                headline = _btc_format_headline(decision, verdict)
+                body = _btc_format_markdown(verdict, inputs, ai_narrative=None)
+                text = headline + "\n" + body
+
+                sent = 0
+                for chat_id in chat_ids:
+                    try:
+                        await self.bot.send_message(
+                            chat_id,
+                            text,
+                            parse_mode="Markdown",
+                            disable_web_page_preview=True,
+                        )
+                        sent += 1
+                    except Exception as exc:
+                        logger.warning("btc alert send failed chat_id=%s: %s", chat_id, exc)
+
+                if sent:
+                    self._last_btc_alert = _BTCAlertSnapshot(
+                        lean=verdict.lean,
+                        confidence_pct=verdict.confidence_pct,
+                        fired_at_ts=now_ts,
+                    )
+                    logger.info(
+                        "🟧 BTC outlook alert отправлен (%s, %s%%, reason=%s, sent=%s)",
+                        verdict.lean,
+                        verdict.confidence_pct,
+                        decision.reason,
+                        sent,
+                    )
+            except Exception as e:
+                logger.error(f"BTC outlook alert loop error: {e}")
+
+            await asyncio.sleep(_btc_alert_interval_sec())
 
     async def _alert_engine_loop(self):
         """Background loop: evaluates configured AlertRules and sends cards.
