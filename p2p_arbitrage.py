@@ -19,8 +19,13 @@ _UNKNOWN_BYBIT_ID_LOG_LIMIT = 50
 _unknown_bybit_ids_logged: set[str] = set()
 
 
-DEFAULT_P2P_ASSETS = ("USDT",)
-DEFAULT_P2P_FIATS = ("RUB",)
+# По умолчанию сканер смотрит шире чем «один USDT/RUB» — пользователь хочет, чтобы
+# бот сам искал прибыль по всем популярным парам. Узкий список оставляется как
+# fallback, но дефолт расширен на основные стейблы (USDT/USDC) + BTC/ETH и три
+# самых ликвидных фиата (RUB/USD/EUR). Override через P2P_ARBITRAGE_ASSETS /
+# P2P_ARBITRAGE_FIATS если нужно сузить.
+DEFAULT_P2P_ASSETS = ("USDT", "USDC", "BTC", "ETH")
+DEFAULT_P2P_FIATS = ("RUB", "USD", "EUR")
 DEFAULT_MIN_SPREAD_PCT = 1.0
 DEFAULT_SETTLEMENT_BUFFER_PCT = 0.35
 DEFAULT_BANK_FEE_PCT = 0.0
@@ -234,11 +239,17 @@ def _env_int(name: str, default: int, *, min_val: int, max_val: int) -> int:
 
 
 def feature_enabled() -> bool:
-    return _env_bool("FEATURE_P2P_ARBITRAGE", False)
+    # По умолчанию ON — владелец явно попросил «P2P должен быть автоматически
+    # включён». Это отступление от общего правила «фичефлаги по умолчанию OFF»
+    # из AGENTS.md, но соответствует UX-намерению (read-only мониторинг,
+    # денег не двигает).
+    return _env_bool("FEATURE_P2P_ARBITRAGE", True)
 
 
 def alerts_enabled() -> bool:
-    return _env_bool("FEATURE_P2P_ARBITRAGE_ALERTS", False)
+    # Алерты тоже включены по умолчанию: цель сканера — присылать
+    # пользователю прибыльные окна автоматически.
+    return _env_bool("FEATURE_P2P_ARBITRAGE_ALERTS", True)
 
 
 def bybit_enabled() -> bool:
