@@ -4,26 +4,34 @@ import os
 import unittest
 from unittest.mock import patch
 
-from refactor.handlers.advisor_handler import (
-    DEFAULT_ASSETS,
-    SUPPORTED_ASSETS,
-    _build_inputs_from_prices,
-    _get_default_capital_usd,
-    _map_horizon,
-    _map_profile,
-    _parse_args,
-    register_advisor_handlers,
-)
-from core.advisor import (
-    HORIZON_LONG,
-    HORIZON_MEDIUM,
-    HORIZON_SHORT,
-    RISK_AGGRESSIVE,
-    RISK_CONSERVATIVE,
-    RISK_MODERATE,
-)
+try:
+    import aiogram  # noqa: F401
+    _HAS_AIOGRAM = True
+except ImportError:
+    _HAS_AIOGRAM = False
+
+if _HAS_AIOGRAM:
+    from refactor.handlers.advisor_handler import (
+        DEFAULT_ASSETS,
+        SUPPORTED_ASSETS,
+        _build_inputs_from_prices,
+        _get_default_capital_usd,
+        _map_horizon,
+        _map_profile,
+        _parse_args,
+        register_advisor_handlers,
+    )
+    from core.advisor import (
+        HORIZON_LONG,
+        HORIZON_MEDIUM,
+        HORIZON_SHORT,
+        RISK_AGGRESSIVE,
+        RISK_CONSERVATIVE,
+        RISK_MODERATE,
+    )
 
 
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram не установлен (CI: minimal deps)")
 class TestParseArgs(unittest.TestCase):
     def test_no_args_uses_defaults(self):
         assets, capital = _parse_args(None)
@@ -66,6 +74,7 @@ class TestParseArgs(unittest.TestCase):
         self.assertEqual(capital, 10_000_000.0)
 
 
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram не установлен (CI: minimal deps)")
 class TestEnvDefaults(unittest.TestCase):
     def test_default_capital_env(self):
         with patch.dict(os.environ, {"ADVISOR_DEFAULT_CAPITAL_USD": "2500"}, clear=True):
@@ -80,6 +89,7 @@ class TestEnvDefaults(unittest.TestCase):
             self.assertEqual(_get_default_capital_usd(), 1000.0)
 
 
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram не установлен (CI: minimal deps)")
 class TestMappers(unittest.TestCase):
     def test_map_profile_known_values(self):
         self.assertEqual(_map_profile("conservative"), RISK_CONSERVATIVE)
@@ -97,6 +107,7 @@ class TestMappers(unittest.TestCase):
         self.assertEqual(_map_horizon("???"), HORIZON_MEDIUM)
 
 
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram не установлен (CI: minimal deps)")
 class TestBuildInputs(unittest.TestCase):
     def test_basic_bull_inputs_from_prices(self):
         prices = {
@@ -172,6 +183,7 @@ class TestBuildInputs(unittest.TestCase):
         self.assertGreaterEqual(inputs.quant_confidence, 0.7)
 
 
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram не установлен (CI: minimal deps)")
 class TestHandlerRegistration(unittest.TestCase):
     def test_register_advisor_handlers_calls_dispatcher(self):
         # Smoke test: register_advisor_handlers should call dp.message.register
@@ -189,6 +201,7 @@ class TestHandlerRegistration(unittest.TestCase):
         self.assertGreaterEqual(len(dp.calls), 2)
 
 
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram не установлен (CI: minimal deps)")
 class TestSupportedAssets(unittest.TestCase):
     def test_supported_assets_superset_of_defaults(self):
         self.assertTrue(set(DEFAULT_ASSETS).issubset(set(SUPPORTED_ASSETS)))
