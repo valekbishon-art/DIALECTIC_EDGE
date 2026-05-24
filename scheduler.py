@@ -234,6 +234,19 @@ try:
 except ImportError:
     CASCADE_POST_MORTEM_ENABLED = False
 
+# P2P self-audit (backcheck whether surfaced opportunities materialised).
+# Enabled by FEATURE_P2P_SELF_AUDIT=1, default OFF.
+try:
+    from p2p_audit import feature_enabled as _p2p_audit_enabled
+    from p2p_audit_io import (
+        ensure_audit_table_exists as _p2p_audit_ensure_table,
+        p2p_audit_loop as _p2p_audit_loop,
+    )
+
+    P2P_AUDIT_ENABLED = True
+except ImportError:
+    P2P_AUDIT_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -250,6 +263,8 @@ class Scheduler:
         # Cascade post-mortem: shared stop-event для WS-listener'ов и agg-loop.
         # Заполняется при start() если фича включена.
         self._cpm_stop_event: asyncio.Event | None = None
+        # P2P self-audit: shared stop-event для backcheck-loop'а.
+        self._p2p_audit_stop_event: asyncio.Event | None = None
 
         if ALERT_SYSTEM_ENABLED:
             try:
@@ -413,6 +428,30 @@ class Scheduler:
                 "🔥 Cascade post-mortem loop включён (venues=%s)",
                 ",".join(active_venues) or "none",
             )
+
+        if P2P_AUDIT_ENABLED and _p2p_audit_enabled():
+            try:
+                await _p2p_audit_ensure_table()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("p2p audit: ensure_audit_table_exists failed: %s", exc)
+            try:
+                from refactor.handlers.p2p_arbitrage_handler import (
+                    fetch_p2p_ads as _p2p_fetch_ads,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "p2p audit: handler fetch_p2p_ads import failed (%s) — audit loop disabled",
+                    exc,
+                )
+            else:
+                self._p2p_audit_stop_event = asyncio.Event()
+                tasks.append(
+                    _p2p_audit_loop(
+                        fetch_p2p_ads=_p2p_fetch_ads,
+                        stop_event=self._p2p_audit_stop_event,
+                    )
+                )
+                logger.info("📊 P2P self-audit loop включён")
 
         await asyncio.gather(*tasks)
 

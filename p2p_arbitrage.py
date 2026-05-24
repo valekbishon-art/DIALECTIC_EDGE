@@ -7,10 +7,16 @@ rows here.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_UNKNOWN_BYBIT_ID_LOG_LIMIT = 50
+_unknown_bybit_ids_logged: set[str] = set()
 
 
 DEFAULT_P2P_ASSETS = ("USDT",)
@@ -72,6 +78,22 @@ PAYMENT_METHOD_ALIASES = {
     "bybit:27": "raiffeisen",
     "bybit:62": "rosbank",
     "bybit:90": "cash",
+    # Расширения по мере появления неизвестных IDs (best-effort, без
+    # официального справочника — корректируется логом
+    # ``unknown bybit payment id`` в продакшене).
+    "bybit:160": "vtb",
+    "bybit:171": "mts_bank",
+    "bybit:172": "otkritie",
+    "bybit:189": "alfabank",
+    "bybit:230": "ozonbank",
+    "bybit:264": "yoomoney",
+    "bybit:267": "qiwi",
+    "bybit:283": "tinkoff",
+    "bybit:299": "sbp",
+    "bybit:333": "sber",
+    "bybit:381": "psb",
+    "bybit:382": "uralsib",
+    "bybit:600": "akbars",
 }
 
 
@@ -93,6 +115,13 @@ class P2PAdvert:
     advert_id: str = ""
     fetched_at: float = 0.0
     payment_window_min: int | None = None
+    # Дополнительные signals качества аккаунта продавца:
+    user_grade: int | None = None
+    """Binance ``userGrade`` (0..7) — внутренний скоринг площадки."""
+    vip_level: int | None = None
+    """Bybit/Binance VIP level (0..N) — обычно отражает объёмы."""
+    account_age_days: int | None = None
+    """Возраст аккаунта продавца в днях (если venue отдаёт registerTime)."""
 
     @property
     def side_label(self) -> str:
@@ -354,6 +383,21 @@ def get_risk_medium_min_orders() -> int:
     )
 
 
+def get_risk_min_user_grade() -> int:
+    """Minimum acceptable Binance ``userGrade``; 0 = check disabled."""
+    return _env_int("P2P_RISK_MIN_USER_GRADE", 0, min_val=0, max_val=20)
+
+
+def get_risk_min_vip_level() -> int:
+    """Minimum acceptable VIP level; 0 = check disabled."""
+    return _env_int("P2P_RISK_MIN_VIP_LEVEL", 0, min_val=0, max_val=50)
+
+
+def get_risk_min_account_age_days() -> int:
+    """Minimum account age (days); newer accounts get a warning. 0 = disabled."""
+    return _env_int("P2P_RISK_MIN_ACCOUNT_AGE_DAYS", 30, min_val=0, max_val=3650)
+
+
 def get_risk_weight(risk_level: str) -> float:
     defaults = {
         "LOW": DEFAULT_RISK_WEIGHT_LOW,
@@ -455,6 +499,49 @@ def _completion_rate_pct(value: Any) -> float | None:
     return None
 
 
+def _account_age_days_from_register_ms(value: Any, *, now: float | None = None) -> int | None:
+    """Compute ``account_age_days`` from a `registerTime` Unix-ms timestamp.
+
+    Площадки отдают это поле в миллисекундах. Защищаемся от 0 / отрицательных
+    значений и от слишком далёкого будущего (clock skew).
+    """
+    if value is None:
+        return None
+    raw = _to_float(value)
+    if raw is None or raw <= 0:
+        return None
+    now_ts = now if now is not None else time.time()
+    # Treat large numbers as ms, small as seconds (heuristic: > 10**11 ⇒ ms)
+    if raw > 1e11:
+        seconds = raw / 1000.0
+    else:
+        seconds = raw
+    age_sec = now_ts - seconds
+    if age_sec < 0:
+        return None
+    return int(age_sec // 86400)
+
+
+def _normalize_user_grade(value: Any) -> int | None:
+    """Binance `userGrade` приходит 0..7; clamp в этот диапазон."""
+    num = _to_int(value)
+    if num is None:
+        return None
+    if num < 0 or num > 20:
+        return None
+    return num
+
+
+def _normalize_vip_level(value: Any) -> int | None:
+    """Bybit/Binance VIP level — clamp в [0, 50]."""
+    num = _to_int(value)
+    if num is None:
+        return None
+    if num < 0 or num > 50:
+        return None
+    return num
+
+
 def normalize_payment_method(value: Any) -> str:
     return str(value or "").strip()
 
@@ -485,10 +572,35 @@ def canonical_payment_method(value: Any) -> str:
     return PAYMENT_METHOD_ALIASES.get(_payment_alias_key(normalized), normalized)
 
 
+def _log_unknown_bybit_id(prefixed: str) -> None:
+    """Rate-limited warning: surface IDs not in ``PAYMENT_METHOD_ALIASES``.
+
+    Storing each unknown ID once per process — we only need to learn the
+    *existence* of the ID, not count usage. Прод-логи затем позволяют
+    дополнить mapping в следующем коммите.
+    """
+    if not prefixed.startswith("bybit:"):
+        return
+    key = _payment_alias_key(prefixed)
+    if not key or key in PAYMENT_METHOD_ALIASES:
+        return
+    if prefixed in _unknown_bybit_ids_logged:
+        return
+    if len(_unknown_bybit_ids_logged) >= _UNKNOWN_BYBIT_ID_LOG_LIMIT:
+        return
+    _unknown_bybit_ids_logged.add(prefixed)
+    logger.warning(
+        "p2p arbitrage: unknown bybit payment id %s — add it to PAYMENT_METHOD_ALIASES",
+        prefixed,
+    )
+
+
 def _normalize_bybit_payment_method(value: Any) -> str:
     def _with_provider_prefix(normalized: str) -> str:
         if normalized and normalized.isdigit():
-            return f"bybit:{normalized}"
+            prefixed = f"bybit:{normalized}"
+            _log_unknown_bybit_id(prefixed)
+            return prefixed
         return normalized
 
     if isinstance(value, dict):
@@ -537,6 +649,7 @@ def parse_binance_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: 
             if normalized:
                 methods.append(normalized)
         user_type = str(advertiser.get("userType") or "").lower()
+        user_stats = advertiser.get("userStatsRet") or {}
         return P2PAdvert(
             venue="Binance P2P",
             trade_type=trade_type.upper(),
@@ -551,17 +664,24 @@ def parse_binance_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: 
             completed_orders=_to_int(
                 advertiser.get("monthOrderCount")
                 or advertiser.get("monthFinishOrderCount")
-                or advertiser.get("userStatsRet", {}).get("completedOrderNum")
+                or user_stats.get("completedOrderNum")
             ),
             completion_rate_pct=_completion_rate_pct(
                 advertiser.get("monthFinishRate")
                 or advertiser.get("positiveRate")
-                or advertiser.get("userStatsRet", {}).get("completionRate")
+                or user_stats.get("completionRate")
             ),
             is_merchant=user_type in {"merchant", "block"} or bool(advertiser.get("isMerchant")),
             advert_id=str(adv.get("advNo") or ""),
             fetched_at=time.time(),
             payment_window_min=_to_int(adv.get("payTimeLimit")),
+            user_grade=_normalize_user_grade(advertiser.get("userGrade")),
+            vip_level=_normalize_vip_level(advertiser.get("vipLevel")),
+            account_age_days=_account_age_days_from_register_ms(
+                advertiser.get("registrationTime")
+                or advertiser.get("registerTime")
+                or user_stats.get("registerTime")
+            ),
         )
     except Exception:
         return None
@@ -596,6 +716,7 @@ def parse_bybit_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: st
             or user_type in {"MERCHANT", "BUSINESS", "ORG", "ORGANIZATION"}
             or bool(row.get("makerContact"))
         )
+        trading_preference = row.get("tradingPreferenceSet") or {}
         return P2PAdvert(
             venue="Bybit P2P",
             trade_type=trade_type.upper(),
@@ -610,12 +731,19 @@ def parse_bybit_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: st
             completed_orders=_to_int(row.get("finishNum") or row.get("orderNum") or row.get("recentOrderNum")),
             completion_rate_pct=_completion_rate_pct(
                 row.get("recentExecuteRate")
-                or (row.get("tradingPreferenceSet") or {}).get("completeRateDay30")
+                or trading_preference.get("completeRateDay30")
             ),
             is_merchant=is_merchant,
             advert_id=str(row.get("id") or ""),
             fetched_at=time.time(),
             payment_window_min=_to_int(row.get("paymentPeriod")),
+            user_grade=_normalize_user_grade(row.get("userGrade")),
+            vip_level=_normalize_vip_level(row.get("vipLevel") or row.get("vaLevel")),
+            account_age_days=_account_age_days_from_register_ms(
+                row.get("registerTime")
+                or row.get("userCreateTime")
+                or row.get("accountCreateDate")
+            ),
         )
     except Exception:
         return None
@@ -690,6 +818,11 @@ def parse_okx_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: str)
             advert_id=advert_id,
             fetched_at=time.time(),
             payment_window_min=_to_int(row.get("paymentLimit") or row.get("paymentPeriod")),
+            user_grade=_normalize_user_grade(row.get("userGrade")),
+            vip_level=_normalize_vip_level(row.get("vipLevel")),
+            account_age_days=_account_age_days_from_register_ms(
+                row.get("registerTime") or row.get("registrationTime")
+            ),
         )
     except Exception:
         return None
@@ -820,6 +953,24 @@ def _risk_level(
         warnings.append("не обе стороны merchant")
     if min_payment_window is not None and min_payment_window < get_payment_window_warn_min():
         warnings.append(f"короткое окно оплаты {min_payment_window} мин")
+    # Account quality signals (Soft #2 — userGrade / vipLevel / accountAge).
+    # Скам-эффект: прокачанный monthFinishRate 30-дневный обнуляется свежим
+    # аккаунтом, у которого ещё нет никаких других сигналов.
+    min_user_grade = get_risk_min_user_grade()
+    if min_user_grade > 0:
+        grades = [g for g in (buy_ad.user_grade, sell_ad.user_grade) if g is not None]
+        if grades and min(grades) < min_user_grade:
+            warnings.append(f"низкий userGrade ({min(grades)} < {min_user_grade})")
+    min_vip = get_risk_min_vip_level()
+    if min_vip > 0:
+        vips = [v for v in (buy_ad.vip_level, sell_ad.vip_level) if v is not None]
+        if vips and min(vips) < min_vip:
+            warnings.append(f"низкий VIP-level ({min(vips)} < {min_vip})")
+    min_age = get_risk_min_account_age_days()
+    if min_age > 0:
+        ages = [a for a in (buy_ad.account_age_days, sell_ad.account_age_days) if a is not None]
+        if ages and min(ages) < min_age:
+            warnings.append(f"свежий аккаунт ({min(ages)} дн. < {min_age})")
     # Russia-specific check: big RUB transfers may trigger 115-FZ requirements
     try:
         fiat_upper = (buy_ad.fiat or "").upper()

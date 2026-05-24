@@ -208,6 +208,9 @@ async def _fetch_bybit_p2p_side(
     pay_types: tuple[str, ...],
     rows: int = DEFAULT_ROWS_PER_SIDE,
 ) -> tuple[list[dict[str, Any]], str | None]:
+    # Server-side merchant filter: pass vaMaker=True when merchant_only() is on so
+    # Bybit returns only verified-account makers (saves traffic vs. post-fetch filter).
+    only_merchants = merchant_only()
     payload = {
         "userId": "",
         "tokenId": asset.upper(),
@@ -217,10 +220,10 @@ async def _fetch_bybit_p2p_side(
         "size": str(rows),
         "page": "1",
         "amount": "",
-        "vaMaker": False,
+        "vaMaker": only_merchants,
         "bulkMaker": False,
         "canTrade": False,
-        "verificationFilter": 0,
+        "verificationFilter": 1 if only_merchants else 0,
     }
     headers = {
         "Content-Type": "application/json",
@@ -480,7 +483,47 @@ async def handle_p2p_command(message: Message) -> None:
         except Exception:
             logger.exception("failed to record alert %s", key)
 
+    # Persist surfaced opportunities into the self-audit log if the feature is on.
+    # Backcheck loop in scheduler will revisit them after the configured delay.
+    try:
+        from p2p_audit import feature_enabled as _audit_enabled
+        from p2p_audit_io import persist_opportunities_for_audit
+
+        if _audit_enabled() and send_ops:
+            await persist_opportunities_for_audit(send_ops)
+    except Exception:
+        logger.exception("failed to persist P2P opportunities for self-audit")
+
+
+async def handle_p2p_audit_command(message: Message) -> None:
+    """``/p2paudit`` — последние 100 показанных opportunities + рекомендация по порогу."""
+    try:
+        from p2p_audit import feature_enabled as _audit_enabled
+        from p2p_audit_io import format_audit_report
+    except Exception:
+        await _answer_md(message, "*📊 P2P self-audit*\n\nМодуль аудита недоступен.")
+        return
+
+    if not _audit_enabled():
+        await _answer_md(
+            message,
+            "*📊 P2P self-audit*\n\n"
+            "Фича выключена. Включи `FEATURE_P2P_SELF_AUDIT=1` чтобы бот логировал "
+            "показанные opportunities и через `P2P_AUDIT_BACKCHECK_DELAY_MIN` мин "
+            "перепроверял, не схлопнулся ли спред.",
+        )
+        return
+
+    try:
+        report = await format_audit_report(limit=100)
+    except Exception:
+        logger.exception("p2p audit report generation failed")
+        await _answer_md(message, "*📊 P2P self-audit*\n\nОшибка при чтении журнала.")
+        return
+    await _answer_md(message, report)
+
 
 def register_p2p_arbitrage_handlers(dp) -> None:
     dp.message.register(handle_p2p_command, Command("p2p"))
     dp.message.register(handle_p2p_command, Command("p2parb"))
+    dp.message.register(handle_p2p_audit_command, Command("p2paudit"))
