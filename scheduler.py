@@ -205,6 +205,7 @@ try:
         get_alert_interval_sec as _p2p_get_alert_interval_sec,
         get_assets as _p2p_get_assets,
         get_fiats as _p2p_get_fiats,
+        get_scan_throttle_sec as _p2p_get_scan_throttle_sec,
         get_max_results as _p2p_get_max_results,
         get_min_completion_rate_pct as _p2p_get_min_completion_rate_pct,
         get_min_orders as _p2p_get_min_orders,
@@ -663,8 +664,16 @@ class Scheduler:
         sent = 0
         now = datetime.now()
         pay_types = _p2p_get_pay_types()
+        throttle_sec = _p2p_get_scan_throttle_sec()
+        is_first = True
         for asset in _p2p_get_assets():
             for fiat in _p2p_get_fiats():
+                # Дроссель между парами — растягиваем 42 пары на ~15s, чтобы
+                # не словить 429 от Binance/Bybit при широком скане (CIS фиаты
+                # × 7 assets). На узком override эффект незаметен.
+                if not is_first and throttle_sec > 0:
+                    await asyncio.sleep(throttle_sec)
+                is_first = False
                 buy_ads, sell_ads, errors, source = await _fetch_p2p_ads(
                     asset=asset,
                     fiat=fiat,
