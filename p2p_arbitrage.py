@@ -56,6 +56,22 @@ PAYMENT_METHOD_ALIASES = {
     "райффайзен": "raiffeisen",
     "sbp": "sbp",
     "сбп": "sbp",
+    # Bybit P2P numeric payment IDs → canonical RU bank slugs.
+    # Source: Bybit P2P public API (`paymentTypeList`). Best-effort mapping for
+    # the most common RU rails; unknown IDs fall through to "bybit:<id>".
+    "bybit:14": "tinkoff",
+    "bybit:75": "tinkoff",
+    "bybit:582": "tinkoff",
+    "bybit:18": "sbp",
+    "bybit:585": "sbp",
+    "bybit:377": "sbp",
+    "bybit:40": "sber",
+    "bybit:185": "sber",
+    "bybit:584": "sber",
+    "bybit:64": "raiffeisen",
+    "bybit:27": "raiffeisen",
+    "bybit:62": "rosbank",
+    "bybit:90": "cash",
 }
 
 
