@@ -19,13 +19,19 @@ _UNKNOWN_BYBIT_ID_LOG_LIMIT = 50
 _unknown_bybit_ids_logged: set[str] = set()
 
 
-# По умолчанию сканер смотрит шире чем «один USDT/RUB» — пользователь хочет, чтобы
-# бот сам искал прибыль по всем популярным парам. Узкий список оставляется как
-# fallback, но дефолт расширен на основные стейблы (USDT/USDC) + BTC/ETH и три
-# самых ликвидных фиата (RUB/USD/EUR). Override через P2P_ARBITRAGE_ASSETS /
-# P2P_ARBITRAGE_FIATS если нужно сузить.
-DEFAULT_P2P_ASSETS = ("USDT", "USDC", "BTC", "ETH")
-DEFAULT_P2P_FIATS = ("RUB", "USD", "EUR")
+# По умолчанию сканер смотрит широко: стейблы (USDT/USDC/DAI) + крупные
+# монеты (BTC/ETH) + ликвидные альты (SOL/LTC). По фиатам — лидеры RU/US/EU
+# плюс полный CIS-зонт (KZT/UAH/BYN) для расширения географии (пользователь
+# работает с Казахстаном и хочет видеть локальные окна). Override через
+# P2P_ARBITRAGE_ASSETS / P2P_ARBITRAGE_FIATS если нужно сузить или сместить
+# фокус. Сканер graceful-degrade'ит если венчур не торгует пару — просто
+# пропустит её без ошибки.
+DEFAULT_P2P_ASSETS = ("USDT", "USDC", "BTC", "ETH", "DAI", "SOL", "LTC")
+DEFAULT_P2P_FIATS = ("RUB", "USD", "EUR", "KZT", "UAH", "BYN")
+# Inter-pair дроссель: 7×6=42 пары × 2 venue × 2 side = 168 HTTP-запросов на
+# скан. Чтобы не словить 429 от Binance/Bybit, scheduler спит 0.3-0.5s между
+# парами. Override через P2P_ARBITRAGE_SCAN_THROTTLE_SEC.
+DEFAULT_SCAN_THROTTLE_SEC = 0.35
 DEFAULT_MIN_SPREAD_PCT = 1.0
 DEFAULT_SETTLEMENT_BUFFER_PCT = 0.35
 DEFAULT_BANK_FEE_PCT = 0.0
@@ -262,6 +268,17 @@ def get_assets() -> tuple[str, ...]:
 
 def get_fiats() -> tuple[str, ...]:
     return _env_csv("P2P_ARBITRAGE_FIATS", DEFAULT_P2P_FIATS)
+
+
+def get_scan_throttle_sec() -> float:
+    # Сколько секунд спать между парами в Cartesian-product скане.
+    # 0 = без дросселя (риск 429 при широких defaults).
+    return _env_float(
+        "P2P_ARBITRAGE_SCAN_THROTTLE_SEC",
+        DEFAULT_SCAN_THROTTLE_SEC,
+        min_val=0.0,
+        max_val=10.0,
+    )
 
 
 def get_pay_types() -> tuple[str, ...]:

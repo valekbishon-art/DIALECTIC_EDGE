@@ -79,20 +79,35 @@ class TestP2PEnv(unittest.TestCase):
         with patch.dict(os.environ, {"P2P_ARBITRAGE_ASSETS": "usdt,btc,USDT"}, clear=True):
             self.assertEqual(get_assets(), ("USDT", "BTC"))
 
-    def test_default_assets_cover_major_stables_and_btc_eth(self):
-        # Дефолт расширен на USDT/USDC/BTC/ETH (раньше был только USDT)
-        # — пользователь хочет «смотреть на все пары».
+    def test_default_assets_cover_stables_btc_eth_alts(self):
+        # Дефолт расширен на 7 активов: USDT/USDC/DAI (стейблы), BTC/ETH
+        # (крупные), SOL/LTC (альты). Пользователь явно попросил LTC/SOL/DAI в
+        # дополнение к базовым.
         with patch.dict(os.environ, {}, clear=True):
             assets = get_assets()
-            self.assertEqual(set(assets), {"USDT", "USDC", "BTC", "ETH"})
+            self.assertEqual(
+                set(assets),
+                {"USDT", "USDC", "BTC", "ETH", "DAI", "SOL", "LTC"},
+            )
             self.assertEqual(assets, DEFAULT_P2P_ASSETS)
 
-    def test_default_fiats_cover_rub_usd_eur(self):
-        # Дефолтные фиаты расширены на RUB/USD/EUR (раньше был только RUB).
+    def test_default_fiats_cover_majors_and_cis(self):
+        # Фиаты: RUB/USD/EUR (лидеры) + KZT/UAH/BYN (CIS-зонт для пользователей
+        # Казахстана). Расширено по явному запросу пользователя.
         with patch.dict(os.environ, {}, clear=True):
             fiats = get_fiats()
-            self.assertEqual(set(fiats), {"RUB", "USD", "EUR"})
+            self.assertEqual(
+                set(fiats),
+                {"RUB", "USD", "EUR", "KZT", "UAH", "BYN"},
+            )
             self.assertEqual(fiats, DEFAULT_P2P_FIATS)
+
+    def test_default_cartesian_product_yields_42_pairs(self):
+        # Санити-тест: 7 × 6 = 42, чтобы не выросло незаметно в 200+.
+        with patch.dict(os.environ, {}, clear=True):
+            assets = get_assets()
+            fiats = get_fiats()
+            self.assertEqual(len(assets) * len(fiats), 42)
 
     def test_assets_env_override_still_works(self):
         # Override через P2P_ARBITRAGE_ASSETS по-прежнему сужает список.
