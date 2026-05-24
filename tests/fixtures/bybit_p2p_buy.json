@@ -1,0 +1,41 @@
+{
+  "ret_code": 0,
+  "ret_msg": "SUCCESS",
+  "result": {
+    "count": 780,
+    "items": [
+      {
+        "id": "1918875499790905344",
+        "accountId": "171436322",
+        "userId": "171436320",
+        "nickName": "Irina77",
+        "tokenId": "USDT",
+        "currencyId": "RUB",
+        "side": 0,
+        "price": "81.86",
+        "lastQuantity": "98735.9392",
+        "quantity": "102070.5402",
+        "frozenQuantity": "0",
+        "minAmount": "10000.00",
+        "maxAmount": "300000.00",
+        "payments": ["18", "40", "14"],
+        "orderNum": 664,
+        "finishNum": 656,
+        "recentOrderNum": 152,
+        "recentExecuteRate": 100,
+        "authStatus": 1,
+        "authTag": ["VA1", "BA", "GA", "VA", "VA2", "VA3"],
+        "userType": "PERSONAL",
+        "makerContact": false,
+        "paymentPeriod": 15,
+        "userMaskId": "s2716e9fd6afd401eb5a08e5196f44177",
+        "tradingPreferenceSet": {
+          "completeRateDay30": "0"
+        }
+      }
+    ]
+  },
+  "ext_code": "",
+  "ext_info": {},
+  "time_now": "1779402923.867598"
+}

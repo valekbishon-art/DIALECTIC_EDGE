@@ -27,6 +27,9 @@ matplotlib
 # Redis (опционально: REDIS_URL для дебатов при нескольких воркерах/рестартах)
 redis>=5.0
 
+# optional: file locking for JsonAlertStore
+filelock>=3.14
+
 # v4
 
 # Trading CLI + dashboard (optional)
