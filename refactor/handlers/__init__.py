@@ -241,6 +241,11 @@ from .p2p_arbitrage_handler import (
     register_p2p_arbitrage_handlers,
 )
 
+from .postmortem_handler import (
+    handle_postmortem_command,
+    register_postmortem_handlers,
+)
+
 # Utilities
 from .utils import (
     split_message,
@@ -305,6 +310,8 @@ __all__ = [
     "fetch_p2p_ads",
     "handle_p2p_command",
     "register_p2p_arbitrage_handlers",
+    "handle_postmortem_command",
+    "register_postmortem_handlers",
     "debates_keyboard",
     "main_report_keyboard",
     "extract_signal_pct_and_stars",

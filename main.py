@@ -122,6 +122,7 @@ from refactor.handlers import (
     handle_p2p_command,
     register_funding_handlers,
     register_p2p_arbitrage_handlers,
+    register_postmortem_handlers,
     register_sniping_handlers,
     sniping_callback_data,
 )
@@ -5781,6 +5782,7 @@ async def main():
 
     register_funding_handlers(dp)
     register_p2p_arbitrage_handlers(dp)
+    register_postmortem_handlers(dp)
     register_sniping_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()
