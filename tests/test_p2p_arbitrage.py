@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from p2p_arbitrage import (
+    DEFAULT_P2P_ASSETS,
+    DEFAULT_P2P_FIATS,
     P2PAdvert,
     alerts_enabled,
     bybit_enabled,
@@ -19,6 +21,7 @@ from p2p_arbitrage import (
     get_alert_cooldown_sec,
     get_alert_interval_sec,
     get_assets,
+    get_fiats,
     parse_binance_ad,
     parse_bybit_ad,
 )
@@ -32,16 +35,27 @@ def load_fixture(name: str) -> dict:
 
 
 class TestP2PEnv(unittest.TestCase):
-    def test_feature_default_off(self):
+    def test_feature_default_on(self):
+        # По умолчанию P2P-сканер включён — явная просьба владельца
+        # (read-only мониторинг, денег не двигает).
         with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(feature_enabled())
+
+    def test_feature_explicit_off(self):
+        with patch.dict(os.environ, {"FEATURE_P2P_ARBITRAGE": "0"}, clear=True):
             self.assertFalse(feature_enabled())
 
-    def test_feature_enabled(self):
+    def test_feature_explicit_on(self):
         with patch.dict(os.environ, {"FEATURE_P2P_ARBITRAGE": "1"}, clear=True):
             self.assertTrue(feature_enabled())
 
-    def test_alerts_default_off(self):
+    def test_alerts_default_on(self):
+        # Алерты тоже ON по умолчанию: цель сканера — авто-нотификация.
         with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(alerts_enabled())
+
+    def test_alerts_explicit_off(self):
+        with patch.dict(os.environ, {"FEATURE_P2P_ARBITRAGE_ALERTS": "0"}, clear=True):
             self.assertFalse(alerts_enabled())
 
     def test_alert_env_helpers(self):
@@ -64,6 +78,30 @@ class TestP2PEnv(unittest.TestCase):
     def test_assets_dedup_uppercase(self):
         with patch.dict(os.environ, {"P2P_ARBITRAGE_ASSETS": "usdt,btc,USDT"}, clear=True):
             self.assertEqual(get_assets(), ("USDT", "BTC"))
+
+    def test_default_assets_cover_major_stables_and_btc_eth(self):
+        # Дефолт расширен на USDT/USDC/BTC/ETH (раньше был только USDT)
+        # — пользователь хочет «смотреть на все пары».
+        with patch.dict(os.environ, {}, clear=True):
+            assets = get_assets()
+            self.assertEqual(set(assets), {"USDT", "USDC", "BTC", "ETH"})
+            self.assertEqual(assets, DEFAULT_P2P_ASSETS)
+
+    def test_default_fiats_cover_rub_usd_eur(self):
+        # Дефолтные фиаты расширены на RUB/USD/EUR (раньше был только RUB).
+        with patch.dict(os.environ, {}, clear=True):
+            fiats = get_fiats()
+            self.assertEqual(set(fiats), {"RUB", "USD", "EUR"})
+            self.assertEqual(fiats, DEFAULT_P2P_FIATS)
+
+    def test_assets_env_override_still_works(self):
+        # Override через P2P_ARBITRAGE_ASSETS по-прежнему сужает список.
+        with patch.dict(os.environ, {"P2P_ARBITRAGE_ASSETS": "USDT"}, clear=True):
+            self.assertEqual(get_assets(), ("USDT",))
+
+    def test_fiats_env_override_still_works(self):
+        with patch.dict(os.environ, {"P2P_ARBITRAGE_FIATS": "RUB"}, clear=True):
+            self.assertEqual(get_fiats(), ("RUB",))
 
     def test_bybit_provider_default_on_under_parent_feature(self):
         with patch.dict(os.environ, {}, clear=True):
