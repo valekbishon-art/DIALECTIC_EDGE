@@ -118,8 +118,10 @@ from refactor.handlers import (
     handle_health_command,
     handle_logs_command,
     handle_sysinfo_command,
+    handle_btc_command,
     handle_funding_command,
     handle_p2p_command,
+    register_btc_handlers,
     register_funding_handlers,
     register_p2p_arbitrage_handlers,
     register_postmortem_handlers,
@@ -5781,6 +5783,7 @@ async def main():
     bot = get_bot()
 
     register_funding_handlers(dp)
+    register_btc_handlers(dp)
     register_p2p_arbitrage_handlers(dp)
     register_postmortem_handlers(dp)
     register_sniping_handlers(dp)
