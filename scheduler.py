@@ -165,6 +165,33 @@ try:
 except ImportError:
     STABLECOIN_ENABLED = False
 
+# Auto-alert engine: anomaly screener + BTC ETF flow watcher + liquidation
+# magnet. Each rule has its own sub-flag.
+try:
+    from refactor.services import (
+        AlertEngine as _AlertEngine,
+        JsonAlertStore as _AlertJsonStore,
+        alert_engine_chat_ids as _alert_engine_chat_ids,
+        alert_engine_enabled as _alert_engine_enabled,
+        alert_engine_interval_sec as _alert_engine_interval_sec,
+        format_alert_card as _format_alert_card,
+    )
+    from refactor.services.alert_rules import (
+        BtcEtfOutflowRule as _BtcEtfOutflowRule,
+        LiquidationClusterRule as _LiquidationClusterRule,
+        ScreenerAnomalyRule as _ScreenerAnomalyRule,
+    )
+    from refactor.services.alert_rules.btc_etf_outflow import feature_enabled as _alert_btc_etf_enabled
+    from refactor.services.alert_rules.liquidation_cluster import (
+        feature_enabled as _alert_liq_enabled,
+    )
+    from refactor.services.alert_rules.screener_anomaly import (
+        feature_enabled as _alert_screener_enabled,
+    )
+    ALERT_ENGINE_LOADED = True
+except ImportError:
+    ALERT_ENGINE_LOADED = False
+
 # P2P arbitrage alerts. Manual command lives in refactor/handlers; scheduler
 # only sends admin alerts when a clean window appears.
 try:
@@ -327,6 +354,21 @@ class Scheduler:
                 ",".join(_p2p_get_assets()),
                 ",".join(_p2p_get_fiats()),
                 _p2p_get_alert_interval_sec(),
+            )
+
+        if ALERT_ENGINE_LOADED and _alert_engine_enabled():
+            tasks.append(self._alert_engine_loop())
+            active_rules = [
+                name for name, ok in (
+                    ("screener", _alert_screener_enabled()),
+                    ("btc_etf", _alert_btc_etf_enabled()),
+                    ("liquidation", _alert_liq_enabled()),
+                ) if ok
+            ]
+            logger.info(
+                "🔔 Alert engine включён (interval=%ss, rules=%s)",
+                _alert_engine_interval_sec(),
+                ",".join(active_rules) or "none",
             )
 
         await asyncio.gather(*tasks)
@@ -554,6 +596,77 @@ class Scheduler:
                         logger.warning("p2p alert send failed chat_id=%s: %s", chat_id, exc)
                 self._last_p2p_alert_keys[alert_key] = now
         return sent
+
+    async def _alert_engine_loop(self):
+        """Background loop: evaluates configured AlertRules and sends cards.
+
+        Each rule is independent and cooldown'd by ``JsonAlertStore``. Loop
+        keeps running on rule-level failures (logged and swallowed inside the
+        engine).
+        """
+        await asyncio.sleep(180)  # warm-up: дать другим источникам прогреться
+
+        store = _AlertJsonStore()
+        rules: list = []
+        if _alert_screener_enabled():
+            rules.append(_ScreenerAnomalyRule.build())
+        if _alert_btc_etf_enabled():
+            rules.append(_BtcEtfOutflowRule.build())
+        if _alert_liq_enabled():
+            rules.append(_LiquidationClusterRule.build())
+
+        if not rules:
+            logger.info(
+                "Alert engine: все правила выключены (FEATURE_ALERT_*=0) — exit",
+            )
+            return
+
+        engine = _AlertEngine(rules=rules, store=store)
+
+        while self._running:
+            try:
+                chat_ids = _alert_engine_chat_ids(ADMIN_IDS)
+                if not chat_ids:
+                    logger.info(
+                        "Alert engine: нет ADMIN_IDS/ALERT_ENGINE_CHAT_IDS — sleep",
+                    )
+                    await asyncio.sleep(_alert_engine_interval_sec())
+                    continue
+
+                cards = await engine.evaluate_all()
+                if not cards:
+                    await asyncio.sleep(_alert_engine_interval_sec())
+                    continue
+
+                sent_total = 0
+                for card in cards:
+                    text = _format_alert_card(card)
+                    for chat_id in chat_ids:
+                        try:
+                            await self.bot.send_message(
+                                chat_id,
+                                text,
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
+                            )
+                            sent_total += 1
+                        except Exception as exc:
+                            logger.warning(
+                                "Alert engine send failed chat_id=%s rule=%s: %s",
+                                chat_id,
+                                card.rule_id,
+                                exc,
+                            )
+                if sent_total:
+                    logger.info(
+                        "🔔 Alert engine отправил %s сообщений (%s карточек)",
+                        sent_total,
+                        len(cards),
+                    )
+            except Exception as exc:
+                logger.error("Alert engine loop error: %s", exc)
+
+            await asyncio.sleep(_alert_engine_interval_sec())
 
     async def _auto_tracker_loop(self):
         """Проверяет прогнозы в 00:10 UTC (через 10 минут после дайджеста)."""
