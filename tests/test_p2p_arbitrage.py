@@ -253,6 +253,23 @@ class TestP2POpportunities(unittest.TestCase):
         self.assertEqual(len(opportunities), 1)
         self.assertEqual(opportunities[0].shared_payment_methods, ("tinkoff",))
 
+    def test_bybit_numeric_ids_map_to_canonical(self):
+        self.assertEqual(canonical_payment_method("bybit:14"), "tinkoff")
+        self.assertEqual(canonical_payment_method("bybit:18"), "sbp")
+        self.assertEqual(canonical_payment_method("bybit:40"), "sber")
+        self.assertEqual(canonical_payment_method("bybit:185"), "sber")
+        self.assertEqual(canonical_payment_method("bybit:999"), "bybit:999")
+
+    def test_cross_venue_overlap_binance_text_vs_bybit_numeric(self):
+        binance_buy = self._ad("BUY", 100.0, methods=("TinkoffNew",), advertiser="binance-mkt")
+        bybit_sell = self._ad("SELL", 103.0, methods=("bybit:14",), advertiser="bybit-mkt")
+        opportunities = find_p2p_opportunities(
+            [binance_buy],
+            [bybit_sell],
+        )
+        self.assertEqual(len(opportunities), 1)
+        self.assertEqual(opportunities[0].shared_payment_methods, ("tinkoff",))
+
     def test_short_payment_window_adds_warning(self):
         opportunities = find_p2p_opportunities(
             [self._ad("BUY", 100.0, orders=600, rate=99.0, payment_window_min=10)],
