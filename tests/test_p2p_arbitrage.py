@@ -354,5 +354,174 @@ class TestP2POpportunities(unittest.TestCase):
         self.assertIn("чистого арбитражного окна нет", text)
 
 
+class TestAccountQualitySignals(unittest.TestCase):
+    """Tests for new userGrade / vipLevel / accountAgeDays fields (Soft #2)."""
+
+    def test_binance_parses_user_grade_vip_account_age(self):
+        # Account registered 365 days ago (in ms)
+        register_ms = int((time.time() - 365 * 86400) * 1000)
+        row = {
+            "adv": {
+                "advNo": "id",
+                "price": "100",
+                "minSingleTransAmount": "100",
+                "maxSingleTransAmount": "10000",
+                "tradeMethods": [{"identifier": "TinkoffNew"}],
+            },
+            "advertiser": {
+                "nickName": "x",
+                "userType": "merchant",
+                "userGrade": "5",
+                "vipLevel": "2",
+                "registrationTime": register_ms,
+                "monthFinishRate": 0.99,
+                "monthOrderCount": "300",
+            },
+        }
+        ad = parse_binance_ad(row, trade_type="BUY", asset="USDT", fiat="RUB")
+        self.assertIsNotNone(ad)
+        assert ad is not None
+        self.assertEqual(ad.user_grade, 5)
+        self.assertEqual(ad.vip_level, 2)
+        # Should be very close to 365 days
+        self.assertIsNotNone(ad.account_age_days)
+        self.assertGreaterEqual(ad.account_age_days or 0, 364)
+        self.assertLessEqual(ad.account_age_days or 0, 366)
+
+    def test_binance_missing_quality_fields_returns_none(self):
+        row = {
+            "adv": {
+                "advNo": "id",
+                "price": "100",
+                "minSingleTransAmount": "100",
+                "maxSingleTransAmount": "10000",
+                "tradeMethods": [],
+            },
+            "advertiser": {"nickName": "x", "userType": "merchant"},
+        }
+        ad = parse_binance_ad(row, trade_type="BUY", asset="USDT", fiat="RUB")
+        self.assertIsNotNone(ad)
+        assert ad is not None
+        self.assertIsNone(ad.user_grade)
+        self.assertIsNone(ad.vip_level)
+        self.assertIsNone(ad.account_age_days)
+
+    def test_bybit_parses_quality_fields(self):
+        register_ms = int((time.time() - 200 * 86400) * 1000)
+        row = {
+            "id": "x",
+            "price": "100",
+            "minAmount": "100",
+            "maxAmount": "10000",
+            "tokenId": "USDT",
+            "currencyId": "RUB",
+            "payments": ["14"],
+            "vipLevel": 3,
+            "userGrade": 7,
+            "registerTime": register_ms,
+            "finishNum": 500,
+            "recentExecuteRate": 99.5,
+        }
+        ad = parse_bybit_ad(row, trade_type="BUY", asset="USDT", fiat="RUB")
+        self.assertIsNotNone(ad)
+        assert ad is not None
+        self.assertEqual(ad.user_grade, 7)
+        self.assertEqual(ad.vip_level, 3)
+        self.assertGreaterEqual(ad.account_age_days or 0, 199)
+
+
+class TestRiskLevelQualitySignals(unittest.TestCase):
+    """Tests for `_risk_level` warnings driven by new fields."""
+
+    def _ad(self, **overrides) -> P2PAdvert:
+        defaults = dict(
+            venue="Binance P2P",
+            trade_type="BUY",
+            asset="USDT",
+            fiat="RUB",
+            price=100.0,
+            min_amount_fiat=1000.0,
+            max_amount_fiat=50_000.0,
+            payment_methods=("tinkoff",),
+            advertiser="x",
+            completed_orders=600,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            payment_window_min=20,
+            user_grade=5,
+            vip_level=2,
+            account_age_days=365,
+        )
+        defaults.update(overrides)
+        return P2PAdvert(**defaults)
+
+    def test_low_account_age_emits_warning(self):
+        from p2p_arbitrage import _risk_level
+
+        with patch.dict(os.environ, {"P2P_RISK_MIN_ACCOUNT_AGE_DAYS": "30"}, clear=True):
+            buy = self._ad(trade_type="BUY", account_age_days=5)
+            sell = self._ad(trade_type="SELL", price=102.0)
+            _level, warnings = _risk_level(buy, sell, ("tinkoff",))
+            self.assertTrue(any("свежий аккаунт" in w for w in warnings))
+
+    def test_low_user_grade_emits_warning(self):
+        from p2p_arbitrage import _risk_level
+
+        with patch.dict(os.environ, {"P2P_RISK_MIN_USER_GRADE": "3"}, clear=True):
+            buy = self._ad(trade_type="BUY", user_grade=1)
+            sell = self._ad(trade_type="SELL", price=102.0)
+            _level, warnings = _risk_level(buy, sell, ("tinkoff",))
+            self.assertTrue(any("userGrade" in w for w in warnings))
+
+    def test_low_vip_level_emits_warning(self):
+        from p2p_arbitrage import _risk_level
+
+        with patch.dict(os.environ, {"P2P_RISK_MIN_VIP_LEVEL": "2"}, clear=True):
+            buy = self._ad(trade_type="BUY", vip_level=0)
+            sell = self._ad(trade_type="SELL", price=102.0)
+            _level, warnings = _risk_level(buy, sell, ("tinkoff",))
+            self.assertTrue(any("VIP" in w for w in warnings))
+
+    def test_quality_checks_disabled_when_env_zero(self):
+        from p2p_arbitrage import _risk_level
+
+        env = {
+            "P2P_RISK_MIN_ACCOUNT_AGE_DAYS": "0",
+            "P2P_RISK_MIN_USER_GRADE": "0",
+            "P2P_RISK_MIN_VIP_LEVEL": "0",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            buy = self._ad(trade_type="BUY", account_age_days=1, user_grade=0, vip_level=0)
+            sell = self._ad(trade_type="SELL", price=102.0, account_age_days=1, user_grade=0, vip_level=0)
+            _level, warnings = _risk_level(buy, sell, ("tinkoff",))
+            self.assertFalse(any("свежий" in w or "userGrade" in w or "VIP" in w for w in warnings))
+
+
+class TestPaymentMethodAliasExtensions(unittest.TestCase):
+    """Soft #4 — verify the extra Bybit ID mapping covers common RU rails."""
+
+    def test_extended_aliases_present(self):
+        from p2p_arbitrage import PAYMENT_METHOD_ALIASES
+
+        extended = {
+            "bybit:160": "vtb",
+            "bybit:189": "alfabank",
+            "bybit:264": "yoomoney",
+            "bybit:381": "psb",
+            "bybit:600": "akbars",
+        }
+        for key, value in extended.items():
+            self.assertEqual(PAYMENT_METHOD_ALIASES[key], value, msg=key)
+
+    def test_canonical_payment_method_uses_extension(self):
+        self.assertEqual(canonical_payment_method("bybit:189"), "alfabank")
+        self.assertEqual(canonical_payment_method("bybit:264"), "yoomoney")
+
+    def test_unknown_bybit_id_passes_through(self):
+        # Unknown ID stays prefixed as "bybit:<id>"
+        result = canonical_payment_method("bybit:99999")
+        self.assertEqual(result, "bybit:99999")
+
+
 if __name__ == "__main__":
     unittest.main()

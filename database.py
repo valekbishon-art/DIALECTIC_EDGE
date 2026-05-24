@@ -527,6 +527,39 @@ async def init_db():
             "ON cascade_post_mortems (triggered_at DESC)"
         )
 
+        # ─── p2p_audit_log (P2P self-audit) ────────────────────────────────
+        # Журнал показанных P2P opportunities. Backcheck-loop через
+        # P2P_AUDIT_BACKCHECK_DELAY_MIN перечитывает orderbook и заполняет
+        # realised_spread_pct + status. Используется в /p2paudit и
+        # для адаптивной подстройки P2P_ARBITRAGE_MIN_SPREAD_PCT.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS p2p_audit_log (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                opportunity_key   TEXT    NOT NULL,
+                asset             TEXT    NOT NULL,
+                fiat              TEXT    NOT NULL,
+                venue_buy         TEXT    NOT NULL,
+                venue_sell        TEXT    NOT NULL,
+                buy_price         REAL    NOT NULL,
+                sell_price        REAL    NOT NULL,
+                gross_spread_pct  REAL    NOT NULL,
+                net_spread_pct    REAL    NOT NULL,
+                risk_level        TEXT    NOT NULL,
+                shown_at_ms       INTEGER NOT NULL,
+                realised_at_ms    INTEGER,
+                realised_spread_pct REAL,
+                status            TEXT    NOT NULL DEFAULT 'pending'
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_p2p_audit_shown_at "
+            "ON p2p_audit_log (shown_at_ms DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_p2p_audit_status "
+            "ON p2p_audit_log (status, shown_at_ms DESC)"
+        )
+
         await db.commit()
 
     logger.info("✅ База данных инициализирована")

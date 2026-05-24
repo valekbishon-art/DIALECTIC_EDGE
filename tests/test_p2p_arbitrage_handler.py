@@ -19,6 +19,7 @@ if HAS_AIOGRAM:
     from refactor.handlers.p2p_arbitrage_handler import (
         _bybit_payment_filter,
         _extract_bybit_rows,
+        _fetch_bybit_p2p_side,
         _parse_p2p_command,
         fetch_bybit_p2p_ads,
     )
@@ -107,6 +108,57 @@ class TestBybitFetch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buy_ads, [])
         self.assertEqual(sell_ads, [])
         self.assertEqual(errors, ("Bybit BUY error 10001: parameter error",))
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
+class TestBybitMerchantServerSideFilter(unittest.IsolatedAsyncioTestCase):
+    """Soft #3 — when merchant_only=True we must pass vaMaker server-side."""
+
+    async def _capture_payload(self, env_merchant: str) -> dict:
+        captured: dict = {}
+
+        class _FakeResp:
+            status = 200
+
+            async def text(self):
+                return "{}"
+
+            async def json(self):
+                return {"result": {"items": []}}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return False
+
+        class _FakeSession:
+            def post(self, url, json=None, headers=None, timeout=None):
+                captured["url"] = url
+                captured["payload"] = json
+                return _FakeResp()
+
+        with patch.dict(os.environ, {"P2P_ARBITRAGE_MERCHANT_ONLY": env_merchant}, clear=False):
+            await _fetch_bybit_p2p_side(
+                _FakeSession(),
+                trade_type="BUY",
+                asset="USDT",
+                fiat="RUB",
+                pay_types=(),
+            )
+        return captured
+
+    async def test_passes_vamaker_when_merchant_only(self):
+        captured = await self._capture_payload("1")
+        self.assertIn("payload", captured)
+        self.assertEqual(captured["payload"].get("vaMaker"), True)
+        self.assertEqual(captured["payload"].get("verificationFilter"), 1)
+
+    async def test_no_vamaker_when_merchant_off(self):
+        captured = await self._capture_payload("0")
+        self.assertIn("payload", captured)
+        self.assertEqual(captured["payload"].get("vaMaker"), False)
+        self.assertEqual(captured["payload"].get("verificationFilter"), 0)
 
 
 if __name__ == "__main__":
