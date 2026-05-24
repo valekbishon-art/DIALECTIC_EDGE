@@ -476,6 +476,57 @@ async def init_db():
             "ON stablecoin_flow_snapshots (token, flow_class, created_at)"
         )
 
+        # ─── liquidation_events (Cascade post-mortem) ───────────────────────
+        # Сырой стрим публичных liquidations (forceOrder) с Binance/Bybit.
+        # Заполняется WS-listener'ом из cascade_post_mortem_io.py.
+        # Очищается retention-job'ом (default 7 дней), т.к. для post-mortem
+        # достаточно последних 48ч rolling-окна.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS liquidation_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms  INTEGER NOT NULL,
+                venue         TEXT    NOT NULL,
+                symbol        TEXT    NOT NULL,
+                side          TEXT    NOT NULL,
+                value_usd     REAL    NOT NULL,
+                CHECK (side IN ('long', 'short')),
+                CHECK (value_usd >= 0)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_liq_events_ts "
+            "ON liquidation_events (timestamp_ms DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_liq_events_venue_ts "
+            "ON liquidation_events (venue, timestamp_ms DESC)"
+        )
+
+        # ─── cascade_post_mortems (Cascade post-mortem) ─────────────────────
+        # История сработавших каскадных post-mortem'ов. summary_md — готовый
+        # markdown для TG, snapshot_json — индикаторы на момент срабатывания
+        # (regime/smart-money/liquidation magnet/ETF flow/funding/options skew).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cascade_post_mortems (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                triggered_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                window_type     TEXT    NOT NULL,
+                window_hours    INTEGER NOT NULL,
+                total_liq_usd   REAL    NOT NULL,
+                long_liq_usd    REAL    NOT NULL DEFAULT 0,
+                short_liq_usd   REAL    NOT NULL DEFAULT 0,
+                snapshot_json   TEXT    NOT NULL,
+                summary_md      TEXT    NOT NULL,
+                posted_to_tg    INTEGER NOT NULL DEFAULT 0,
+                CHECK (window_type IN ('rolling_24h', 'rolling_4h_acute')),
+                CHECK (posted_to_tg IN (0, 1))
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cpm_triggered_at "
+            "ON cascade_post_mortems (triggered_at DESC)"
+        )
+
         await db.commit()
 
     logger.info("✅ База данных инициализирована")

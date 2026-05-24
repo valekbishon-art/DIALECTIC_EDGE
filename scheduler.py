@@ -218,6 +218,22 @@ try:
 except ImportError:
     P2P_ARBITRAGE_ENABLED = False
 
+# Cascade post-mortem (auto-log публичных liquidations cascade'ов).
+# Включается фичефлагом FEATURE_CASCADE_POST_MORTEM=1, default OFF.
+# Запускает 3 task'а: Binance WS, Bybit WS, agg-loop.
+try:
+    from market_indicators.cascade_post_mortem_io import (
+        binance_enabled as _cpm_binance_enabled,
+        binance_ws_listener as _cpm_binance_ws,
+        bybit_enabled as _cpm_bybit_enabled,
+        bybit_ws_listener as _cpm_bybit_ws,
+        cascade_post_mortem_loop as _cpm_loop,
+        feature_enabled as _cpm_enabled,
+    )
+    CASCADE_POST_MORTEM_ENABLED = True
+except ImportError:
+    CASCADE_POST_MORTEM_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -231,6 +247,9 @@ class Scheduler:
         self._last_p2p_alert_keys: dict[str, datetime] = {}
         self._alert_system = None
         self._signals_system = None
+        # Cascade post-mortem: shared stop-event для WS-listener'ов и agg-loop.
+        # Заполняется при start() если фича включена.
+        self._cpm_stop_event: asyncio.Event | None = None
 
         if ALERT_SYSTEM_ENABLED:
             try:
@@ -371,7 +390,69 @@ class Scheduler:
                 ",".join(active_rules) or "none",
             )
 
+        if CASCADE_POST_MORTEM_ENABLED and _cpm_enabled():
+            self._cpm_stop_event = asyncio.Event()
+            active_venues: list[str] = []
+            if _cpm_binance_enabled():
+                tasks.append(
+                    _cpm_binance_ws(stop_event=self._cpm_stop_event)
+                )
+                active_venues.append("binance")
+            if _cpm_bybit_enabled():
+                tasks.append(
+                    _cpm_bybit_ws(stop_event=self._cpm_stop_event)
+                )
+                active_venues.append("bybit")
+            tasks.append(
+                _cpm_loop(
+                    stop_event=self._cpm_stop_event,
+                    send_telegram=self._cpm_send_telegram,
+                )
+            )
+            logger.info(
+                "🔥 Cascade post-mortem loop включён (venues=%s)",
+                ",".join(active_venues) or "none",
+            )
+
         await asyncio.gather(*tasks)
+
+    async def _cpm_send_telegram(self, text: str) -> bool:
+        """Шлёт каскадный post-mortem в TG-чаты.
+
+        Использует тот же chat-resolver, что и alert_engine (ALERT_ENGINE_CHAT_IDS
+        env с fallback на ADMIN_IDS). Возвращает True если хотя бы одно
+        сообщение успешно ушло.
+        """
+        try:
+            if ALERT_ENGINE_LOADED:
+                chat_ids = _alert_engine_chat_ids(ADMIN_IDS)
+            else:
+                chat_ids = list(ADMIN_IDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cascade post-mortem: chat-id resolve failed: %s", exc)
+            chat_ids = list(ADMIN_IDS)
+
+        if not chat_ids:
+            logger.info("cascade post-mortem: нет ADMIN_IDS — skipping TG send")
+            return False
+
+        sent_ok = False
+        for chat_id in chat_ids:
+            try:
+                await self.bot.send_message(
+                    chat_id,
+                    text,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                sent_ok = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "cascade post-mortem TG send failed chat_id=%s: %s",
+                    chat_id,
+                    exc,
+                )
+        return sent_ok
 
     async def _daily_digest_loop(self):
         """Каждую минуту проверяет — не пора ли слать дайджест подписчикам."""
