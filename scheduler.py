@@ -186,7 +186,7 @@ try:
         get_settlement_buffer_pct as _p2p_get_settlement_buffer_pct,
         merchant_only as _p2p_merchant_only,
     )
-    from refactor.handlers.p2p_arbitrage_handler import fetch_binance_p2p_ads as _fetch_p2p_ads
+    from refactor.handlers.p2p_arbitrage_handler import fetch_p2p_ads as _fetch_p2p_ads
     P2P_ARBITRAGE_ENABLED = True
 except ImportError:
     P2P_ARBITRAGE_ENABLED = False
@@ -503,7 +503,7 @@ class Scheduler:
         pay_types = _p2p_get_pay_types()
         for asset in _p2p_get_assets():
             for fiat in _p2p_get_fiats():
-                buy_ads, sell_ads, errors = await _fetch_p2p_ads(
+                buy_ads, sell_ads, errors, source = await _fetch_p2p_ads(
                     asset=asset,
                     fiat=fiat,
                     pay_types=pay_types,
@@ -538,6 +538,7 @@ class Scheduler:
                     asset=asset,
                     fiat=fiat,
                     pay_types=pay_types,
+                    source=source,
                     errors=errors,
                 )
                 for chat_id in chat_ids:

@@ -235,6 +235,8 @@ from .sniping_handler import (
 
 from .p2p_arbitrage_handler import (
     fetch_binance_p2p_ads,
+    fetch_bybit_p2p_ads,
+    fetch_p2p_ads,
     handle_p2p_command,
     register_p2p_arbitrage_handlers,
 )
@@ -299,6 +301,8 @@ __all__ = [
     "clean_markdown",
     "parse_report_parts",
     "fetch_binance_p2p_ads",
+    "fetch_bybit_p2p_ads",
+    "fetch_p2p_ads",
     "handle_p2p_command",
     "register_p2p_arbitrage_handlers",
     "debates_keyboard",

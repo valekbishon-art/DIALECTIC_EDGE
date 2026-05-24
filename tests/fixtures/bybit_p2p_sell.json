@@ -1,0 +1,41 @@
+{
+  "ret_code": 0,
+  "ret_msg": "SUCCESS",
+  "result": {
+    "count": 384,
+    "items": [
+      {
+        "id": "2057022991511912448",
+        "accountId": "115813632",
+        "userId": "115813628",
+        "nickName": "ZagirGG",
+        "tokenId": "USDT",
+        "currencyId": "RUB",
+        "side": 1,
+        "price": "72.19",
+        "lastQuantity": "40",
+        "quantity": "1646.3279",
+        "frozenQuantity": "251.7612",
+        "minAmount": "2090.00",
+        "maxAmount": "2090.00",
+        "payments": ["40"],
+        "orderNum": 274,
+        "finishNum": 250,
+        "recentOrderNum": 852,
+        "recentExecuteRate": 100,
+        "authStatus": 1,
+        "authTag": ["VA1", "GA", "VA"],
+        "userType": "PERSONAL",
+        "makerContact": false,
+        "paymentPeriod": 15,
+        "userMaskId": "s4cd24a43199549cc98fefe54676205e8",
+        "tradingPreferenceSet": {
+          "completeRateDay30": "85"
+        }
+      }
+    ]
+  },
+  "ext_code": "",
+  "ext_info": {},
+  "time_now": "1779403555.640779"
+}
