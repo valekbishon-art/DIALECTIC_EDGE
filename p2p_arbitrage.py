@@ -133,21 +133,33 @@ DEFAULT_TIER1_BANKS: tuple[str, ...] = (
 DEFAULT_MIN_EXECUTABLE_FIAT = 0.0
 DEFAULT_MAX_AD_AGE_MIN = 0  # 0 = выкл
 
-# M9-D outlier protection — пользователь словил кейс USDT/ILS buy 2.77 при
-# рыночной медиане ~3.7 (отклонение -25%), что породило фейковый спред 35%.
-# Защита от такого:
-#   • OUTLIER_BAND_PCT — режем adverts, чья цена отклоняется от медианы той
-#     же стороны (BUY или SELL) той же пары больше чем на N%. Default 15%
-#     достаточно широк чтобы не задевать живой шум (1-3% на стабильном
-#     рынке) и при этом дроп'ает явные dead/typo-ads.
-#   • MAX_SPREAD_PCT — hard cap на net_spread_pct. Реальный P2P-арб
-#     практически никогда не превышает 15% даже в hyperinflation-фиатах
-#     (VES/ARS). 20% — комфортный потолок для «шумного» отчёта.
-#   • DEDUP_PRICE_BUCKET_PCT — bucket size для стрикт-dedup'а opportunities:
-#     если две opps имеют buy/sell цены в пределах ±N% друг от друга, они
-#     схлопываются в одну (даже если advertiser-пары разные). Default 0.5%.
+# M9-D / M9-E outlier protection — пользователь словил кейс USDT/ILS buy 2.77
+# при рыночной медиане ~3.7 (отклонение -25%), что породило фейковый спред 35%.
+#
+# M9-D (PR #35) пытался опираться на median ОДНОЙ стороны (BUY или SELL), но это
+# не работает в реальных P2P-маркетах:
+#   • ILS: SELL-side полон wishlist-ads (мерчанты пробуют продать USDC за 3.75
+#     ILS при реальном spot 2.90 = +29% премия). BUY median = реальный spot.
+#   • SAR: BUY-side полон wishlist-ads (мерчанты предлагают купить USDC за 3.61
+#     ILS при peg 3.75 = -3.7% дисконт от пега). SELL median = реальный spot.
+# Поэтому one-side median анкор работает только в половине случаев.
+#
+# M9-E: переходим на ВНЕШНИЙ spot anchor через ``market_indicators.fiat_fx``
+# (open.er-api.com + hardcoded fallback для USD-пегов). Для USDT/USDC anchor =
+# spot USD-fiat rate. Для BTC/ETH/etc — outlier-фильтр пропускается (нет данных).
+# Это даёт правильный якорь во ВСЕХ случаях.
+#
+# Параметры:
+#   • OUTLIER_BAND_PCT — режем adverts, чья цена отклоняется от spot anchor
+#     больше чем на N%. Default 15% покрывает нормальный P2P-шум (1-3%) + ARS-
+#     style premium (5-10%) и при этом дропает обнальные wishlist'ы.
+#   • MAX_SPREAD_PCT — hard cap на net_spread_pct. После PR #35 был 20%, но
+#     пользователь словил кейс с 19% спредом на USDC/SAR / USDC/VES где обе
+#     стороны под cap'ом, но реальный арб всё равно невозможен (USD-пеги).
+#     Снижаем дефолт до 15% — реальный арб даже в VES/ARS редко sustained > 12%.
+#   • DEDUP_PRICE_BUCKET_PCT — bucket size для стрикт-dedup'а opportunities.
 DEFAULT_OUTLIER_BAND_PCT = 15.0
-DEFAULT_MAX_SPREAD_PCT = 20.0
+DEFAULT_MAX_SPREAD_PCT = 15.0
 DEFAULT_DEDUP_PRICE_BUCKET_PCT = 0.5
 DEFAULT_OUTLIER_MIN_SAMPLES = 3
 
@@ -1377,21 +1389,20 @@ def filter_outliers(
     *,
     band_pct: float | None = None,
 ) -> tuple[list[P2PAdvert], dict[tuple[str, str, str], float]]:
-    """Дроп'ает adverts, чья цена отклоняется от медианы той же группы
-    (asset, fiat, trade_type) больше чем на ``band_pct%``.
+    """LEGACY (M9-D, PR #35): группирует ads по ``(asset, fiat, side)``, считает
+    median по той же стороне, дропает ads с отклонением > ``band_pct%``.
 
-    Группировка важна — для USDT/ILS медиана BUY ~3.7, а для USDT/RUB ~95,
-    их нельзя смешивать. Возвращает ``(filtered_ads, medians)`` где
-    medians — dict ``(asset, fiat, side) → median_price`` (для reporting'а).
+    Сохранён для обратной совместимости тестов. **В новом коде используется
+    spot-anchored фильтрация через ``compute_market_anchor`` + проверку каждого
+    ad'а** — это устраняет одностороннюю bias-проблему (см. M9-E в шапке файла).
 
-    Защита от Phenomenom Gas Mass effect: если в группе < 3 sample'ов,
-    медиана неопределена, фильтр skip'ается (все ads проходят).
+    Защита: если в группе < 3 sample'ов, медиана неопределена, ad проходит без
+    фильтра. Возвращает ``(filtered_ads, medians)``.
     """
     band = get_outlier_band_pct() if band_pct is None else band_pct
     if band <= 0:
         return ads, {}
 
-    # Группируем цены по (asset, fiat, side).
     groups: dict[tuple[str, str, str], list[float]] = {}
     for ad in ads:
         key = (ad.asset.upper(), ad.fiat.upper(), ad.trade_type.upper())
@@ -1408,12 +1419,49 @@ def filter_outliers(
         key = (ad.asset.upper(), ad.fiat.upper(), ad.trade_type.upper())
         median = medians.get(key)
         if median is None:
-            # Слишком мало sample'ов чтобы делать вывод — пропускаем без фильтра.
             filtered.append(ad)
             continue
         if _is_within_band(float(ad.price), median, band):
             filtered.append(ad)
     return filtered, medians
+
+
+def compute_market_anchor(
+    asset: str,
+    fiat: str,
+    all_ads: list[P2PAdvert],
+    *,
+    anchor_override: float | None = None,
+) -> float | None:
+    """Вычисляет market anchor для пары (asset, fiat).
+
+    Приоритет:
+      1. ``anchor_override`` — для DI / тестов (явное значение).
+      2. External FX spot rate из ``market_indicators.fiat_fx`` (USD-stable
+         assets only). Это **правильный** якорь — настоящий forex-курс,
+         независимый от P2P-distortions с обеих сторон.
+      3. Combined median (BUY+SELL вместе) — fallback когда spot недоступен и
+         в пуле минимум 3 ad'а (как degraded хеджирование от полной потери
+         outlier-защиты). Не идеален, но лучше чем ничего.
+      4. None — fallback'и не сработали, фильтр пропускается для этой пары.
+    """
+    if anchor_override is not None and anchor_override > 0:
+        return float(anchor_override)
+
+    try:
+        from market_indicators.fiat_fx import market_anchor_for_pair  # noqa: PLC0415
+        spot = market_anchor_for_pair(asset, fiat)
+        if spot is not None and spot > 0:
+            return float(spot)
+    except Exception as exc:
+        _logger().warning("p2p outlier: fiat_fx anchor lookup failed: %s", exc)
+
+    prices = [float(ad.price) for ad in all_ads if ad.price and ad.price > 0]
+    return _median_price(prices)
+
+
+def _logger() -> logging.Logger:
+    return logging.getLogger(__name__)
 
 
 def find_p2p_opportunities(
@@ -1470,29 +1518,35 @@ def find_p2p_opportunities(
         )
     ]
 
-    # M9-D: median-based outlier filter. Сначала вычисляем медианы по
-    # ВСЕМ оригинальным ad'ам (до quality filter) — это даёт более
-    # репрезентативную «рыночную медиану», т.к. quality-filter может
-    # дроп'нуть половину рынка, а нам важна медиана не «качественных», а
-    # «всех» (чтобы заметить cluster outlier'ов от низко-rated merchants).
+    # M9-E: spot-anchored outlier filter. Якорь — реальный forex-курс из
+    # ``market_indicators.fiat_fx`` (open.er-api.com + peg fallback). Для
+    # USDT/USDC: 1 stable ≈ 1 USD, поэтому anchor = USD-fiat spot rate.
+    # Для других asset'ов (BTC/ETH/etc) — fallback на combined median или
+    # отсутствие фильтра (см. ``compute_market_anchor``).
     band = get_outlier_band_pct() if outlier_band_pct is None else outlier_band_pct
-    buy_medians: dict[tuple[str, str, str], float] = {}
-    sell_medians: dict[tuple[str, str, str], float] = {}
+    market_anchor: float | None = None
     if band > 0:
-        # Медиана считается на оригинальном пуле (не на отфильтрованном),
-        # иначе исчезает «якорь» относительно которого сравниваем outlier'ы.
-        _, buy_medians = filter_outliers(list(buy_ads), band_pct=band)
-        _, sell_medians = filter_outliers(list(sell_ads), band_pct=band)
+        # Берём пару из первого ad'а: handler вызывает per-pair, asset/fiat
+        # одинаковы во всём пуле.
+        sample = next(iter(buy_ads + sell_ads), None)
+        if sample is not None:
+            market_anchor = compute_market_anchor(
+                sample.asset,
+                sample.fiat,
+                list(buy_ads) + list(sell_ads),
+            )
 
-        def _passes_outlier(ad: P2PAdvert, medians: dict[tuple[str, str, str], float]) -> bool:
-            key = (ad.asset.upper(), ad.fiat.upper(), ad.trade_type.upper())
-            median = medians.get(key)
-            if median is None:
-                return True
-            return _is_within_band(float(ad.price), median, band)
+        if market_anchor is not None and market_anchor > 0:
+            def _passes_outlier(ad: P2PAdvert) -> bool:
+                if ad.price is None or ad.price <= 0:
+                    return False
+                deviation = abs(float(ad.price) - market_anchor) / market_anchor * 100.0
+                return deviation <= band
 
-        buys = [ad for ad in buys if _passes_outlier(ad, buy_medians)]
-        sells = [ad for ad in sells if _passes_outlier(ad, sell_medians)]
+            buys = [ad for ad in buys if _passes_outlier(ad)]
+            sells = [ad for ad in sells if _passes_outlier(ad)]
+        # Если anchor=None → outlier-фильтр пропускается (graceful degradation).
+        # Max-spread cap ниже всё равно подстрахует от 30%+ фейков.
 
     min_exec_fiat = get_min_executable_fiat()
     cap_spread = get_max_spread_pct() if max_spread_pct is None else max_spread_pct
@@ -1536,8 +1590,9 @@ def find_p2p_opportunities(
                 continue
             risk, warnings = _risk_level(buy_ad, sell_ad, shared_methods, executable_fiat=executable_fiat)
             score = net * get_risk_weight(risk)
-            buy_key = (buy_ad.asset.upper(), buy_ad.fiat.upper(), "BUY")
-            sell_key = (sell_ad.asset.upper(), sell_ad.fiat.upper(), "SELL")
+            # M9-E: оба поля держат ЕДИНЫЙ market anchor (spot FX). Это
+            # позволяет в отчёте показать «vs market 3.75» вместо двух разных
+            # медиан, и сравнение buy/sell-цены относительно ОДНОЙ точки.
             out.append(P2POpportunity(
                 asset=buy_ad.asset,
                 fiat=buy_ad.fiat,
@@ -1557,8 +1612,8 @@ def find_p2p_opportunities(
                 slippage_pct=costs.slippage_pct,
                 cost_payment_method=costs.payment_method,
                 score=score,
-                median_buy_price=buy_medians.get(buy_key),
-                median_sell_price=sell_medians.get(sell_key),
+                median_buy_price=market_anchor,
+                median_sell_price=market_anchor,
             ))
     out.sort(key=lambda opp: (opp.score, opp.net_spread_pct, opp.executable_fiat), reverse=True)
 
@@ -1653,18 +1708,22 @@ def _payment_window_text(ad: P2PAdvert) -> str:
     return f"pay `{ad.payment_window_min}m`"
 
 
-def _median_annotation(price: float, median: float | None, *, side: str) -> str:
-    """Возвращает суффикс типа ` · vs median 3.7000 (-25.0%) ⚠️ outlier` или пустую строку.
+def _median_annotation(price: float, anchor: float | None, *, side: str) -> str:
+    """Возвращает суффикс типа ` · vs market 3.7500 (-25.0%) ⚠️ outlier` или пустую строку.
+
+    M9-E: ``anchor`` = реальный forex-курс (open.er-api.com), а не median
+    одной из сторон — это устраняет проблему PR #35, где BUY-side median
+    смещался wishlist-ads и не ловил настоящих outliers.
 
     Включает emoji-предупреждение если отклонение > 10% — это явный сигнал
     что ad либо dead, либо typo, либо payment-stream странный.
     """
-    if median is None or median <= 0 or price <= 0:
+    if anchor is None or anchor <= 0 or price <= 0:
         return ""
-    delta_pct = (price - median) / median * 100.0
+    delta_pct = (price - anchor) / anchor * 100.0
     band = get_outlier_band_pct()
     warn = " ⚠️ outlier" if band > 0 and abs(delta_pct) > min(10.0, band) else ""
-    return f" · vs median `{median:.4f}` ({delta_pct:+.1f}%){warn}"
+    return f" · vs market `{anchor:.4f}` ({delta_pct:+.1f}%){warn}"
 
 
 def format_p2p_report(
