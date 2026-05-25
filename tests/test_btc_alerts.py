@@ -11,6 +11,7 @@ from core.btc_alerts import (
     get_alert_chat_ids,
     get_alert_confidence_delta,
     get_alert_cooldown_sec,
+    get_alert_critical_confidence,
     get_alert_interval_sec,
     get_alert_min_confidence,
     should_fire_btc_alert,
@@ -61,21 +62,26 @@ class TestBTCAlertEnv(unittest.TestCase):
         with patch.dict(os.environ, {"FEATURE_BTC_OUTLOOK_ALERTS": "0"}, clear=True):
             self.assertFalse(feature_enabled())
 
-    def test_default_min_confidence_70(self):
+    def test_default_min_confidence_75(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(get_alert_min_confidence(), 70)
+            self.assertEqual(get_alert_min_confidence(), 75)
 
-    def test_default_confidence_delta_15(self):
+    def test_default_confidence_delta_20(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(get_alert_confidence_delta(), 15)
+            self.assertEqual(get_alert_confidence_delta(), 20)
 
     def test_default_interval_1800(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(get_alert_interval_sec(), 1800)
 
-    def test_default_cooldown_7200(self):
+    def test_default_cooldown_14400(self):
+        # 4h — user explicitly asked to throttle spammy BTC outlook alerts.
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(get_alert_cooldown_sec(), 7200)
+            self.assertEqual(get_alert_cooldown_sec(), 14400)
+
+    def test_default_critical_confidence_90(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(get_alert_critical_confidence(), 90)
 
     def test_chat_ids_empty_default(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -197,12 +203,13 @@ class TestBTCAlertCooldown(unittest.TestCase):
     def test_within_cooldown_blocks_lean_flip(self):
         prev = BTCAlertSnapshot(lean=LEAN_BULL, confidence_pct=80, fired_at_ts=1000.0)
         d = should_fire_btc_alert(
-            current=_verdict(LEAN_BEAR, 90),
+            current=_verdict(LEAN_BEAR, 80),  # below critical
             previous=prev,
             now_ts=1500.0,  # 500s < 7200s
             min_confidence=70,
             confidence_delta=15,
             cooldown_sec=7200,
+            critical_confidence=95,
         )
         self.assertFalse(d.should_fire)
         self.assertIn("cooldown", d.suppressed_reason)
@@ -218,6 +225,35 @@ class TestBTCAlertCooldown(unittest.TestCase):
             cooldown_sec=7200,
         )
         self.assertTrue(d.should_fire)
+
+    def test_critical_confidence_bypasses_cooldown(self):
+        # Genuinely high-confidence flip is rare and actionable — must fire even within cooldown.
+        prev = BTCAlertSnapshot(lean=LEAN_BULL, confidence_pct=80, fired_at_ts=1000.0)
+        d = should_fire_btc_alert(
+            current=_verdict(LEAN_BEAR, 95),  # >= critical 90
+            previous=prev,
+            now_ts=1500.0,  # well within 7200s cooldown
+            min_confidence=70,
+            confidence_delta=15,
+            cooldown_sec=7200,
+            critical_confidence=90,
+        )
+        self.assertTrue(d.should_fire)
+        self.assertIn("lean flip", d.reason)
+
+    def test_non_critical_blocked_when_in_cooldown(self):
+        prev = BTCAlertSnapshot(lean=LEAN_BULL, confidence_pct=80, fired_at_ts=1000.0)
+        d = should_fire_btc_alert(
+            current=_verdict(LEAN_BEAR, 89),  # < critical 90
+            previous=prev,
+            now_ts=1500.0,
+            min_confidence=70,
+            confidence_delta=15,
+            cooldown_sec=7200,
+            critical_confidence=90,
+        )
+        self.assertFalse(d.should_fire)
+        self.assertIn("cooldown", d.suppressed_reason)
 
 
 class TestBTCAlertEmptySignals(unittest.TestCase):

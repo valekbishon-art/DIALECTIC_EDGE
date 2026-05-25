@@ -14,7 +14,9 @@ Triggers (any one suffices when cooldown elapsed):
 
 NEUTRAL→NEUTRAL never fires (we don't alert on "still flat"). Cooldown is
 enforced regardless of trigger — even a lean flip won't double-fire within
-``cooldown_sec``.
+``cooldown_sec``, EXCEPT when current confidence is at or above
+``critical_confidence`` (default 90%) — then the alert bypasses cooldown
+because it's genuinely actionable info the user wants without delay.
 """
 
 from __future__ import annotations
@@ -30,9 +32,10 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_ALERT_INTERVAL_SEC = 1800
-DEFAULT_ALERT_MIN_CONFIDENCE = 70
-DEFAULT_ALERT_CONFIDENCE_DELTA = 15
-DEFAULT_ALERT_COOLDOWN_SEC = 7200
+DEFAULT_ALERT_MIN_CONFIDENCE = 75
+DEFAULT_ALERT_CONFIDENCE_DELTA = 20
+DEFAULT_ALERT_COOLDOWN_SEC = 14400  # 4h — user requested >=3-4h spacing
+DEFAULT_ALERT_CRITICAL_CONFIDENCE = 90  # >= this → bypass cooldown
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,21 @@ def get_alert_cooldown_sec() -> int:
     )
 
 
+def get_alert_critical_confidence() -> int:
+    """Confidence threshold above which cooldown is bypassed.
+
+    A genuinely high-confidence flip (e.g. 95% BULL→BEAR) is rare and
+    actionable — worth interrupting cooldown. Default 90%, override via
+    ``BTC_OUTLOOK_ALERT_CRITICAL_CONFIDENCE``.
+    """
+    return _env_int(
+        "BTC_OUTLOOK_ALERT_CRITICAL_CONFIDENCE",
+        DEFAULT_ALERT_CRITICAL_CONFIDENCE,
+        min_val=0,
+        max_val=100,
+    )
+
+
 def get_alert_chat_ids() -> tuple[int, ...]:
     """Comma-separated chat IDs from ``BTC_OUTLOOK_ALERT_CHAT_IDS``.
 
@@ -133,6 +151,7 @@ def should_fire_btc_alert(
     min_confidence: int | None = None,
     confidence_delta: int | None = None,
     cooldown_sec: int | None = None,
+    critical_confidence: int | None = None,
 ) -> BTCAlertDecision:
     """Decide whether to fire an alert.
 
@@ -143,6 +162,9 @@ def should_fire_btc_alert(
     mc = get_alert_min_confidence() if min_confidence is None else min_confidence
     delta = get_alert_confidence_delta() if confidence_delta is None else confidence_delta
     cooldown = get_alert_cooldown_sec() if cooldown_sec is None else cooldown_sec
+    critical = (
+        get_alert_critical_confidence() if critical_confidence is None else critical_confidence
+    )
 
     if not current.contributions:
         return BTCAlertDecision(False, "", "no signals captured")
@@ -157,13 +179,14 @@ def should_fire_btc_alert(
             f"confidence {current.confidence_pct} < min {mc}",
         )
 
-    # Cooldown — enforced regardless of trigger type.
-    if previous is not None and (now_ts - previous.fired_at_ts) < cooldown:
+    # Cooldown — enforced unless current confidence is critical (rare, actionable).
+    is_critical = current.confidence_pct >= critical
+    if previous is not None and (now_ts - previous.fired_at_ts) < cooldown and not is_critical:
         remaining = int(cooldown - (now_ts - previous.fired_at_ts))
         return BTCAlertDecision(
             False,
             "",
-            f"cooldown {remaining}s remaining",
+            f"cooldown {remaining}s remaining (conf {current.confidence_pct}% < critical {critical}%)",
         )
 
     if previous is None:
@@ -212,11 +235,13 @@ __all__ = [
     "DEFAULT_ALERT_MIN_CONFIDENCE",
     "DEFAULT_ALERT_CONFIDENCE_DELTA",
     "DEFAULT_ALERT_COOLDOWN_SEC",
+    "DEFAULT_ALERT_CRITICAL_CONFIDENCE",
     "feature_enabled",
     "get_alert_interval_sec",
     "get_alert_min_confidence",
     "get_alert_confidence_delta",
     "get_alert_cooldown_sec",
+    "get_alert_critical_confidence",
     "get_alert_chat_ids",
     "should_fire_btc_alert",
     "format_btc_alert_headline",

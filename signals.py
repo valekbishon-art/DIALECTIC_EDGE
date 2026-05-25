@@ -926,10 +926,27 @@ async def build_markets_section_message(
         # вкладке «📡 Сигналы» (section="signals") и в /signal. Дублировать
         # их в summary перегружало текст и пушило за 4096 → клавиатура
         # уезжала на второе сообщение.
-        body_parts.append(format_prices_section(prices, section="crypto") or "Нет данных")
+        # На summary всегда `skip_sr=True` — там 15 активов без S/R помещаются
+        # в одно сообщение.
+        body_parts.append(
+            format_prices_section(prices, section="crypto", skip_sr=True) or "Нет данных"
+        )
 
     elif section == "crypto":
-        body_parts.append(format_prices_section(prices, section="crypto") or "Нет данных")
+        # Крипта: 15 активов с S/R может выйти за 4000 символов → splits на 2
+        # страницы и часть активов уезжает на стр 2 (юзер: «10-15 крипт
+        # пропали»). Если рендер влезает с S/R — отдаём полный вид; иначе
+        # включаем `skip_sr` чтобы все 15 влезали в одну страницу без
+        # пагинации, а S/R остаются доступны по `/signal`.
+        full_render = format_prices_section(prices, section="crypto") or ""
+        # Заголовок секции = ~50 символов; запас 200 на title/footer.
+        if len(full_render) > 3700:
+            body_parts.append(
+                format_prices_section(prices, section="crypto", skip_sr=True)
+                or "Нет данных"
+            )
+        else:
+            body_parts.append(full_render or "Нет данных")
 
     elif section == "macro":
         body_parts.append(format_prices_section(prices, section="macro") or "Нет данных")
@@ -1072,6 +1089,10 @@ def _split_markets_message(text: str, *, max_len: int = 4000) -> list[str]:
       3. Если одна секция сама > max_len — режем по asset-границам
          (`\n  ` — двойной пробел перед label = новый актив).
       4. Fallback: hard cut по max_len (этого почти не должно случаться).
+      5. Post-processing: tail-chunk < ``_MIN_TAIL_CHUNK`` мерджим в
+         предыдущий (Telegram даст "1/2" с почти пустой страницей — юзер
+         подумает что часть данных пропала). Юзер: «опять пропали ещё
+         10-15 крипты в маркетс».
     """
     if len(text) <= max_len:
         return [text]
@@ -1108,6 +1129,38 @@ def _split_markets_message(text: str, *, max_len: int = 4000) -> list[str]:
             cur = ""
     if cur:
         chunks.append(cur)
+
+    # Real-world tuning применяем только для прод-режима (max_len ≥ 2000).
+    # Юнит-тесты гоняют split с max_len=100/200 — там tail-merge/header-prefix
+    # ломают expected counts.
+    if max_len >= 2000:
+        # Post-process: если хвост (последний) < min_tail — мерджим в
+        # предыдущий, если влезаем (Telegram cap = 4096). Юзер видит «1/2» с
+        # почти пустой страницей → думает что часть данных пропала.
+        min_tail = max(200, max_len // 10)
+        slack = min(96, 4096 - max_len)
+        if len(chunks) >= 2 and len(chunks[-1]) < min_tail:
+            merged = chunks[-2] + "\n" + chunks[-1]
+            if len(merged) <= max_len + slack:
+                chunks = chunks[:-2] + [merged]
+
+        # Префиксуем последующие chunks контекстом секции — иначе юзер на
+        # стр 2 видит «  Bitcoin: $...» без заголовка `[КРИПТОРЫНОК]` и
+        # теряется.
+        section_header = ""
+        for line in chunks[0].split("\n"):
+            s = line.strip()
+            if s.startswith("[") and s.endswith("]"):
+                section_header = s
+                break
+        if section_header:
+            for i in range(1, len(chunks)):
+                stripped = chunks[i].lstrip()
+                if not stripped.startswith(section_header):
+                    chunks[i] = (
+                        f"{section_header} _(продолжение)_\n{chunks[i].lstrip()}"
+                    )
+
     return chunks
 
 

@@ -43,6 +43,13 @@ async def init_db():
         except Exception:
             pass  # Колонка уже существует
 
+        # Per-user выбор отслеживаемых активов (CSV: "BTC,ETH,SOL"). NULL = все 15
+        # активов по умолчанию (back-compat для существующих юзеров).
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN signals_assets TEXT")
+        except Exception:
+            pass
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -740,6 +747,68 @@ async def get_user_signals_status(user_id: int) -> bool:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] == 1 if row else False
+
+
+def _parse_signals_assets(raw: Optional[str]) -> Optional[list[str]]:
+    """CSV → list[str]. None/empty → None (значит «все активы», back-compat)."""
+    if not raw:
+        return None
+    parts = [p.strip().upper() for p in raw.split(",") if p.strip()]
+    return parts or None
+
+
+async def get_user_signals_assets(user_id: int) -> Optional[list[str]]:
+    """Возвращает список тикеров, на которые подписан юзер. None = все 15."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT signals_assets FROM users WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return _parse_signals_assets(row[0])
+
+
+async def set_user_signals_assets(user_id: int, assets: Optional[list[str]]) -> None:
+    """Сохраняет CSV-список тикеров. None → сбросить (= все активы)."""
+    csv = None
+    if assets:
+        csv = ",".join(sorted({a.strip().upper() for a in assets if a and a.strip()}))
+        if not csv:
+            csv = None
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET signals_assets = ? WHERE user_id = ?",
+            (csv, user_id),
+        )
+        await db.commit()
+
+
+async def toggle_user_signal_asset(
+    user_id: int, asset: str, *, all_assets: list[str]
+) -> list[str]:
+    """Переключает asset в подписке. Возвращает новый список.
+
+    Если у юзера ещё нет персонального списка (NULL = «все»), берём `all_assets`
+    как стартовый и убираем из него asset (или добавляем, если уже не было).
+    """
+    current = await get_user_signals_assets(user_id)
+    if current is None:
+        # NULL = все. Тогда toggle = удалить из списка all_assets.
+        new = [a for a in all_assets if a.upper() != asset.upper()]
+    else:
+        cur_set = {a.upper() for a in current}
+        if asset.upper() in cur_set:
+            new = [a for a in current if a.upper() != asset.upper()]
+        else:
+            new = [*current, asset.upper()]
+    # Если список совпадает с all_assets — нормализуем в NULL (= все).
+    if set(a.upper() for a in new) == set(a.upper() for a in all_assets):
+        await set_user_signals_assets(user_id, None)
+        return list(all_assets)
+    await set_user_signals_assets(user_id, new)
+    return new
 
 
 # ─── Прогнозы / Track Record ──────────────────────────────────────────────────

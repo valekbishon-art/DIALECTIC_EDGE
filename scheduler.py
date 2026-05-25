@@ -46,6 +46,16 @@ try:
 except ImportError:
     SMART_MONEY_ALERT_ENABLED = False
 
+try:
+    from best_deal_alert import (
+        BestDealAlertSystem,
+        feature_enabled as best_deal_feature_enabled,
+        get_check_interval_sec as best_deal_interval_sec,
+    )
+    BEST_DEAL_ALERT_ENABLED = True
+except ImportError:
+    BEST_DEAL_ALERT_ENABLED = False
+
 # Post-mortem loop (24h-later анализ дайджеста).  Импорт через try/except,
 # чтобы старый код, без `core/post_mortem.py`, продолжал стартовать.
 try:
@@ -334,6 +344,14 @@ class Scheduler:
             except Exception as e:
                 logger.warning(f"Smart-money alert init error: {e}")
 
+        self._best_deal_alert = None
+        if BEST_DEAL_ALERT_ENABLED and best_deal_feature_enabled():
+            try:
+                self._best_deal_alert = BestDealAlertSystem(self.bot)
+                logger.info("✅ Best-deal auto-push alert инициализирован")
+            except Exception as e:
+                logger.warning(f"Best-deal alert init error: {e}")
+
     async def start(self):
         self._running = True
         logger.info("⏰ Scheduler запущен")
@@ -356,6 +374,13 @@ class Scheduler:
 
         if SMART_MONEY_ALERT_ENABLED and self._smart_money_alert:
             tasks.append(self._smart_money_alert_loop())
+
+        if (
+            BEST_DEAL_ALERT_ENABLED
+            and best_deal_feature_enabled()
+            and self._best_deal_alert is not None
+        ):
+            tasks.append(self._best_deal_alert_loop())
 
         if POST_MORTEM_ENABLED and FEATURE_POST_MORTEM:
             tasks.append(self._post_mortem_loop())
@@ -665,6 +690,31 @@ class Scheduler:
                 logger.error(f"Signals checker error: {e}")
 
             await asyncio.sleep(2 * 3600)  # каждые 2 часа
+
+    async def _best_deal_alert_loop(self):
+        """Авто-push: лучший setup из ``rank_signals`` если score ≥ 60.
+
+        Юзер: «если лучшая сделка набирает свои 60 из 100 очков чтобы она
+        приходила пользователю сама а не по вызову кнопки». Переиспользуем
+        подписку «Сигналы» (get_signals_subscribers).
+        """
+        await asyncio.sleep(1200)  # 20 мин при старте
+
+        while self._running:
+            try:
+                if self._best_deal_alert is None:
+                    await asyncio.sleep(3600)
+                    continue
+
+                subscribers = await get_signals_subscribers()
+                if subscribers:
+                    sent = await self._best_deal_alert.check_and_alert(subscribers)
+                    if sent > 0:
+                        logger.info(f"🎯 Best-deal auto-push отправлен: {sent}")
+            except Exception as e:
+                logger.error(f"Best-deal alert loop error: {e}")
+
+            await asyncio.sleep(best_deal_interval_sec())
 
     async def _smart_money_alert_loop(self):
         """Проверяет smart-money convergence каждый час.
