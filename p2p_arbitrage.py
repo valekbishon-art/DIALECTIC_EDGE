@@ -149,17 +149,25 @@ DEFAULT_MAX_AD_AGE_MIN = 0  # 0 = выкл
 # spot USD-fiat rate. Для BTC/ETH/etc — outlier-фильтр пропускается (нет данных).
 # Это даёт правильный якорь во ВСЕХ случаях.
 #
+# M9-F: после деплоя M9-E пользователь словил **второй слой фейков** — opps
+# с net 12-13%, где buy=-7% и sell=+6% (обе ads ПО ОТДЕЛЬНОСТИ проходили
+# band 15%, но СОВМЕСТНО создавали несуществующий 13% арб). В реальном P2P:
+#   • стабильные пеги (SAR/AED/AZN/HKD) — спред < 1-2%
+#   • floating fiat (RUB/TRY/BRL/ILS/MXN) — спред 1-3%
+#   • hyperinflation/access premium (ARS/VES) — до 5-7% sustained
+#   • всё > 8% — почти всегда wishlist на одной из сторон
+# Решение M9-F: зажать band 15→7 (одна сторона) и cap 15→8 (финальный net).
+# Это убивает MXN buy=15.21 (-12% > 7%) и LBP/AZN spreads ~13% (> 8% cap).
+#
 # Параметры:
 #   • OUTLIER_BAND_PCT — режем adverts, чья цена отклоняется от spot anchor
-#     больше чем на N%. Default 15% покрывает нормальный P2P-шум (1-3%) + ARS-
-#     style premium (5-10%) и при этом дропает обнальные wishlist'ы.
-#   • MAX_SPREAD_PCT — hard cap на net_spread_pct. После PR #35 был 20%, но
-#     пользователь словил кейс с 19% спредом на USDC/SAR / USDC/VES где обе
-#     стороны под cap'ом, но реальный арб всё равно невозможен (USD-пеги).
-#     Снижаем дефолт до 15% — реальный арб даже в VES/ARS редко sustained > 12%.
+#     больше чем на N%. Default 7% — реалистичный потолок (5% buy + 5% sell =
+#     10% теоретический max gross, но real-real = 1-3%).
+#   • MAX_SPREAD_PCT — hard cap на net_spread_pct. Default 8% — реальный
+#     P2P-арб даже в hyperinflation редко sustained > 7%.
 #   • DEDUP_PRICE_BUCKET_PCT — bucket size для стрикт-dedup'а opportunities.
-DEFAULT_OUTLIER_BAND_PCT = 15.0
-DEFAULT_MAX_SPREAD_PCT = 15.0
+DEFAULT_OUTLIER_BAND_PCT = 7.0
+DEFAULT_MAX_SPREAD_PCT = 8.0
 DEFAULT_DEDUP_PRICE_BUCKET_PCT = 0.5
 DEFAULT_OUTLIER_MIN_SAMPLES = 3
 

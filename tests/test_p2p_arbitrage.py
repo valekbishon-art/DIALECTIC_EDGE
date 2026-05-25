@@ -849,9 +849,12 @@ class TestMedianHelpers(unittest.TestCase):
 class TestOutlierEnvHelpers(unittest.TestCase):
     """env-хелперы (P2P_OUTLIER_BAND_PCT, _MAX_SPREAD_PCT, _DEDUP_*)."""
 
-    def test_outlier_band_defaults_to_15(self):
+    def test_outlier_band_defaults_to_7(self):
+        # M9-F: дефолт понижен 15→7. 15% позволял buy=-7% + sell=+6%
+        # wishlist combinations с фейковым 13% net (обе ads проходили по
+        # отдельности, но совместно создавали несуществующий арб).
         with patch.dict(os.environ, {}, clear=True):
-            self.assertAlmostEqual(get_outlier_band_pct(), 15.0)
+            self.assertAlmostEqual(get_outlier_band_pct(), 7.0)
 
     def test_outlier_band_override(self):
         with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "8.5"}, clear=True):
@@ -859,18 +862,18 @@ class TestOutlierEnvHelpers(unittest.TestCase):
 
     def test_outlier_band_invalid_value_falls_back(self):
         with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "garbage"}, clear=True):
-            self.assertAlmostEqual(get_outlier_band_pct(), 15.0)
+            self.assertAlmostEqual(get_outlier_band_pct(), 7.0)
 
     def test_outlier_band_zero_disables(self):
         # 0 = выкл фильтр, не дефолт.
         with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "0"}, clear=True):
             self.assertEqual(get_outlier_band_pct(), 0.0)
 
-    def test_max_spread_defaults_to_15(self):
-        # M9-E: дефолт понижен с 20% → 15% (реальный P2P-арб даже в VES редко
-        # sustained > 12%).
+    def test_max_spread_defaults_to_8(self):
+        # M9-F: дефолт понижен с 15% → 8%. Реальный P2P-арб даже в
+        # hyperinflation (ARS/VES) редко sustained > 7%. Всё выше — wishlist.
         with patch.dict(os.environ, {}, clear=True):
-            self.assertAlmostEqual(get_max_spread_pct(), 15.0)
+            self.assertAlmostEqual(get_max_spread_pct(), 8.0)
 
     def test_max_spread_override(self):
         with patch.dict(os.environ, {"P2P_MAX_SPREAD_PCT": "50"}, clear=True):
@@ -1011,17 +1014,17 @@ class TestMaxSpreadCap(unittest.TestCase):
             self.assertEqual(len(opportunities), 0)
 
     def test_cap_passes_reasonable_spread(self):
-        # buy 100, sell 115 → 15% spread. Default cap 20% → passes.
+        # M9-F: buy 100, sell 107 → 7% spread. Default cap 8% → passes.
         with patch.dict(os.environ, {}, clear=True):
             opportunities = find_p2p_opportunities(
                 [self._ad("BUY", 100.0)],
-                [self._ad("SELL", 115.0, adv="s")],
+                [self._ad("SELL", 107.0, adv="s")],
                 min_spread_pct=0.1,
                 settlement_buffer_pct=0.0,
                 outlier_band_pct=0,
             )
             self.assertEqual(len(opportunities), 1)
-            self.assertAlmostEqual(opportunities[0].net_spread_pct, 15.0, places=2)
+            self.assertAlmostEqual(opportunities[0].net_spread_pct, 7.0, places=2)
 
     def test_cap_env_override(self):
         # Override cap через env: 50% → даже 40% проходит.
@@ -1473,6 +1476,128 @@ class TestSpotAnchorOutlierFilter(unittest.TestCase):
         ]
         anchor = compute_market_anchor("USDC", "SAR", ads, anchor_override=42.0)
         self.assertAlmostEqual(anchor, 42.0)
+
+
+class TestM9FTightBand(unittest.TestCase):
+    """M9-F: после M9-E пользователь словил второй слой фейков — opps с
+    net 12-13% где buy=-7% и sell=+6%. Каждая ad ПО ОТДЕЛЬНОСТИ проходила
+    band=15%, но совместно создавали несуществующий 13% арб. Зажатие
+    band 15→7 и cap 15→8 убивает эти кейсы.
+    """
+
+    def _ad(
+        self,
+        side: str,
+        price: float,
+        *,
+        adv: str,
+        asset: str = "USDC",
+        fiat: str = "SAR",
+    ) -> P2PAdvert:
+        return P2PAdvert(
+            venue="Bybit P2P",
+            trade_type=side,
+            asset=asset,
+            fiat=fiat,
+            price=price,
+            min_amount_fiat=100,
+            max_amount_fiat=10000,
+            payment_methods=("bank",),
+            advertiser=adv,
+            completed_orders=500,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_lbp_wishlist_combo_dropped(self):
+        # Live кейс: USDT/LBP buy 8.324e+04 (-7%) → sell 9.5e+04 (+6.1%) =
+        # 13.78% net. Обе ads под старым band=15%, но cap=8 их дроп.
+        # LBP peg 89500 → buy=83240 (-6.99%), sell=95000 (+6.15%).
+        buy_ads = [self._ad("BUY", 83240, adv="b", asset="USDT", fiat="LBP")]
+        sell_ads = [self._ad("SELL", 95000, adv="s", asset="USDT", fiat="LBP")]
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+            )
+        # Под band=7 buy=-6.99% проходит (ровно у границы), sell=+6.15% проходит,
+        # но net spread ~13.7% > cap=8 → дроп.
+        self.assertEqual(len(opportunities), 0)
+
+    def test_mxn_wishlist_buy_dropped_by_band(self):
+        # Live кейс: USDC/MXN buy 15.21 (-12% vs MXN spot ~17.3) — wishlist.
+        # При band=7 → дроп. MXN не в peg fallback, но если spot вернул 17.29:
+        # |15.21 - 17.29| / 17.29 = 12.0% > 7% → outlier.
+        # Подаём BUY 15.21 + real BUYs близкие к spot + valid SELLs.
+        buy_ads = [
+            self._ad("BUY", 15.21, adv="wish", asset="USDC", fiat="MXN"),
+            self._ad("BUY", 17.00, adv="real_b1", asset="USDC", fiat="MXN"),
+            self._ad("BUY", 17.05, adv="real_b2", asset="USDC", fiat="MXN"),
+            self._ad("BUY", 17.10, adv="real_b3", asset="USDC", fiat="MXN"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 17.20, adv="real_s1", asset="USDC", fiat="MXN"),
+            self._ad("SELL", 17.25, adv="real_s2", asset="USDC", fiat="MXN"),
+            self._ad("SELL", 17.30, adv="real_s3", asset="USDC", fiat="MXN"),
+        ]
+        # MXN не в peg → spot=None в test-mode → combined median fallback.
+        # Median([15.21, 17.00, 17.05, 17.10, 17.20, 17.25, 17.30]) = 17.10.
+        # buy=15.21 deviation: |15.21-17.10|/17.10 = 11.05% > 7% → дроп.
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+            )
+        # Все oops должны быть с buy >= 17.00 (real, не wishlist).
+        for opp in opportunities:
+            self.assertGreaterEqual(
+                opp.buy_ad.price, 17.00,
+                f"buy {opp.buy_ad.price} — wishlist outlier!",
+            )
+
+    def test_real_arb_below_cap_passes(self):
+        # Sanity: реалистичный USDC/SAR арб buy=3.73 → sell=3.78 (+1.3%) проходит.
+        # SAR peg=3.75. buy=-0.5%, sell=+0.8% — оба в band=7. Net ~1.3% < cap=8.
+        buy_ads = [self._ad("BUY", 3.73, adv="b", asset="USDC", fiat="SAR")]
+        sell_ads = [self._ad("SELL", 3.78, adv="s", asset="USDC", fiat="SAR")]
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+            )
+        self.assertEqual(len(opportunities), 1)
+        self.assertLess(opportunities[0].net_spread_pct, 2.0)
+
+    def test_azn_wishlist_combo_killed_by_cap(self):
+        # Live кейс: USDT/AZN buy 1.6 (-5.9%) → sell 1.8 (+5.8%) = 12.15%.
+        # AZN peg=1.7 (USD-pegged). buy=-5.9% < band=7, sell=+5.9% < band=7,
+        # но net 12.5% >> cap=8 → дроп.
+        # AZN нет в peg fallback, в test-mode spot=None → combined median.
+        # Подадим достаточно ads чтобы median работал. Wishlist combo дроп.
+        buy_ads = [self._ad("BUY", p, adv=f"b{i}", asset="USDT", fiat="AZN")
+                   for i, p in enumerate([1.60, 1.62, 1.65, 1.68, 1.70])]
+        sell_ads = [self._ad("SELL", p, adv=f"s{i}", asset="USDT", fiat="AZN")
+                    for i, p in enumerate([1.72, 1.74, 1.76, 1.78, 1.80])]
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+            )
+        # Если какие opps выжили, ни один не должен иметь net > cap=8%.
+        for opp in opportunities:
+            self.assertLessEqual(
+                opp.net_spread_pct, 8.0,
+                f"net {opp.net_spread_pct}% > cap 8% — \u0444\u0435\u0439\u043a!",
+            )
 
 
 if __name__ == "__main__":
