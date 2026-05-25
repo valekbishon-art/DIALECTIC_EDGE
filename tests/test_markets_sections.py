@@ -399,5 +399,113 @@ class TestMarketsSectionKeyboard(unittest.TestCase):
         self.assertIn("🔕", on_labels)
 
 
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram не установлен (CI: minimal deps)")
+class TestMarketsPagination(unittest.TestCase):
+    """Pagination: /markets теперь — одно сообщение которое юзер листает
+    кнопками «◀ Назад / Вперёд ▶» вместо рассыпания на 3 портянки.
+    """
+
+    def test_no_pagination_row_when_single_page(self):
+        import main
+
+        kb = main._markets_section_keyboard(
+            is_enabled=False, current="crypto", total_pages=1, current_page=0
+        )
+        page_callbacks = [
+            btn.callback_data
+            for row in kb.inline_keyboard
+            for btn in row
+            if (btn.callback_data or "").startswith("markets:page:")
+        ]
+        self.assertEqual(page_callbacks, [])
+
+    def test_pagination_row_appears_for_multi_page(self):
+        import main
+
+        kb = main._markets_section_keyboard(
+            is_enabled=False, current="crypto", total_pages=3, current_page=0
+        )
+        labels = [btn.text for row in kb.inline_keyboard for btn in row]
+        self.assertTrue(any("Назад" in lab for lab in labels))
+        self.assertTrue(any("Вперёд" in lab for lab in labels))
+        self.assertIn("1/3", labels)
+
+    def test_pagination_callbacks_point_to_correct_section(self):
+        import main
+
+        kb = main._markets_section_keyboard(
+            is_enabled=False, current="macro", total_pages=3, current_page=1
+        )
+        page_callbacks = [
+            btn.callback_data
+            for row in kb.inline_keyboard
+            for btn in row
+            if (btn.callback_data or "").startswith("markets:page:")
+        ]
+        # «Назад» -> idx 0, «Вперёд» -> idx 2 (cur=1, total=3)
+        self.assertIn("markets:page:macro:0", page_callbacks)
+        self.assertIn("markets:page:macro:2", page_callbacks)
+
+    def test_pagination_wraps_book_style(self):
+        """На последней странице «Вперёд ▶» возвращает на стр 0 (циклично)."""
+        import main
+
+        kb = main._markets_section_keyboard(
+            is_enabled=False, current="crypto", total_pages=3, current_page=2
+        )
+        callbacks = [
+            btn.callback_data
+            for row in kb.inline_keyboard
+            for btn in row
+            if (btn.callback_data or "").startswith("markets:page:")
+        ]
+        # cur=2, total=3 → prev=1, next=0 (wrap)
+        self.assertIn("markets:page:crypto:1", callbacks)
+        self.assertIn("markets:page:crypto:0", callbacks)
+
+    def test_pagination_wraps_on_first_page(self):
+        """На стр 0 «◀ Назад» возвращает на последнюю (циклично)."""
+        import main
+
+        kb = main._markets_section_keyboard(
+            is_enabled=False, current="crypto", total_pages=4, current_page=0
+        )
+        callbacks = [
+            btn.callback_data
+            for row in kb.inline_keyboard
+            for btn in row
+            if (btn.callback_data or "").startswith("markets:page:")
+        ]
+        # cur=0 → prev=3 (wrap), next=1
+        self.assertIn("markets:page:crypto:3", callbacks)
+        self.assertIn("markets:page:crypto:1", callbacks)
+
+    def test_pagination_indicator_shows_current_position(self):
+        import main
+
+        kb = main._markets_section_keyboard(
+            is_enabled=False, current="crypto", total_pages=3, current_page=1
+        )
+        labels = [btn.text for row in kb.inline_keyboard for btn in row]
+        # Индикатор «2/3» (cur=1 -> отображается как 1+1=2)
+        self.assertIn("2/3", labels)
+
+    def test_page_out_of_bounds_is_clamped(self):
+        """page < 0 или > total-1 — должно показываться нормально."""
+        import main
+
+        kb_neg = main._markets_section_keyboard(
+            is_enabled=False, current="crypto", total_pages=3, current_page=-1
+        )
+        kb_over = main._markets_section_keyboard(
+            is_enabled=False, current="crypto", total_pages=3, current_page=99
+        )
+        # Не падает, индикатор внутри диапазона
+        labels_neg = [btn.text for row in kb_neg.inline_keyboard for btn in row]
+        labels_over = [btn.text for row in kb_over.inline_keyboard for btn in row]
+        self.assertIn("1/3", labels_neg)
+        self.assertIn("3/3", labels_over)
+
+
 if __name__ == "__main__":
     unittest.main()
