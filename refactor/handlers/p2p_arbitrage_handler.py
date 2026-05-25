@@ -38,6 +38,7 @@ from p2p_arbitrage import (
     opportunity_key,
     parse_binance_ad,
     parse_bybit_ad,
+    parse_okx_ad,
 )
 
 from refactor.services import JsonAlertStore
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 BINANCE_P2P_SEARCH_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
 BYBIT_P2P_SEARCH_URL = "https://api2.bybit.com/fiat/otc/item/online"
+OKX_P2P_SEARCH_URL = "https://www.okx.com/v3/c2c/tradingOrders/books"
 DEFAULT_ROWS_PER_SIDE = 20
 
 # Bybit `side` имеет обратный смысл от Binance `tradeType`. На Bybit P2P API:
@@ -61,6 +63,18 @@ DEFAULT_ROWS_PER_SIDE = 20
 BYBIT_SIDE_BY_TRADE_TYPE = {
     "BUY": "1",
     "SELL": "0",
+}
+
+# OKX P2P `side` query parameter: семантика как у Bybit — обозначает
+# сторону MAKER'а, а не TAKER'а.
+#   side=buy  → makers хотят купить USDT → taker продаёт → BID-сторона (наш SELL)
+#   side=sell → makers хотят продать USDT → taker покупает → ASK-сторона (наш BUY)
+# Live-проверено: USDT/MXN side=buy top price 17.24 (ниже спота 17.28 → BIDs),
+# side=sell top price 17.35 (выше спота → ASKs). Mapping инвертирован
+# относительно Binance (`tradeType="BUY"` = taker buys = ASK = OKX side=sell).
+OKX_SIDE_BY_TRADE_TYPE = {
+    "BUY": "sell",
+    "SELL": "buy",
 }
 
 
@@ -330,6 +344,105 @@ async def fetch_bybit_p2p_ads(
     return buy_ads, sell_ads, errors
 
 
+def _okx_side_for_trade_type(trade_type: str) -> str:
+    return OKX_SIDE_BY_TRADE_TYPE.get(trade_type.upper(), "sell")
+
+
+def _extract_okx_rows(
+    data: Any,
+    *,
+    side: str,
+    trade_type: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Достаёт массив advert'ов из OKX P2P response.
+
+    OKX отдаёт оба `data.buy` и `data.sell` независимо от `side` — но
+    только запрошенный side содержит данные. Берём ту сторону, которая
+    соответствует нашему запросу.
+    """
+    if not isinstance(data, dict):
+        return [], f"OKX {trade_type} malformed response"
+    code = data.get("code")
+    if code not in (0, "0", None):
+        msg = str(data.get("msg") or data.get("message") or "unknown error")[:120]
+        return [], f"OKX {trade_type} API error code={code}: {msg}"
+    payload = data.get("data")
+    if not isinstance(payload, dict):
+        return [], f"OKX {trade_type} malformed response (data not dict)"
+    rows = payload.get(side)
+    if rows is None:
+        # OKX иногда возвращает `data.buy=null` если ничего нет.
+        return [], None
+    if not isinstance(rows, list):
+        return [], f"OKX {trade_type} malformed response (data.{side} not list)"
+    return rows, None
+
+
+async def _fetch_okx_p2p_side(
+    session: aiohttp.ClientSession,
+    *,
+    trade_type: str,
+    asset: str,
+    fiat: str,
+    pay_types: tuple[str, ...],
+    rows: int = DEFAULT_ROWS_PER_SIDE,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """OKX endpoint — публичный, без авторизации. Использует GET с query
+    params; `t=<ms>` это cache-buster (OKX UI добавляет его в каждый запрос).
+    """
+    side = _okx_side_for_trade_type(trade_type)
+    # OKX endpoint ничего не делает с `paymentMethod=all` для multi-фильтра —
+    # отдаёт всё и фильтрует на клиенте. Для нас это OK, мы фильтруем дальше
+    # сами через `_payment_intersection`.
+    params: dict[str, Any] = {
+        "t": str(int(asyncio.get_event_loop().time() * 1000)),
+        "quoteCurrency": fiat.upper(),
+        "baseCurrency": asset.upper(),
+        "side": side,
+        "paymentMethod": "all",
+        "userType": "all",
+        "showTrade": "true",
+        "showFollow": "false",
+        "showAlreadyTraded": "false",
+        "isAbleFilter": "false",
+        "limit": str(rows),
+    }
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "DialecticEdge/1.0",
+    }
+    attempts = 3
+    backoff_base = 0.5
+    data: Any = None
+    for attempt in range(attempts):
+        try:
+            async with session.get(
+                OKX_P2P_SEARCH_URL,
+                params=params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                text = await resp.text()
+                if resp.status == 200:
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        return [], f"OKX {trade_type} malformed response"
+                    break
+                if resp.status == 429 or resp.status >= 500:
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(backoff_base * (2 ** attempt))
+                        continue
+                    return [], f"OKX {trade_type} HTTP {resp.status}: {text[:120]}"
+                return [], f"OKX {trade_type} HTTP {resp.status}: {text[:120]}"
+        except Exception as exc:
+            if attempt < attempts - 1:
+                await asyncio.sleep(backoff_base * (2 ** attempt))
+                continue
+            return [], f"OKX {trade_type} fetch failed: {exc}"
+    return _extract_okx_rows(data, side=side, trade_type=trade_type.upper())
+
+
 async def fetch_okx_p2p_ads(
     *,
     asset: str,
@@ -338,12 +451,57 @@ async def fetch_okx_p2p_ads(
     rows: int = DEFAULT_ROWS_PER_SIDE,
     session: aiohttp.ClientSession | None = None,
 ) -> tuple[list[P2PAdvert], list[P2PAdvert], tuple[str, ...]]:
-    """Placeholder OKX fetcher — best-effort stub until public API mapping is known.
+    """OKX P2P fetcher.
 
-    Returns empty lists and no errors to avoid breaking the handler.
-    TODO: implement OKX P2P API fetch when stable endpoint is identified.
+    Эндпойнт ``https://www.okx.com/v3/c2c/tradingOrders/books`` публичный,
+    без авторизации. Семантика `side` обратная Binance: см. комментарий
+    у ``OKX_SIDE_BY_TRADE_TYPE``.
     """
-    return [], [], ()
+    own_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        own_session = True
+    try:
+        buy_raw, sell_raw = await asyncio.gather(
+            _fetch_okx_p2p_side(
+                session,
+                trade_type="BUY",
+                asset=asset,
+                fiat=fiat,
+                pay_types=pay_types,
+                rows=rows,
+            ),
+            _fetch_okx_p2p_side(
+                session,
+                trade_type="SELL",
+                asset=asset,
+                fiat=fiat,
+                pay_types=pay_types,
+                rows=rows,
+            ),
+        )
+    finally:
+        if own_session:
+            await session.close()
+
+    buy_rows, buy_err = buy_raw
+    sell_rows, sell_err = sell_raw
+    buy_ads = [
+        ad for ad in (
+            parse_okx_ad(row, trade_type="BUY", asset=asset, fiat=fiat)
+            for row in buy_rows
+        )
+        if ad is not None
+    ]
+    sell_ads = [
+        ad for ad in (
+            parse_okx_ad(row, trade_type="SELL", asset=asset, fiat=fiat)
+            for row in sell_rows
+        )
+        if ad is not None
+    ]
+    errors = tuple(err for err in (buy_err, sell_err) if err)
+    return buy_ads, sell_ads, errors
 
 
 async def fetch_p2p_ads(
