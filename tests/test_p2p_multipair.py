@@ -66,11 +66,21 @@ def _make_advert(
     )
 
 
-def _make_opportunity(*, asset: str, fiat: str, spread_pct: float) -> P2POpportunity:
+def _make_opportunity(
+    *,
+    asset: str,
+    fiat: str,
+    spread_pct: float,
+    buy_venue: str = "Binance P2P",
+    sell_venue: str = "Binance P2P",
+) -> P2POpportunity:
     """Прямой P2POpportunity для форматтер-тестов (не вызывает find_p2p_opportunities)."""
-    buy_ad = _make_advert(advertiser="m1", price=100.0, trade_type="BUY", asset=asset, fiat=fiat)
+    buy_ad = _make_advert(
+        advertiser="m1", price=100.0, trade_type="BUY", asset=asset, fiat=fiat, venue=buy_venue,
+    )
     sell_ad = _make_advert(
-        advertiser="m2", price=100.0 * (1 + spread_pct / 100), trade_type="SELL", asset=asset, fiat=fiat
+        advertiser="m2", price=100.0 * (1 + spread_pct / 100), trade_type="SELL",
+        asset=asset, fiat=fiat, venue=sell_venue,
     )
     return P2POpportunity(
         asset=asset,
@@ -360,7 +370,8 @@ class TestFormatMultipairReport(unittest.TestCase):
             errors=[],
             source="Binance + Bybit",
         )
-        self.assertIn("60 пар", text)
+        self.assertIn("60", text)
+        self.assertIn("пар", text)
         self.assertIn("Binance + Bybit", text)
 
     def test_top_n_opportunities_rendered_with_pair_labels(self):
@@ -397,7 +408,116 @@ class TestFormatMultipairReport(unittest.TestCase):
             errors=["USDT/RUB: timeout 8s", "USDT/ARS: 429"],
             source="Binance",
         )
-        self.assertIn("2 пар пропущено", text)
+        # Skipped-count хедер: "⚠️ Пропущено: *2* пар (нет ads / timeout)"
+        self.assertIn("Пропущено", text)
+        self.assertIn("2", text)
+
+    def test_spread_emoji_indicators(self):
+        """Эмодзи отражают размер спреда: 🔥≥5%, ✅2–5%, 🟡<2%."""
+        from refactor.handlers.p2p_arbitrage_handler import _format_multipair_report
+
+        triples = [
+            ("USDT", "LBP", _make_opportunity(asset="USDT", fiat="LBP", spread_pct=7.0)),   # 🔥
+            ("USDT", "TRY", _make_opportunity(asset="USDT", fiat="TRY", spread_pct=3.0)),   # ✅
+            ("USDT", "SAR", _make_opportunity(asset="USDT", fiat="SAR", spread_pct=1.5)),   # 🟡
+        ]
+        text = _format_multipair_report(
+            triples, pair_count_scanned=60, errors=[], source="Binance", top_n=10,
+        )
+        self.assertIn("🔥", text)
+        self.assertIn("✅", text)
+        self.assertIn("🟡", text)
+
+    def test_same_venue_uses_recycle_arrow_cross_venue_uses_swap_arrow(self):
+        """«Binance→Binance» → ↻; «Binance→Bybit» → ⇄."""
+        from refactor.handlers.p2p_arbitrage_handler import _format_multipair_report
+
+        same = _make_opportunity(asset="USDT", fiat="TRY", spread_pct=3.0,
+                                 buy_venue="Binance P2P", sell_venue="Binance P2P")
+        cross = _make_opportunity(asset="USDT", fiat="UAH", spread_pct=3.0,
+                                  buy_venue="OKX P2P", sell_venue="Binance P2P")
+        text = _format_multipair_report(
+            [("USDT", "TRY", same), ("USDT", "UAH", cross)],
+            pair_count_scanned=10, errors=[], source="Binance + OKX",
+        )
+        self.assertIn("↻", text)  # same-venue
+        self.assertIn("⇄", text)  # cross-venue
+
+    def test_guide_button_attached_to_inline_keyboard(self):
+        """Inline-kb под multipair report имеет ровно одну кнопку с
+        callback_data="p2p:guide".
+        """
+        from refactor.handlers.p2p_arbitrage_handler import _multipair_inline_kb
+
+        kb = _multipair_inline_kb()
+        self.assertIsNotNone(kb)
+        rows = kb.inline_keyboard
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 1)
+        btn = rows[0][0]
+        self.assertIn("Гайд", btn.text)
+        self.assertEqual(btn.callback_data, "p2p:guide")
+
+    def test_guide_text_has_concrete_steps(self):
+        """Гайд должен покрывать ключевые темы: проверка окна,
+        репутация counterparty, размер позиции, тайминг settlement, риски.
+        """
+        from refactor.handlers.p2p_arbitrage_handler import P2P_GUIDE_TEXT
+
+        for keyword in (
+            "completion rate",
+            "settlement",
+            "slippage",
+            "merchant",
+            "availableAmount",
+        ):
+            self.assertIn(keyword, P2P_GUIDE_TEXT.lower() if keyword.islower() else P2P_GUIDE_TEXT)
+        # Не должно превышать Telegram message limit (4096 chars).
+        self.assertLess(len(P2P_GUIDE_TEXT), 4096)
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
+class TestP2PGuideCallback(unittest.IsolatedAsyncioTestCase):
+    """Callback handler `p2p:guide` отвечает и шлёт guide-текст."""
+
+    async def test_callback_acks_and_sends_guide(self):
+        from refactor.handlers.p2p_arbitrage_handler import (
+            P2P_GUIDE_TEXT,
+            handle_p2p_guide_callback,
+        )
+
+        sent: dict = {}
+        acked: dict = {"called": False}
+
+        class _FakeMessage:
+            async def answer(self, text, **kwargs):
+                sent["text"] = text
+                sent["kwargs"] = kwargs
+
+        class _FakeCallback:
+            message = _FakeMessage()
+
+            async def answer(self, *args, **kwargs):
+                acked["called"] = True
+
+        await handle_p2p_guide_callback(_FakeCallback())
+
+        self.assertTrue(acked["called"], "должен вызвать callback.answer() — без него кнопка висит в loading-state")
+        self.assertEqual(sent["text"], P2P_GUIDE_TEXT)
+        self.assertEqual(sent["kwargs"].get("parse_mode"), "Markdown")
+
+    async def test_callback_safe_when_message_missing(self):
+        """Если `callback.message` пропал (Telegram иногда съедает от stale-buttons) — не падаем."""
+        from refactor.handlers.p2p_arbitrage_handler import handle_p2p_guide_callback
+
+        class _FakeCallback:
+            message = None
+
+            async def answer(self, *args, **kwargs):
+                pass
+
+        # Не должен бросать.
+        await handle_p2p_guide_callback(_FakeCallback())
 
 
 if __name__ == "__main__":
