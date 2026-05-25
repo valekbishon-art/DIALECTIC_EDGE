@@ -17,7 +17,9 @@ import os
 import unittest
 from unittest.mock import patch
 
-from p2p_arbitrage import (
+os.environ.setdefault("BOT_TOKEN", "test:test")
+
+from p2p_arbitrage import (  # noqa: E402
     DEFAULT_P2P_FIATS,
     P2P_FIAT_GROUPS,
     P2PAdvert,
@@ -28,6 +30,15 @@ from p2p_arbitrage import (
     get_fiats,
     get_scan_concurrency,
 )
+
+# Handler-импорты живут в aiogram-gated блоке: unit-fast CI job
+# гоняется без aiogram → нужно skipUnless, как в test_p2p_arbitrage_handler.py.
+try:
+    import aiogram  # noqa: F401
+
+    HAS_AIOGRAM = True
+except Exception:  # pragma: no cover
+    HAS_AIOGRAM = False
 
 
 def _make_advert(
@@ -191,6 +202,7 @@ class TestScanConcurrency(unittest.TestCase):
             self.assertEqual(get_scan_concurrency(), 5)
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
 class TestHasExplicitPair(unittest.TestCase):
     """Различение button-click vs /p2p USDT RUB."""
 
@@ -213,6 +225,7 @@ class TestHasExplicitPair(unittest.TestCase):
         self.assertTrue(_has_explicit_pair("/p2p FDUSD ARS"))
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
 class TestPayTypesFilterForFiat(unittest.TestCase):
     def test_ru_banks_kept_for_rub(self):
         from refactor.handlers.p2p_arbitrage_handler import _filter_pay_types_for_fiat
@@ -237,6 +250,7 @@ class TestPayTypesFilterForFiat(unittest.TestCase):
         self.assertEqual(_filter_pay_types_for_fiat((), "TRY"), ())
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
 class TestScanAllPairs(unittest.IsolatedAsyncioTestCase):
     """Multi-pair scan агрегирует opps со всех пар и сортирует по spread desc."""
 
@@ -333,6 +347,7 @@ class TestScanAllPairs(unittest.IsolatedAsyncioTestCase):
             self.assertIn("fetch failed", err)
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
 class TestFormatMultipairReport(unittest.TestCase):
     """Report formatting: топ-N + сводка + плейсхолдер при 0 results."""
 
