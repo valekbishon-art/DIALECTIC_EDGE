@@ -22,7 +22,11 @@ import os
 from typing import Iterable
 
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from core.advisor import (
     HORIZON_LONG,
@@ -213,6 +217,26 @@ async def _fetch_btc_outlook_snapshot() -> tuple[str | None, int | None]:
         return None, None
 
 
+def _build_advisor_keyboard(saved_plan_ids: dict[str, int]) -> InlineKeyboardMarkup:
+    """Inline-кнопки для каждого сохранённого плана:
+    «📥 В портфель», «💬 Объяснить» (использует callbacks из
+    advisor_portfolio_handler).
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    for asset, plan_id in saved_plan_ids.items():
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📥 В портфель {asset}",
+                callback_data=f"advisor:save:{plan_id}",
+            ),
+            InlineKeyboardButton(
+                text=f"💬 Объяснить {asset}",
+                callback_data=f"advisor:explain:{plan_id}",
+            ),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _format_combined_message(
     assets: Iterable[str],
     plans_md: dict[str, str],
@@ -265,6 +289,22 @@ async def handle_advise_command(message: Message) -> None:
     btc_lean, btc_confidence = await _fetch_btc_outlook_snapshot()
 
     plans_md: dict[str, str] = {}
+    saved_plan_ids: dict[str, int] = {}
+    # M2: если фичефлаг включён, авто-сохраняем каждый план (is_portfolio=0,
+    # т.е. история для /myplans pending). Юзер может потом нажать «📥 В
+    # портфель» — promote к is_portfolio=1 (watcher начнёт следить).
+    persist_plans = False
+    try:
+        from refactor.providers.advisor_storage import (
+            feature_enabled as _advisor_portfolio_enabled,
+            save_plan,
+        )
+
+        persist_plans = _advisor_portfolio_enabled()
+    except Exception as exc:
+        logger.debug("advisor: portfolio storage import failed: %s", exc)
+        persist_plans = False
+
     for asset in assets:
         try:
             inputs = _build_inputs_from_prices(
@@ -278,11 +318,21 @@ async def handle_advise_command(message: Message) -> None:
             )
             plan = recommend(inputs)
             plans_md[asset] = format_advisor_markdown(plan)
+            if persist_plans:
+                try:
+                    plan_id = await save_plan(
+                        user_id=user_id, plan=plan, capital_usd=capital_usd,
+                        is_portfolio=False,
+                    )
+                    saved_plan_ids[asset] = plan_id
+                except Exception as exc:
+                    logger.warning("advisor: save_plan failed for %s: %s", asset, exc)
         except Exception as exc:
             logger.exception("advisor: plan failed for %s: %s", asset, exc)
             plans_md[asset] = f"⚠️ *{asset}* — не удалось построить план."
 
     text = _format_combined_message(assets, plans_md, capital_usd, risk_profile)
+    kb = _build_advisor_keyboard(saved_plan_ids) if saved_plan_ids else None
 
     try:
         await wait.delete()
@@ -290,9 +340,12 @@ async def handle_advise_command(message: Message) -> None:
         pass
 
     try:
-        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+        await message.answer(
+            text, parse_mode="Markdown", disable_web_page_preview=True,
+            reply_markup=kb,
+        )
     except Exception:
-        await message.answer(text)
+        await message.answer(text, reply_markup=kb)
 
 
 def register_advisor_handlers(dp) -> None:

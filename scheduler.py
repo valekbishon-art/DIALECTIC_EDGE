@@ -248,6 +248,16 @@ try:
 except ImportError:
     P2P_AUDIT_ENABLED = False
 
+# M2 advisor portfolio watcher (закрывает позиции по SL/TP, шлёт алерты).
+# Включается FEATURE_ADVISOR_PORTFOLIO=1, default OFF.
+try:
+    from refactor.providers.advisor_storage import (
+        feature_enabled as _advisor_portfolio_enabled,
+    )
+    ADVISOR_PORTFOLIO_ENABLED = True
+except ImportError:
+    ADVISOR_PORTFOLIO_ENABLED = False
+
 # BTC outlook auto-alerts. Periodically computes the same verdict as /btc and
 # proactively sends a Telegram alert when lean flips or confidence jumps,
 # subject to cooldown. Feature flag FEATURE_BTC_OUTLOOK_ALERTS (default ON).
@@ -460,6 +470,14 @@ class Scheduler:
             logger.info(
                 "🔥 Cascade post-mortem loop включён (venues=%s)",
                 ",".join(active_venues) or "none",
+            )
+
+        if ADVISOR_PORTFOLIO_ENABLED and _advisor_portfolio_enabled():
+            tasks.append(self._advisor_portfolio_watcher_loop())
+            logger.info(
+                "📂 Advisor portfolio watcher включён "
+                "(SL/TP алерты, interval=%ss)",
+                int(os.getenv("ADVISOR_PORTFOLIO_WATCH_INTERVAL_SEC", "300")),
             )
 
         if P2P_AUDIT_ENABLED and _p2p_audit_enabled():
@@ -931,6 +949,106 @@ class Scheduler:
 
             # Проверяем каждую минуту
             await asyncio.sleep(60)
+
+    async def _advisor_portfolio_watcher_loop(self):
+        """M2: watcher для виртуального портфеля advisor-планов.
+
+        Каждые ADVISOR_PORTFOLIO_WATCH_INTERVAL_SEC (default 300s) проходит по
+        всем активным портфельным позициям (is_portfolio=1, status=active),
+        пуллит текущие цены через web_search.fetch_realtime_prices, проверяет
+        SL/TP-триггеры. Если хит — закрывает позицию (status → stopped/tp1/
+        tp2/tp3, пересчитывает PnL) и шлёт алерт юзеру.
+
+        Не торгует — только мониторит план юзера. Per AGENTS.md, торговая
+        логика автотрейдера (`signal_trader.py`) НЕ затронута.
+        """
+        # Стартуем с задержкой чтобы дать другим loop'ам подняться.
+        await asyncio.sleep(90)
+        interval = int(os.getenv("ADVISOR_PORTFOLIO_WATCH_INTERVAL_SEC", "300"))
+        interval = max(60, min(3600, interval))
+
+        while self._running:
+            try:
+                await self._run_advisor_portfolio_scan()
+            except Exception as e:
+                logger.error(f"Advisor portfolio watcher error: {e}")
+
+            await asyncio.sleep(interval)
+
+    async def _run_advisor_portfolio_scan(self) -> int:
+        """Один проход watcher'а. Returns count of closed positions."""
+        try:
+            from refactor.providers.advisor_storage import (
+                check_close_trigger,
+                close_plan,
+                list_all_active,
+            )
+        except ImportError:
+            return 0
+
+        plans = await list_all_active()
+        if not plans:
+            return 0
+
+        # Pull current prices once per scan (one batch fetch).
+        try:
+            from web_search import fetch_realtime_prices
+
+            prices = await fetch_realtime_prices()
+        except Exception as e:
+            logger.warning("portfolio watcher: fetch_realtime_prices failed: %s", e)
+            return 0
+
+        closed_count = 0
+        for plan in plans:
+            block = prices.get(plan.asset.upper()) or {}
+            current_price = block.get("price")
+            if not isinstance(current_price, (int, float)) or current_price <= 0:
+                continue
+            trigger = check_close_trigger(plan, float(current_price))
+            if trigger is None:
+                continue
+            new_status, reason = trigger
+            try:
+                closed = await close_plan(
+                    plan.id, new_status=new_status,
+                    close_price=float(current_price), close_reason=reason,
+                )
+            except Exception as e:
+                logger.warning("portfolio watcher: close_plan failed: %s", e)
+                continue
+            if closed is None:
+                continue
+            closed_count += 1
+            await self._send_advisor_close_alert(closed, reason)
+        return closed_count
+
+    async def _send_advisor_close_alert(self, closed_plan, reason: str) -> None:
+        """Notify user that their advisor position auto-closed."""
+        try:
+            direction = closed_plan.direction or "—"
+            emoji = "🟢" if (closed_plan.pnl_pct or 0) >= 0 else "🔴"
+            pnl_pct_str = (
+                f"{closed_plan.pnl_pct:+.2f}%" if closed_plan.pnl_pct is not None else "—"
+            )
+            pnl_usd_str = (
+                f"${closed_plan.pnl_usd:+,.2f}" if closed_plan.pnl_usd is not None else ""
+            )
+            close_price_str = (
+                f"{closed_plan.close_price:,.4g}" if closed_plan.close_price else "—"
+            )
+            text = (
+                f"📂 *Advisor portfolio* — позиция закрыта\n\n"
+                f"#{closed_plan.id} {direction} *{closed_plan.asset}*\n"
+                f"Причина: {reason}\n"
+                f"Цена закрытия: {close_price_str}\n"
+                f"PnL: {emoji} {pnl_pct_str} {pnl_usd_str}"
+            )
+            await self.bot.send_message(
+                chat_id=closed_plan.user_id, text=text, parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning("portfolio watcher: alert send failed: %s", e)
 
     async def _post_mortem_loop(self):
         """Каждый день в POST_MORTEM_RUN_TIME_UTC (дефолт 23:50) — анализ
