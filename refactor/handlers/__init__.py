@@ -253,6 +253,11 @@ from .postmortem_handler import (
     register_postmortem_handlers,
 )
 
+from .retro_handler import (
+    handle_retro_command,
+    register_retro_handlers,
+)
+
 # Utilities
 from .utils import (
     split_message,
@@ -319,6 +324,8 @@ __all__ = [
     "register_p2p_arbitrage_handlers",
     "handle_postmortem_command",
     "register_postmortem_handlers",
+    "handle_retro_command",
+    "register_retro_handlers",
     "build_btc_outlook_message",
     "fetch_btc_outlook_inputs",
     "handle_btc_command",

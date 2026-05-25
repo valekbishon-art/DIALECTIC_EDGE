@@ -79,6 +79,7 @@ from database import (
     get_track_record, save_feedback, get_feedback_stats,
     import_forecasts_from_markdown,
     get_signals_subscribers, set_signals_sub, get_user_signals_status,
+    get_user_signals_assets, set_user_signals_assets, toggle_user_signal_asset,
     add_portfolio_position, get_portfolio, remove_portfolio_position,
     add_backtest_signal, close_backtest_signal, get_backtest_signals, get_backtest_stats,
     get_backtest_config, update_backtest_capital, set_backtest_enabled,
@@ -125,6 +126,7 @@ from refactor.handlers import (
     register_funding_handlers,
     register_p2p_arbitrage_handlers,
     register_postmortem_handlers,
+    register_retro_handlers,
     register_sniping_handlers,
     sniping_callback_data,
 )
@@ -2634,7 +2636,7 @@ async def _send_detailed_guide(chat_id: int) -> None:
     """Полнейшая инструкция — объяснение каждой функции как пятилетнему."""
     part1 = (
         "📖 *ПОДРОБНАЯ ИНСТРУКЦИЯ (ЧАСТЬ 1/2)*\n"
-        "═" * 30 + "\n\n"
+        + "═" * 30 + "\n\n"
         "🧠 *ЧТО ТАКОЕ DIALECTIC EDGE?*\n"
         "Представь, что у тебя есть 4 умных друга, которые каждый день смотрят новости, "
         "график цен и данные с бирж. Они спорят друг с другом, а потом говорят тебе: "
@@ -2678,7 +2680,7 @@ async def _send_detailed_guide(chat_id: int) -> None:
 
     part2 = (
         "📖 *ПОДРОБНАЯ ИНСТРУКЦИЯ (ЧАСТЬ 2/2)*\n"
-        "═" * 30 + "\n\n"
+        + "═" * 30 + "\n\n"
         "💰 *АВТОТРЕЙДИНГ*\n\n"
         "📊 `/signalstatus` — *Панель трейдера*\n"
         "👶 Как 5-летнему: \"Приборная доска машины\"\n"
@@ -2862,8 +2864,11 @@ async def _send_newbie_guide(chat_id: int) -> None:
         "$10K → 1 сделка = $200. Звучит мало — это правильно. Цель недели: выжить, не заработать.\n\n"
         "*2. Stop loss В МОМЕНТ открытия*\n"
         "Используй OCO order — одновременно ставит Stop Loss + Take Profit. Один сработал → второй отменяется.\n\n"
-        "*3. Только setup'ы где бот сказал BULLISH/BEARISH*\n"
-        "NEUTRAL = не торгуете. Точка. Это правило ломают 90% новичков.\n\n"
+        "*3. Торгуй только по проверенным сильным сигналам*\n"
+        "Если у setup'а нет явной направленности или сила слабая — пропускай. "
+        "Сила — это: вердикт BULLISH/BEARISH + ≥2 подтверждающих фактора + R/R ≥2:1. "
+        "На слабых/NEUTRAL входить — твоё право, но статистика не на твоей стороне. "
+        "Я бы пропустил, но это не финансовый совет.\n\n"
         "*4. Максимум 1 открытая позиция в первую неделю*\n"
         "Не «BTC long + SOL short + ETH long». Одна. Фокус, обдуманно.\n\n"
         "*5. Жди ЗАКРЫТИЯ свечи за уровень*\n"
@@ -4119,13 +4124,133 @@ async def cmd_markets(message: Message):
         )
 
 
-@dp.message(Command("signals"))
-async def cmd_signals_deprecated(message: Message):
-    await message.answer(
-        "📌 Команда `/signals` больше не используется. Всё в `/markets`: "
-        "живой контекст, сигналы и кнопки подписки.",
-        parse_mode="Markdown",
+def _signals_assets_master_list() -> list[str]:
+    """Источник правды — список 15 активов из web_search.CRYPTO_KEYS."""
+    try:
+        from web_search import CRYPTO_KEYS
+        return list(CRYPTO_KEYS)
+    except Exception:
+        # Fallback на случай если web_search упал
+        return [
+            "BTC", "ETH", "SOL", "BNB", "XRP",
+            "ADA", "DOGE", "AVAX", "LINK", "DOT",
+            "TRX", "TON", "LTC", "NEAR", "SUI",
+        ]
+
+
+def _signals_assets_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
+    """Inline-клавиатура: 15 активов в виде «✅ BTC / ⬜ ETH». 3 кнопки в ряду.
+
+    Внизу — управляющие: «Все», «Снять все», «Закрыть».
+    Callback: ``sigassets:<ASSET>`` (toggle) / ``sigassets:_all`` / ``sigassets:_none`` /
+    ``sigassets:_close``.
+    """
+    all_assets = _signals_assets_master_list()
+    sel = {a.upper() for a in selected}
+    rows: list[list[InlineKeyboardButton]] = []
+    cur_row: list[InlineKeyboardButton] = []
+    for a in all_assets:
+        mark = "✅" if a.upper() in sel else "⬜"
+        cur_row.append(
+            InlineKeyboardButton(text=f"{mark} {a}", callback_data=f"sigassets:{a}")
+        )
+        if len(cur_row) == 3:
+            rows.append(cur_row)
+            cur_row = []
+    if cur_row:
+        rows.append(cur_row)
+    rows.append([
+        InlineKeyboardButton(text="✅ Все",     callback_data="sigassets:_all"),
+        InlineKeyboardButton(text="🗑 Снять все", callback_data="sigassets:_none"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="✖ Закрыть", callback_data="sigassets:_close"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _signals_picker_text(selected: list[str], is_subscribed: bool) -> str:
+    all_assets = _signals_assets_master_list()
+    is_all = set(a.upper() for a in selected) == set(a.upper() for a in all_assets)
+    sub_line = "🟢 Подписка ВКЛ" if is_subscribed else "⚪ Подписка ВЫКЛ"
+    if is_all:
+        sel_line = f"_Отслеживаешь все {len(all_assets)} активов_"
+    elif not selected:
+        sel_line = "_Ничего не выбрано — сигналы не придут._"
+    else:
+        sel_line = "_Выбраны:_ " + ", ".join(sorted(set(a.upper() for a in selected)))
+    return (
+        "📡 *Сигналы — выбор активов*\n"
+        f"{sub_line}\n\n"
+        "Отмечай активы, по которым хочешь получать:\n"
+        "• авто-push «лучшая сделка ≥ 60/100» (из `/signal`)\n"
+        "• smart-money convergence + BTC outlook (по умолчанию шлются для BTC)\n\n"
+        f"{sel_line}\n\n"
+        "_Подписка вкл/выкл — кнопкой «🔔 Сигналы вкл/выкл» в `/markets`._"
     )
+
+
+@dp.message(Command("signals"))
+async def cmd_signals(message: Message):
+    """Выбор активов для подписки на сигналы (auto-push best deal ≥60).
+
+    Юзер: «лучше чтобы можно было бы выбирать пользователю самому какую крипту
+    отслеживать».
+    """
+    user_id = message.from_user.id
+    await upsert_user(user_id, message.from_user.username or "")
+    selected = await get_user_signals_assets(user_id)
+    all_assets = _signals_assets_master_list()
+    if selected is None:
+        selected = list(all_assets)
+    is_subscribed = await get_user_signals_status(user_id)
+    await message.answer(
+        _signals_picker_text(selected, is_subscribed),
+        parse_mode="Markdown",
+        reply_markup=_signals_assets_keyboard(selected),
+    )
+
+
+@dp.callback_query(F.data.startswith("sigassets:"))
+async def handle_signals_assets_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    payload = (callback.data or "").split(":", 1)[1] if callback.data else ""
+    all_assets = _signals_assets_master_list()
+
+    if payload == "_close":
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.answer("Закрыто.")
+        return
+    if payload == "_all":
+        await set_user_signals_assets(user_id, None)  # None = все
+        new_selected = list(all_assets)
+    elif payload == "_none":
+        await set_user_signals_assets(user_id, [])
+        new_selected = []
+    else:
+        # toggle одного актива (валидируем что входит в master-список)
+        asset = payload.strip().upper()
+        if asset not in {a.upper() for a in all_assets}:
+            await callback.answer("Неизвестный актив.", show_alert=True)
+            return
+        new_selected = await toggle_user_signal_asset(
+            user_id, asset, all_assets=all_assets
+        )
+
+    is_subscribed = await get_user_signals_status(user_id)
+    try:
+        await callback.message.edit_text(
+            _signals_picker_text(new_selected, is_subscribed),
+            parse_mode="Markdown",
+            reply_markup=_signals_assets_keyboard(new_selected),
+        )
+    except Exception:
+        # Без изменений (одинаковый markup) → молчим
+        pass
+    await callback.answer()
 
 
 # ─── /signal — auto SL/TP recommender ─────────────────────────────────────────
@@ -5526,35 +5651,9 @@ async def handle_text_input(message: Message):
         except:
             pass
 
-    # If not portfolio and not time, do nothing
-    user_id = message.from_user.id
-    user = await get_user(user_id)
-
-    if not user:
-        return
-
-    text = message.text.strip()
-
-    if ":" not in text or len(text) != 5:
-        await message.answer("❌ Формат: HH:MM (например 09:30)")
-        return
-
-    try:
-        h, m = text.split(":")
-        h, m = int(h), int(m)
-        assert 0 <= h <= 23 and 0 <= m <= 59
-    except:
-        await message.answer("❌ Некорректное время. Пример: 09:30")
-        return
-
-    time_str = f"{h:02d}:{m:02d}"
-    await set_daily_sub(user_id, True, time_str)
-
-    await message.answer(
-        f"✅ *Подписка активана*\n\n"
-        f"📬 Ежедневно в *{time_str} UTC*",
-        parse_mode="Markdown"
-    )
+    # Not portfolio and not time — silently ignore (don't spam "Формат: HH:MM"
+    # for persistent keyboard buttons or arbitrary text).
+    return
 
 
 # ─── /stats ───────────────────────────────────────────────────────────────────
@@ -5938,6 +6037,7 @@ async def main():
     register_advisor_portfolio_handlers(dp)
     register_p2p_arbitrage_handlers(dp)
     register_postmortem_handlers(dp)
+    register_retro_handlers(dp)
     register_sniping_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()
