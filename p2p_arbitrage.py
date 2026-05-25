@@ -159,9 +159,27 @@ DEFAULT_MAX_AD_AGE_MIN = 0  # 0 = выкл
 #     Снижаем дефолт до 15% — реальный арб даже в VES/ARS редко sustained > 12%.
 #   • DEDUP_PRICE_BUCKET_PCT — bucket size для стрикт-dedup'а opportunities.
 DEFAULT_OUTLIER_BAND_PCT = 15.0
+# Stable-coin assets (USDT/USDC/FDUSD/etc.) дают anchor = реальный USD→fiat
+# forex-курс через ``market_indicators.fiat_fx``. Для них любое отклонение
+# > 7% — это либо wishlist-ad, либо ad с экзотическим методом оплаты,
+# который реально не исполнится. 15% band слишком широкий: пропускает
+# ad'ы типа `15.21 MXN @ XchangeGlobal` при споте `17.28` (отклонение
+# 12%) — после фикса инверсии Bybit (PR #38) такой ad всё равно сядет
+# в SELL-пул и фантомного арба не даст, но он искажает median, anchor
+# fallback и засоряет /p2p single-pair view.
+#
+# Не-stable активы (BTC/ETH/etc.) anchor не получают (``compute_market_anchor``
+# возвращает None), для них outlier-фильтр пропускается целиком — поэтому
+# DEFAULT_OUTLIER_BAND_PCT для них фактически безразличен, оставляем 15.0
+# как страховку на случай если в будущем мы добавим crypto-spot anchors.
+DEFAULT_OUTLIER_BAND_STABLE_PCT = 7.0
 DEFAULT_MAX_SPREAD_PCT = 15.0
 DEFAULT_DEDUP_PRICE_BUCKET_PCT = 0.5
 DEFAULT_OUTLIER_MIN_SAMPLES = 3
+
+# Активы, для которых spot anchor берётся из forex (USD-stable peg). См.
+# ``market_indicators.fiat_fx.market_anchor_for_pair`` — там их явный whitelist.
+STABLE_USD_ASSETS = frozenset({"USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD"})
 
 PAYMENT_METHOD_ALIASES = {
     "tinkoffnew": "tinkoff",
@@ -729,6 +747,10 @@ def get_outlier_band_pct() -> float:
     Default 15% достаточно широк чтобы не задевать нормальный P2P-шум
     (1-3% разброс), но дроп'ает dead/typo-ads типа USDT/ILS buy 2.77
     при медиане 3.7 (-25% отклонение).
+
+    Для USDT/USDC/прочих USD-stable активов используется отдельный, более
+    узкий band — см. ``get_outlier_band_stable_pct`` и
+    ``get_outlier_band_for_asset``.
     """
     return _env_float(
         "P2P_OUTLIER_BAND_PCT",
@@ -736,6 +758,29 @@ def get_outlier_band_pct() -> float:
         min_val=0.0,
         max_val=100.0,
     )
+
+
+def get_outlier_band_stable_pct() -> float:
+    """Узкий band для stable-coin пар (USDT/USDC/FDUSD/TUSD/DAI/BUSD).
+
+    Spot anchor для них = реальный USD→fiat курс с open.er-api.com, поэтому
+    любое отклонение > ~7% — это уже не «шум», а wishlist-ads или экзотические
+    payment-метод ads которые не исполнятся как заявлено. См. подробный
+    рационал в комментарии у DEFAULT_OUTLIER_BAND_STABLE_PCT.
+    """
+    return _env_float(
+        "P2P_OUTLIER_BAND_STABLE_PCT",
+        DEFAULT_OUTLIER_BAND_STABLE_PCT,
+        min_val=0.0,
+        max_val=100.0,
+    )
+
+
+def get_outlier_band_for_asset(asset: str | None) -> float:
+    """Возвращает band для конкретного asset'а: stable → 7%, остальные → 15%."""
+    if asset and asset.upper() in STABLE_USD_ASSETS:
+        return get_outlier_band_stable_pct()
+    return get_outlier_band_pct()
 
 
 def get_max_spread_pct() -> float:
@@ -1523,12 +1568,19 @@ def find_p2p_opportunities(
     # USDT/USDC: 1 stable ≈ 1 USD, поэтому anchor = USD-fiat spot rate.
     # Для других asset'ов (BTC/ETH/etc) — fallback на combined median или
     # отсутствие фильтра (см. ``compute_market_anchor``).
-    band = get_outlier_band_pct() if outlier_band_pct is None else outlier_band_pct
+    #
+    # Per-asset band: USD-stables (USDT/USDC/FDUSD/etc.) идут с узким 7%
+    # band'ом потому что у них есть точный forex anchor. Остальные активы
+    # получают дефолтный 15% band (см. ``get_outlier_band_for_asset``).
+    sample = next(iter(buy_ads + sell_ads), None)
+    if outlier_band_pct is not None:
+        band = outlier_band_pct
+    elif sample is not None:
+        band = get_outlier_band_for_asset(sample.asset)
+    else:
+        band = get_outlier_band_pct()
     market_anchor: float | None = None
     if band > 0:
-        # Берём пару из первого ad'а: handler вызывает per-pair, asset/fiat
-        # одинаковы во всём пуле.
-        sample = next(iter(buy_ads + sell_ads), None)
         if sample is not None:
             market_anchor = compute_market_anchor(
                 sample.asset,
@@ -1708,20 +1760,27 @@ def _payment_window_text(ad: P2PAdvert) -> str:
     return f"pay `{ad.payment_window_min}m`"
 
 
-def _median_annotation(price: float, anchor: float | None, *, side: str) -> str:
+def _median_annotation(
+    price: float,
+    anchor: float | None,
+    *,
+    side: str,
+    asset: str | None = None,
+) -> str:
     """Возвращает суффикс типа ` · vs market 3.7500 (-25.0%) ⚠️ outlier` или пустую строку.
 
     M9-E: ``anchor`` = реальный forex-курс (open.er-api.com), а не median
     одной из сторон — это устраняет проблему PR #35, где BUY-side median
     смещался wishlist-ads и не ловил настоящих outliers.
 
-    Включает emoji-предупреждение если отклонение > 10% — это явный сигнал
-    что ad либо dead, либо typo, либо payment-stream странный.
+    Включает emoji-предупреждение если отклонение > 10% (или per-asset
+    band'а, если он уже),  — это явный сигнал что ad либо dead, либо typo,
+    либо payment-stream странный.
     """
     if anchor is None or anchor <= 0 or price <= 0:
         return ""
     delta_pct = (price - anchor) / anchor * 100.0
-    band = get_outlier_band_pct()
+    band = get_outlier_band_for_asset(asset) if asset else get_outlier_band_pct()
     warn = " ⚠️ outlier" if band > 0 and abs(delta_pct) > min(10.0, band) else ""
     return f" · vs market `{anchor:.4f}` ({delta_pct:+.1f}%){warn}"
 
@@ -1770,8 +1829,8 @@ def format_p2p_report(
             report_warnings.append(f"данные старше TTL {opportunity_ttl_sec} сек")
         buy_safe = _escape_md(buy.advertiser)
         sell_safe = _escape_md(sell.advertiser)
-        buy_med_suffix = _median_annotation(buy.price, opp.median_buy_price, side="BUY")
-        sell_med_suffix = _median_annotation(sell.price, opp.median_sell_price, side="SELL")
+        buy_med_suffix = _median_annotation(buy.price, opp.median_buy_price, side="BUY", asset=buy.asset)
+        sell_med_suffix = _median_annotation(sell.price, opp.median_sell_price, side="SELL", asset=sell.asset)
         lines.extend([
             f"*{idx}. Net {opp.net_spread_pct:+.2f}%* · gross `{opp.gross_spread_pct:+.2f}%` · score `{opp.score:.2f}` · risk `{opp.risk_level}` · {age_text}",
             f"   Buy: `{buy.price:.4f}` {opp.fiat} · {buy.venue} · {buy_safe} · orders `{buy.completed_orders or 0}` · done `{buy.completion_rate_pct or 0:.1f}%` · {_payment_window_text(buy)}{buy_med_suffix}",

@@ -28,7 +28,9 @@ from p2p_arbitrage import (
     get_dedup_price_bucket_pct,
     get_fiats,
     get_max_spread_pct,
+    get_outlier_band_for_asset,
     get_outlier_band_pct,
+    get_outlier_band_stable_pct,
     parse_binance_ad,
     parse_bybit_ad,
 )
@@ -866,6 +868,34 @@ class TestOutlierEnvHelpers(unittest.TestCase):
         with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "0"}, clear=True):
             self.assertEqual(get_outlier_band_pct(), 0.0)
 
+    def test_outlier_band_stable_defaults_to_7(self):
+        # USD-stable активы получают узкий band потому что у них есть
+        # точный forex anchor. См. DEFAULT_OUTLIER_BAND_STABLE_PCT.
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertAlmostEqual(get_outlier_band_stable_pct(), 7.0)
+
+    def test_outlier_band_stable_override(self):
+        with patch.dict(os.environ, {"P2P_OUTLIER_BAND_STABLE_PCT": "4.5"}, clear=True):
+            self.assertAlmostEqual(get_outlier_band_stable_pct(), 4.5)
+
+    def test_outlier_band_for_asset_routes_stables_to_narrow(self):
+        # Stable → узкий band; не-stable / unknown → дефолтный широкий band.
+        with patch.dict(os.environ, {}, clear=True):
+            for stable in ("USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD"):
+                self.assertAlmostEqual(get_outlier_band_for_asset(stable), 7.0)
+                self.assertAlmostEqual(get_outlier_band_for_asset(stable.lower()), 7.0)
+            for other in ("BTC", "ETH", "BNB", None, ""):
+                self.assertAlmostEqual(get_outlier_band_for_asset(other), 15.0)
+
+    def test_outlier_band_for_asset_respects_env_overrides(self):
+        env = {
+            "P2P_OUTLIER_BAND_PCT": "12",
+            "P2P_OUTLIER_BAND_STABLE_PCT": "3",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertAlmostEqual(get_outlier_band_for_asset("USDT"), 3.0)
+            self.assertAlmostEqual(get_outlier_band_for_asset("BTC"), 12.0)
+
     def test_max_spread_defaults_to_15(self):
         # M9-E: дефолт понижен с 20% → 15% (реальный P2P-арб даже в VES редко
         # sustained > 12%).
@@ -1473,6 +1503,94 @@ class TestSpotAnchorOutlierFilter(unittest.TestCase):
         ]
         anchor = compute_market_anchor("USDC", "SAR", ads, anchor_override=42.0)
         self.assertAlmostEqual(anchor, 42.0)
+
+    def test_stable_asset_uses_narrow_band_by_default(self):
+        """USDC/SAR с 12% отклонением: дефолтный 15% band пропустил бы; новый
+        per-asset stable band (7%) должен задропить.
+
+        SAR peg = 3.75. buy 3.30 = -12.0% — внутри 15% band, но за 7%.
+        После PR это должен задропить именно потому что asset=USDC (stable).
+        """
+        buy_ads = [
+            self._ad("BUY", 3.30, adv="border_outlier", asset="USDC", fiat="SAR"),
+            self._ad("BUY", 3.55, adv="real1", asset="USDC", fiat="SAR"),  # -5.3%, within 7%
+            self._ad("BUY", 3.60, adv="real2", asset="USDC", fiat="SAR"),
+            self._ad("BUY", 3.62, adv="real3", asset="USDC", fiat="SAR"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 3.74, adv="real_s1", asset="USDC", fiat="SAR"),
+            self._ad("SELL", 3.75, adv="real_s2", asset="USDC", fiat="SAR"),
+            self._ad("SELL", 3.76, adv="real_s3", asset="USDC", fiat="SAR"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                max_results=20,
+            )
+        # 3.30 должен быть выкинут per-asset band'ом — ни одна opp не должна
+        # его содержать.
+        for opp in opportunities:
+            self.assertGreater(
+                opp.buy_ad.price,
+                3.30,
+                f"buy {opp.buy_ad.price} прошёл через -12% deviation — "
+                "stable band 7% не сработал!",
+            )
+
+    def test_stable_asset_band_env_override_widens(self):
+        """Если юзер выставил P2P_OUTLIER_BAND_STABLE_PCT=20, выкинутый -12%
+        отклонения ad должен снова проходить — env-override уважается.
+        """
+        buy_ads = [
+            self._ad("BUY", 3.30, adv="border", asset="USDC", fiat="SAR"),
+            self._ad("BUY", 3.60, adv="real", asset="USDC", fiat="SAR"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 3.75, adv="real_s", asset="USDC", fiat="SAR"),
+        ]
+        env = {"P2P_OUTLIER_BAND_STABLE_PCT": "20"}
+        with patch.dict(os.environ, env, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                max_results=20,
+            )
+        # При расширенном band'е (20%) ad 3.30 проходит → opp(s) с ним есть.
+        self.assertTrue(
+            any(opp.buy_ad.price == 3.30 for opp in opportunities),
+            "при P2P_OUTLIER_BAND_STABLE_PCT=20 ad 3.30 (-12%) должен проходить",
+        )
+
+    def test_explicit_outlier_band_pct_param_overrides_per_asset_default(self):
+        """Если ``find_p2p_opportunities(outlier_band_pct=...)`` явно передан,
+        используется он, независимо от asset type (для DI / тестов).
+        """
+        buy_ads = [
+            self._ad("BUY", 3.30, adv="border", asset="USDC", fiat="SAR"),
+            self._ad("BUY", 3.60, adv="real", asset="USDC", fiat="SAR"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 3.75, adv="real_s", asset="USDC", fiat="SAR"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                outlier_band_pct=20.0,  # явно широкий, перебивает stable=7%
+                max_results=20,
+            )
+        # 3.30 теперь проходит — outlier_band_pct=20 победил per-asset default.
+        self.assertTrue(
+            any(opp.buy_ad.price == 3.30 for opp in opportunities),
+            "явный outlier_band_pct=20 должен перебить stable default 7%",
+        )
 
 
 if __name__ == "__main__":
