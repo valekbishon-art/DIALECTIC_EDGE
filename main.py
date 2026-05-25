@@ -3951,7 +3951,12 @@ def _section_label(key: str, label: str, current: str) -> str:
 
 
 def _markets_section_keyboard(
-    is_enabled: bool, current: str = "summary", user_id: int | None = None
+    is_enabled: bool,
+    current: str = "summary",
+    user_id: int | None = None,
+    *,
+    current_page: int = 0,
+    total_pages: int = 1,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     # 4 ряда по 2 кнопки — выбор секции.
@@ -3965,6 +3970,27 @@ def _markets_section_keyboard(
             InlineKeyboardButton(
                 text=_section_label(k2, l2, current),
                 callback_data=f"markets:section:{k2}",
+            ),
+        ])
+    # Pagination row — показываем только если секция многостраничная.
+    # Юзер просил «листать как книжку»: ◀ Prev / i / N / Next ▶ на одном
+    # сообщении (edit_message_text), без рассыпания на 3 портянки.
+    if total_pages > 1:
+        cur = max(0, min(int(current_page), total_pages - 1))
+        prev_idx = (cur - 1) % total_pages
+        next_idx = (cur + 1) % total_pages
+        rows.append([
+            InlineKeyboardButton(
+                text="◀ Назад",
+                callback_data=f"markets:page:{current}:{prev_idx}",
+            ),
+            InlineKeyboardButton(
+                text=f"{cur + 1}/{total_pages}",
+                callback_data="markets:noop",
+            ),
+            InlineKeyboardButton(
+                text="Вперёд ▶",
+                callback_data=f"markets:page:{current}:{next_idx}",
             ),
         ])
     # Управляющий ряд: лучшая сделка + обновить + сигналы on/off.
@@ -4004,13 +4030,18 @@ async def _render_markets_section(
     user_id: int,
     section: str,
     wait_message_id: int | None = None,
+    page: int = 0,
 ) -> None:
-    """Рендерит /markets для указанной секции.
+    """Рендерит /markets для указанной секции с пагинацией.
 
-    Если задан ``wait_message_id`` — первое сообщение `edit_message_text`
-    поверх него (так заменяем «⏳ Загружаю…» или предыдущий экран секции).
-    Иначе — все сообщения как `send_message`. Клавиатура + status_text
-    цепляются к последнему сообщению.
+    Раньше /markets с 15 активами рассыпался на 3 отдельных Telegram-сообщения
+    («3 портянки в чат»). Теперь — одно сообщение которое юзер листает кнопками
+    «◀ Назад / Вперёд ▶» (edit_message_text in-place, как книжка).
+
+    Если задан ``wait_message_id`` — `edit_message_text` поверх него (так
+    заменяем «⏳ Загружаю…» или предыдущий экран секции/страницы). Иначе —
+    `send_message`. Клавиатура и status_text цепляются к этому одному
+    сообщению; pagination row автоматически добавляется при total_pages > 1.
     """
     github_repo = os.getenv("GITHUB_REPO", "ANAEHY/dialectic_edge")
     from signals import build_markets_section_message
@@ -4034,39 +4065,36 @@ async def _render_markets_section(
             await bot.send_message(chat_id, text, reply_markup=kb)
         return
 
-    # Первое сообщение — edit (если есть placeholder), иначе send.
-    first = clean_markdown(messages[0])
-    is_single = len(messages) == 1
-    first_kb = _markets_section_keyboard(is_enabled, current=section, user_id=user_id) if is_single else None
-    first_text = first + (status_text if is_single else "")
+    total_pages = len(messages)
+    cur = max(0, min(int(page), total_pages - 1))
+    chunk = clean_markdown(messages[cur])
+    text = chunk + status_text
+    kb = _markets_section_keyboard(
+        is_enabled,
+        current=section,
+        user_id=user_id,
+        current_page=cur,
+        total_pages=total_pages,
+    )
     if wait_message_id is not None:
-        await bot.edit_message_text(
-            first_text,
-            chat_id=chat_id,
-            message_id=wait_message_id,
-            parse_mode="Markdown",
-            reply_markup=first_kb,
-        )
+        try:
+            await bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=wait_message_id,
+                parse_mode="Markdown",
+                reply_markup=kb,
+            )
+        except Exception as e:
+            # Telegram «message is not modified» если тот же текст: проглатываем.
+            if "not modified" not in str(e).lower():
+                raise
     else:
         await bot.send_message(
             chat_id,
-            first_text,
+            text,
             parse_mode="Markdown",
-            reply_markup=first_kb,
-        )
-
-    # Остальные — отдельными сообщениями. Клавиатура + status_text → к
-    # последнему.
-    for i, chunk in enumerate(messages[1:], start=1):
-        is_last = (i == len(messages) - 1)
-        body = clean_markdown(chunk) + (status_text if is_last else "")
-        await bot.send_message(
-            chat_id,
-            body,
-            parse_mode="Markdown",
-            reply_markup=_markets_section_keyboard(is_enabled, current=section, user_id=user_id)
-            if is_last
-            else None,
+            reply_markup=kb,
         )
 
 
@@ -4885,7 +4913,7 @@ async def cb_markets_signals(callback: CallbackQuery):
     else:
         action = ""
 
-    # markets:section:<key> — выбор секции (новое меню /markets).
+    # markets:section:<key> — выбор секции (сбрасывает page=0).
     if data.startswith("markets:section:"):
         section = data.split(":", 2)[2] if data.count(":") >= 2 else "summary"
         await callback.answer("⏳")
@@ -4895,9 +4923,38 @@ async def cb_markets_signals(callback: CallbackQuery):
                 user_id=user_id,
                 section=section,
                 wait_message_id=callback.message.message_id,
+                page=0,
             )
         except Exception as e:
             await callback.answer(f"Ошибка: {e}", show_alert=True)
+        return
+
+    # markets:page:<section>:<idx> — листание страниц внутри секции.
+    # Юзер кликает «◀ Назад / Вперёд ▶» — редактируем то же сообщение,
+    # не плодим новые в чат (см. _render_markets_section пагинацию).
+    if data.startswith("markets:page:"):
+        parts = data.split(":", 3)
+        section = parts[2] if len(parts) >= 3 else "summary"
+        try:
+            page = int(parts[3]) if len(parts) >= 4 else 0
+        except ValueError:
+            page = 0
+        await callback.answer()
+        try:
+            await _render_markets_section(
+                chat_id=callback.message.chat.id,
+                user_id=user_id,
+                section=section,
+                wait_message_id=callback.message.message_id,
+                page=page,
+            )
+        except Exception as e:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        return
+
+    # markets:noop — кнопка-индикатор страницы (i/N), без действия.
+    if data == "markets:noop":
+        await callback.answer()
         return
 
     if action == "enable":
