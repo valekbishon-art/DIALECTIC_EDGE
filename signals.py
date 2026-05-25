@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import logging
 import os
-import re
 import time
 import aiohttp
 from datetime import datetime
@@ -59,11 +58,11 @@ async def fetch_bybit_long_short_ratio(symbols: list[str] = ["BTCUSDT", "ETHUSDT
     """Получает данные позиций трейдеров с Bybit API."""
     api_key, secret = get_bybit_keys()
     results = {}
-    
+
     if not api_key or not secret:
         logger.info("Bybit API ключи не найдены, используем Binance")
         return {}
-    
+
     for symbol in symbols:
         try:
             # Bybit V5 API для account ratio
@@ -74,7 +73,7 @@ async def fetch_bybit_long_short_ratio(symbols: list[str] = ["BTCUSDT", "ETHUSDT
                 "interval": "15min",  # 15 минут
                 "limit": 1
             }
-            
+
             # Генерируем подпись
             timestamp = str(int(time.time() * 1000))
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
@@ -83,14 +82,14 @@ async def fetch_bybit_long_short_ratio(symbols: list[str] = ["BTCUSDT", "ETHUSDT
                 f"{timestamp}{api_key}{query_string}".encode(),
                 hashlib.sha256
             ).hexdigest()
-            
+
             headers = {
                 "X-BAPI-API-KEY": api_key,
                 "X-BAPI-SIGN": sign,
                 "X-BAPI-SIGN-TYPE": "HmacSHA256",
                 "X-BAPI-TIMESTAMP": timestamp,
             }
-            
+
             async with aiohttp.ClientSession() as session:
                 url = f"{BYBIT_URL}{endpoint}"
                 async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -108,10 +107,10 @@ async def fetch_bybit_long_short_ratio(symbols: list[str] = ["BTCUSDT", "ETHUSDT
                             logger.info(f"Bybit data for {symbol}: long={long_ratio}%, short={short_ratio}%")
                     else:
                         logger.warning(f"Bybit API error: {resp.status}")
-                        
+
         except Exception as e:
             logger.warning(f"Bybit fetch error for {symbol}: {e}")
-    
+
     return results
 
 
@@ -146,10 +145,10 @@ async def fetch_binance_signals(symbols: list[str] | None = None) -> dict:
     if symbols is None:
         symbols = list(DEFAULT_FUTURES_SYMBOLS)
     results = {}
-    
+
     # Сначала пробуем Bybit (позиции трейдеров)
     bybit_data = await fetch_bybit_long_short_ratio(symbols)
-    
+
     # Пробуем Binance Futures, если не получится — Spot API
     async with aiohttp.ClientSession() as session:
         for symbol in symbols:
@@ -167,7 +166,7 @@ async def fetch_binance_signals(symbols: list[str] | None = None) -> dict:
                         }
                     else:
                         raise ValueError(f"Futures API returned {resp.status}")
-                
+
                 # Funding rate
                 funding_url = f"{BINANCE_FUTURES_URL}/fapi/v1/fundingRate"
                 async with session.get(funding_url, params={"symbol": symbol, "limit": 1}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
@@ -177,7 +176,7 @@ async def fetch_binance_signals(symbols: list[str] | None = None) -> dict:
                             funding = float(data[0].get("fundingRate", 0))
                             results[symbol]["funding_rate"] = funding
                             results[symbol]["funding_direction"] = "LONG" if funding > 0 else "SHORT"
-                            
+
             except Exception:
                 # Fallback: пробуем Spot API
                 try:
@@ -198,7 +197,7 @@ async def fetch_binance_signals(symbols: list[str] | None = None) -> dict:
                 except Exception as e:
                     logger.warning(f"Binance fallback error for {symbol}: {e}")
                     continue
-            
+
             # Если есть Bybit данные - мержим
             if symbol in bybit_data:
                 results[symbol]["long"] = bybit_data[symbol]["long"]
@@ -255,7 +254,7 @@ async def fetch_binance_signals(symbols: list[str] | None = None) -> dict:
 async def fetch_verdict(github_repo: str) -> Optional[dict]:
     """Читает последний вердикт из DIGEST_CACHE."""
     url = DIGEST_CACHE_URL.format(repo=github_repo)
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -265,7 +264,7 @@ async def fetch_verdict(github_repo: str) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"DIGEST_CACHE fetch error: {e}")
         return None
-    
+
     # Ищем вердикт
     verdict = None
     for line in content.split('\n'):
@@ -278,23 +277,22 @@ async def fetch_verdict(github_repo: str) -> Optional[dict]:
             elif "NEUTRAL" in line_upper or "CASH" in line_upper:
                 verdict = "NEUTRAL"
             break
-    
+
     return {"verdict": verdict, "content": content[:500]}
 
 
 def analyze_signals(binance_data: dict, verdict: Optional[dict]) -> list:
     """Анализирует данные и генерирует сигналы."""
     signals = []
-    
+
     for symbol, data in binance_data.items():
         price_change = data.get("price_change", 0)
         funding = data.get("funding_rate", 0)
-        funding_dir = data.get("funding_direction", "NEUTRAL")
-        
+
         # Сигнал 1: Bybit позиции трейдеров (приоритет!)
         long_pct = data.get("long", 0)
         short_pct = data.get("short", 0)
-        
+
         if long_pct >= TOP_TRADERS_THRESHOLD:
             signals.append({
                 "type": "BYBIT_TRADERS",
@@ -311,7 +309,7 @@ def analyze_signals(binance_data: dict, verdict: Optional[dict]) -> list:
                 "confidence": short_pct,
                 "reason": f"{short_pct}% трейдеров в шорте"
             })
-        
+
         # Сигнал 2: Сильное изменение цены (fallback если нет Bybit)
         elif abs(price_change) >= PRICE_CHANGE_THRESHOLD:
             direction = "LONG" if price_change > 0 else "SHORT"
@@ -323,7 +321,7 @@ def analyze_signals(binance_data: dict, verdict: Optional[dict]) -> list:
                 "confidence": round(confidence),
                 "reason": f"{price_change:+.2f}% за 24ч"
             })
-        
+
         # Сигнал 3: Funding rate
         if abs(funding) >= FUNDING_THRESHOLD:
             direction = "LONG" if funding > 0 else "SHORT"
@@ -335,11 +333,11 @@ def analyze_signals(binance_data: dict, verdict: Optional[dict]) -> list:
                 "confidence": round(confidence),
                 "reason": f"Funding: {funding*100:.4f}%"
             })
-        
+
         # Сигнал 3: Совпадение с вердиктом
         if verdict and verdict.get("verdict"):
             v = verdict["verdict"]
-            
+
             if v == "BULLISH" and price_change > 1:
                 signals.append({
                     "type": "VERDICT_MATCH",
@@ -356,8 +354,108 @@ def analyze_signals(binance_data: dict, verdict: Optional[dict]) -> list:
                     "confidence": 75,
                     "reason": "Наш вердикт: МЕДВЕЖИЙ + падение"
                 })
-            
+
     return signals
+
+
+def pick_top_signals(
+    signals: list,
+    binance_data: dict,
+    verdict: Optional[dict] = None,
+    *,
+    top_n: int = 3,
+    min_score: float = 50.0,
+) -> list[dict]:
+    """Скорит все сигналы по R-системе и возвращает топ-N по r_score.
+
+    Как `pick_best_signal`, но вернёт list лучших сигналов (отсорт. по
+    r_score ↓, отфильтрованы по порогу `min_score`). Используется
+    рендером `build_signals_message` чтобы показать юзеру блок «⋆ ТОП-N
+    СДЕЛОК СЕЙЧАС» (по запросу юзера: «пусть лучшая сделка обрабатывает
+    больше 1 позиции»).
+
+    Скоринг идентичен `pick_best_signal` — тот же base+bonuses-penalties
+    алгоритм, тот же bias_map вычисляется одним вызовом, порог 50.
+    Backward-compat: `pick_best_signal()` делегирует сюда и возвращает
+    первый элемент list'а (или None).
+
+    Returns:
+        list из до `top_n` сигнал-dict'ов с доп. полями r_score,
+        r_ratio, bias_alignment, quant_confirmed, bias_score. Сортировка
+        по r_score ↓, только элементы с r_score >= min_score.
+    """
+    if not signals:
+        return []
+
+    bias_map = build_signal_bias_map(binance_data or {}, verdict)
+
+    def _short_symbol(sym: str) -> str:
+        return sym.replace("USDT", "").upper()
+
+    scored: list[dict] = []
+
+    for sig in signals:
+        symbol_short = _short_symbol(sig.get("symbol", ""))
+        direction = sig.get("direction", "NEUTRAL")
+        confidence = float(sig.get("confidence", 0) or 0)
+
+        bias = bias_map.get(symbol_short) or {}
+        bias_direction = bias.get("direction", "NEUTRAL")
+        bias_score_val = float(bias.get("score", 0) or 0)
+        quant_verdict_v = (bias.get("quant_verdict") or "NEUTRAL").upper()
+        quant_blocked = bool(bias.get("quant_blocked"))
+
+        r_score = confidence
+
+        # Alignment bonuses — direction matches independently computed bias map.
+        bias_alignment = direction != "NEUTRAL" and direction == bias_direction
+        if bias_alignment:
+            r_score += 12
+
+        # Quant verdict confirmation: BB+Donchian+RSI ensemble agrees.
+        quant_confirmed = (
+            quant_verdict_v in ("LONG", "SHORT") and quant_verdict_v == direction
+        )
+        if quant_confirmed:
+            r_score += 8
+
+        if sig.get("type") == "VERDICT_MATCH":
+            r_score += 6
+
+        if sig.get("type") == "BYBIT_TRADERS" and confidence >= 70:
+            r_score += 4
+
+        # Penalties: quant safety gate already blocked direction.
+        if quant_blocked:
+            r_score -= 35
+
+        # Direction conflicts with the bias-map sign at meaningful magnitude.
+        if abs(bias_score_val) >= 8:
+            sign = 1 if bias_score_val > 0 else -1
+            if (direction == "LONG" and sign < 0) or (direction == "SHORT" and sign > 0):
+                r_score -= 18
+
+        # R/R hint: ATR availability bonus.
+        has_atr = bool(
+            (binance_data or {}).get(sig.get("symbol", ""), {})
+            .get("quant_components")
+        )
+        if has_atr:
+            r_score += 3
+        r_ratio = 2.0  # σ̂-based default; conservative 2:1
+
+        enriched = dict(sig)
+        enriched["r_score"] = round(r_score, 1)
+        enriched["r_ratio"] = r_ratio
+        enriched["bias_alignment"] = bias_alignment
+        enriched["quant_confirmed"] = quant_confirmed
+        enriched["bias_score"] = round(bias_score_val, 1)
+        scored.append(enriched)
+
+    # Фильтр + сортировка. min_score=50 — порог качества, ниже не рекомендуем.
+    qualified = [s for s in scored if s["r_score"] >= min_score]
+    qualified.sort(key=lambda s: s["r_score"], reverse=True)
+    return qualified[: max(0, int(top_n))]
 
 
 def pick_best_signal(
@@ -393,90 +491,9 @@ def pick_best_signal(
         Лучший signal dict с доп. полями `r_score`, `r_ratio`,
         `bias_alignment`, `quant_confirmed`. None если кандидатов нет.
     """
-    if not signals:
-        return None
-
-    bias_map = build_signal_bias_map(binance_data or {}, verdict)
-
-    def _short_symbol(sym: str) -> str:
-        return sym.replace("USDT", "").upper()
-
-    best: Optional[dict] = None
-    best_score = float("-inf")
-
-    for sig in signals:
-        symbol_short = _short_symbol(sig.get("symbol", ""))
-        direction = sig.get("direction", "NEUTRAL")
-        confidence = float(sig.get("confidence", 0) or 0)
-
-        bias = bias_map.get(symbol_short) or {}
-        bias_direction = bias.get("direction", "NEUTRAL")
-        bias_score_val = float(bias.get("score", 0) or 0)
-        quant_verdict_v = (bias.get("quant_verdict") or "NEUTRAL").upper()
-        quant_blocked = bool(bias.get("quant_blocked"))
-
-        r_score = confidence
-
-        # Alignment bonuses — direction matches independently computed bias map.
-        bias_alignment = direction != "NEUTRAL" and direction == bias_direction
-        if bias_alignment:
-            r_score += 12
-
-        # Quant verdict confirmation: BB+Donchian+RSI ensemble agrees with direction.
-        quant_confirmed = (
-            quant_verdict_v in ("LONG", "SHORT") and quant_verdict_v == direction
-        )
-        if quant_confirmed:
-            r_score += 8
-
-        if sig.get("type") == "VERDICT_MATCH":
-            r_score += 6
-
-        if sig.get("type") == "BYBIT_TRADERS" and confidence >= 70:
-            r_score += 4
-
-        # Penalties: quant safety gate already blocked direction (high-conf
-        # anti-signal) → почти всегда выкидываем кандидата.
-        if quant_blocked:
-            r_score -= 35
-
-        # Direction conflicts with the bias-map sign at meaningful magnitude.
-        if abs(bias_score_val) >= 8:
-            sign = 1 if bias_score_val > 0 else -1
-            if (direction == "LONG" and sign < 0) or (direction == "SHORT" and sign > 0):
-                r_score -= 18
-
-        # R/R hint: detect whether we have ATR for a real stop-loss. Without
-        # ATR / σ̂ the implicit R:R is best-effort (still 2:1 from σ̂-based
-        # stop in core.signal_scorer convention).
-        has_atr = bool(
-            (binance_data or {}).get(sig.get("symbol", ""), {})
-            .get("quant_components")
-        )
-        if has_atr:
-            r_score += 3
-            r_ratio = 2.0
-        else:
-            r_ratio = 2.0  # σ̂-based default; conservative 2:1
-
-        if r_score > best_score:
-            best_score = r_score
-            best = dict(sig)
-            best["r_score"] = round(r_score, 1)
-            best["r_ratio"] = r_ratio
-            best["bias_alignment"] = bias_alignment
-            best["quant_confirmed"] = quant_confirmed
-            best["bias_score"] = round(bias_score_val, 1)
-
-    if best is None:
-        return None
-
-    # Минимальный порог качества: даже «лучший» сигнал должен набрать ≥ 50
-    # композитного R-score. Иначе помечать звездой просто шум.
-    if best.get("r_score", 0) < 50:
-        return None
-
-    return best
+    # Делегируем на pick_top_signals(top_n=1) чтобы не дублировать логику.
+    top = pick_top_signals(signals, binance_data, verdict, top_n=1, min_score=50.0)
+    return top[0] if top else None
 
 
 def build_signal_bias_map(binance_data: dict, verdict: Optional[dict] = None) -> dict:
@@ -588,12 +605,12 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
         f"_{datetime.now().strftime('%d.%m %H:%M UTC')}_",
         "",
     ]
-    
+
     # Данные рынка (Bybit если есть, иначе Binance)
     has_bybit = any(data.get("has_traders_data") for data in binance_data.values()) if binance_data else False
     source = "Bybit" if has_bybit else "Binance"
     lines.append(f"📊 *ТРЕЙДЕРЫ ({source})*")
-    
+
     if not binance_data:
         lines.append("Ситуация неопределена")
     else:
@@ -603,7 +620,7 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
             funding = data.get("funding_rate", 0)
             long_pct = data.get("long", 0)
             short_pct = data.get("short", 0)
-            
+
             # Если есть данные Bybit трейдеров
             if long_pct > 0 or short_pct > 0:
                 dominant = "🟢" if long_pct > short_pct else "🔴"
@@ -616,12 +633,12 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
                 emoji = "🟢" if price_change > 0 else "🔴" if price_change < 0 else "⚪️"
                 change_str = f"{emoji} {price_change:+.2f}%"
                 funding_str = f"Funding: {'🔼' if funding > 0 else '🔽'}{funding*100:.4f}%"
-                
+
                 lines.append(f"{name}:")
                 lines.append(f"  {change_str}")
                 lines.append(f"  {funding_str}")
             lines.append("")
-    
+
     # Вердикт
     if verdict and verdict.get("verdict"):
         v = verdict["verdict"]
@@ -631,40 +648,67 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
     else:
         lines.append("🎯 *НАШ ВЕРДИКТ*")
         lines.append("Ситуация неопределена")
-    
+
     lines.append("")
-    
+
     # Сигналы
     if signals:
-        # ── Лучшая сделка (R-система рисков) ─────────────────────────────────
-        # Скорим каждый сигнал по composite R-score (confidence + bias align
-        # + quant_confirmed − quant_block) и показываем один топ ★ перед
-        # списком. Если score < 50 — лучшего нет (ничего не помечаем).
-        best = pick_best_signal(signals, binance_data, verdict)
-        best_key: Optional[tuple] = None
-        if best:
-            best_key = (best.get("symbol"), best.get("direction"), best.get("type"))
-            best_emoji = "📈" if best.get("direction") == "LONG" else "📉"
-            best_sym_short = best.get("symbol", "").replace("USDT", "")
-            confirm_bits: list[str] = []
-            if best.get("bias_alignment"):
-                confirm_bits.append("bias")
-            if best.get("quant_confirmed"):
-                confirm_bits.append("quant")
-            if best.get("type") == "VERDICT_MATCH":
-                confirm_bits.append("digest")
-            if best.get("type") == "BYBIT_TRADERS":
-                confirm_bits.append("traders")
-            confirm_str = ", ".join(confirm_bits) if confirm_bits else "single"
+        # ── Лучшие сделки (R-система рисков) ─────────────────────────────────
+        # Скорим каждый сигнал по composite R-score и показываем топ-3 ⭐
+        # перед списком. Если score < 50 — отсекаем (порог качества).
+        # Раньше показывали только №1, теперь юзер видит несколько
+        # подтверждённых сетапов («лучшая сделка обрабатывает больше 1
+        # позиции» — запрос юзера).
+        top_signals = pick_top_signals(signals, binance_data, verdict, top_n=3)
+        best_keys: set[tuple] = set()
+        if top_signals:
+            best_keys = {
+                (s.get("symbol"), s.get("direction"), s.get("type"))
+                for s in top_signals
+            }
 
-            lines.append("⭐ *ЛУЧШАЯ СДЕЛКА СЕЙЧАС*")
-            lines.append(
-                f"{best_emoji} *{best_sym_short}* → *{best.get('direction')}*  "
-                f"R/R≈{best.get('r_ratio', 2.0):.1f}  "
-                f"score {best.get('r_score', 0):.0f}/100"
-            )
-            lines.append(f"   {best.get('reason', '')}")
-            lines.append(f"   _Подтверждения: {confirm_str}_")
+            # Header: «ЛУЧШАЯ СДЕЛКА СЕЙЧАС» (если одна) или «ТОП-N СДЕЛОК
+            # СЕЙЧАС» (если 2+). Это даёт юзеру понятный сигнал «сколько
+            # подтверждённых сетапов нашли».
+            if len(top_signals) == 1:
+                lines.append("⭐ *ЛУЧШАЯ СДЕЛКА СЕЙЧАС*")
+            else:
+                lines.append(f"⭐ *ТОП-{len(top_signals)} СДЕЛОК СЕЙЧАС*")
+
+            for idx, sig in enumerate(top_signals, start=1):
+                if idx <= 1:
+                    medal = "🥇"
+                elif idx == 2:
+                    medal = "🥈"
+                elif idx == 3:
+                    medal = "🥉"
+                else:
+                    medal = "🔸"
+                arrow = "📈" if sig.get("direction") == "LONG" else "📉"
+                sym_short = sig.get("symbol", "").replace("USDT", "")
+
+                confirm_bits: list[str] = []
+                if sig.get("bias_alignment"):
+                    confirm_bits.append("bias")
+                if sig.get("quant_confirmed"):
+                    confirm_bits.append("quant")
+                if sig.get("type") == "VERDICT_MATCH":
+                    confirm_bits.append("digest")
+                if sig.get("type") == "BYBIT_TRADERS":
+                    confirm_bits.append("traders")
+                confirm_str = ", ".join(confirm_bits) if confirm_bits else "single"
+
+                # Только головной сетап получает «#1» префикс — для
+                # остальных medal сам по себе указывает место.
+                rank_prefix = "" if len(top_signals) == 1 else f"#{idx} "
+                lines.append(
+                    f"{medal} {rank_prefix}{arrow} *{sym_short}* → "
+                    f"*{sig.get('direction')}*  "
+                    f"R/R≈{sig.get('r_ratio', 2.0):.1f}  "
+                    f"score {sig.get('r_score', 0):.0f}/100"
+                )
+                lines.append(f"   {sig.get('reason', '')}")
+                lines.append(f"   _Подтверждения: {confirm_str}_")
             lines.append("")
 
         lines.append("🔔 *СИГНАЛЫ*")
@@ -684,13 +728,11 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
             conf = s["confidence"]
             conf_emoji = "✅" if conf >= 70 else "⚠️"
 
-            # Помечаем ★ конкретный сигнал, который выбрала R-система как
-            # лучший — чтобы юзер сразу видел его в общем списке.
-            star = " ⭐" if best_key and (
-                s.get("symbol") == best_key[0]
-                and s.get("direction") == best_key[1]
-                and s.get("type") == best_key[2]
-            ) else ""
+            # Помечаем ★ сигналы, которые R-система отметила как топ-3.
+            # Это даёт юзеру визуальную привязку: «вот эти из списка ниже
+            # — те же что в блоке ТОП-N СДЕЛОК выше».
+            key = (s.get("symbol"), s.get("direction"), s.get("type"))
+            star = " ⭐" if key in best_keys else ""
 
             lines.append(
                 f"{emoji} {s['symbol']} → {s['direction']} {conf_emoji}{conf}%{star}"
@@ -700,13 +742,13 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
     else:
         lines.append("⚪️ *СИГНАЛЫ*")
         lines.append("Ситуация неопределена")
-    
+
     lines.extend([
         "",
         "⚠️ _Это информация, не финансовый совет._",
         "_DYOR._"
     ])
-    
+
     return "\n".join(lines)
 
 
@@ -920,6 +962,7 @@ async def build_markets_section_message(
     elif section == "all":
         # Все секции по очереди — но в минимальном стиле, чтобы было удобно
         # листать. COT/ETF — отдельным блоком.
+        from web_search import format_prices_minimal
         body_parts.append(format_prices_minimal(prices, section="all", include_title=True))
         body_parts.append("")
         if isinstance(cot_pair, tuple) and cot_pair[1]:
@@ -1085,12 +1128,12 @@ class SignalsSystem:
         self.bot = bot
         self.github_repo = github_repo
         self._last_signal_time: Optional[datetime] = None
-    
+
     async def check_and_send_signals(self, subscribers: list[dict]) -> int:
         """Проверяет сигналы и отправляет подписчикам."""
         if not subscribers:
             return 0
-        
+
         bundle = await fetch_markets_bundle(self.github_repo)
         binance_data = bundle["binance_data"]
 
@@ -1099,7 +1142,7 @@ class SignalsSystem:
             return 0
 
         message = bundle["signals_message"]
-        
+
         # Отправляем
         sent = 0
         for user in subscribers:
@@ -1109,7 +1152,7 @@ class SignalsSystem:
                 await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(f"Signal send error user {user['user_id']}: {e}")
-        
+
         self._last_signal_time = datetime.now()
         logger.info(f"✅ Signals sent: {sent}")
         return sent

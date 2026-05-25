@@ -576,5 +576,176 @@ class TestPaymentMethodAliasExtensions(unittest.TestCase):
         self.assertEqual(result, "bybit:99999")
 
 
+class TestM9CSmartFilters(unittest.TestCase):
+    """M9-C smart filters: TIER-1 банки, min объём, freshness.
+
+    Юзер просил «только TIER-1 банки, объём ≥ X, не больше Y минут с
+    момента публикации ad'а». Эти фильтры включаются через env
+    (`P2P_TIER1_ONLY=1`, `P2P_MIN_EXECUTABLE_FIAT=50000`,
+    `P2P_MAX_AD_AGE_MIN=5`) — по умолчанию выключены чтобы не сломать
+    legacy-сканер.
+    """
+
+    def _ad(
+        self,
+        trade_type: str,
+        price: float,
+        *,
+        methods: tuple[str, ...] = ("TinkoffNew",),
+        fetched_at: float | None = None,
+        max_fiat: float = 100_000,
+        min_fiat: float = 1_000,
+    ) -> P2PAdvert:
+        return P2PAdvert(
+            venue="Binance P2P",
+            trade_type=trade_type,
+            asset="USDT",
+            fiat="RUB",
+            price=price,
+            min_amount_fiat=min_fiat,
+            max_amount_fiat=max_fiat,
+            payment_methods=methods,
+            advertiser=f"{trade_type}-{price}",
+            completed_orders=250,
+            completion_rate_pct=98.0,
+            is_merchant=True,
+            fetched_at=time.time() if fetched_at is None else fetched_at,
+            payment_window_min=15,
+        )
+
+    def test_tier1_only_off_keeps_unknown_banks(self):
+        # P2P_TIER1_ONLY не выставлен → unknown bank проходит.
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, methods=("Akbars",))],
+                [self._ad("SELL", 103.0, methods=("Akbars",))],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+    def test_tier1_only_on_filters_unknown_banks(self):
+        # P2P_TIER1_ONLY=1 → ad с akbars-only отсечён (akbars не TIER-1).
+        with patch.dict(os.environ, {"P2P_TIER1_ONLY": "1"}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, methods=("Akbars",))],
+                [self._ad("SELL", 103.0, methods=("Akbars",))],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(opportunities, [])
+
+    def test_tier1_only_keeps_sber_tinkoff(self):
+        # TIER-1 ad'ы (sber + tinkoff) проходят даже с P2P_TIER1_ONLY=1.
+        with patch.dict(os.environ, {"P2P_TIER1_ONLY": "1"}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, methods=("TinkoffNew",))],
+                [self._ad("SELL", 103.0, methods=("Sberbank",))],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            # Tinkoff и Sber оба TIER-1, но shared_payment_methods будет пусто
+            # (нет общего метода) → opportunity всё равно строится из 2 ад'ов.
+            # Поведение _payment_intersection: если preferred_pay_types пуст,
+            # пустой intersect НЕ блочит, просто warning.
+            self.assertEqual(len(opportunities), 1)
+
+    def test_tier1_only_passes_mixed_methods(self):
+        # Ad с TIER-1 + non-TIER методами проходит (есть хотя бы один TIER-1).
+        with patch.dict(os.environ, {"P2P_TIER1_ONLY": "1"}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, methods=("TinkoffNew", "Akbars"))],
+                [self._ad("SELL", 103.0, methods=("Tinkoff", "RandomBank"))],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+    def test_tier1_banks_env_override(self):
+        # P2P_TIER1_BANKS=akbars → akbars становится TIER-1, проходит.
+        env = {"P2P_TIER1_ONLY": "1", "P2P_TIER1_BANKS": "akbars"}
+        with patch.dict(os.environ, env, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, methods=("Akbars",))],
+                [self._ad("SELL", 103.0, methods=("Akbars",))],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+    def test_min_executable_fiat_filters_small_opportunities(self):
+        # max_amount_fiat=10k у обоих → executable=10k. min=50k → отсекается.
+        env = {"P2P_MIN_EXECUTABLE_FIAT": "50000"}
+        with patch.dict(os.environ, env, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, max_fiat=10_000)],
+                [self._ad("SELL", 103.0, max_fiat=10_000)],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(opportunities, [])
+
+    def test_min_executable_fiat_passes_large_opportunities(self):
+        # 100k обоих → executable=100k. min=50k → проходит.
+        env = {"P2P_MIN_EXECUTABLE_FIAT": "50000"}
+        with patch.dict(os.environ, env, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, max_fiat=100_000)],
+                [self._ad("SELL", 103.0, max_fiat=100_000)],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+    def test_min_executable_fiat_default_off(self):
+        # Дефолт 0 → мелкие сделки проходят.
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, max_fiat=5_000)],
+                [self._ad("SELL", 103.0, max_fiat=5_000)],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+    def test_max_ad_age_filters_stale_ads(self):
+        # fetched_at 10 минут назад, max_age=5 → отсекается.
+        stale_ts = time.time() - 600  # 10 минут
+        env = {"P2P_MAX_AD_AGE_MIN": "5"}
+        with patch.dict(os.environ, env, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, fetched_at=stale_ts)],
+                [self._ad("SELL", 103.0, fetched_at=stale_ts)],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(opportunities, [])
+
+    def test_max_ad_age_passes_fresh_ads(self):
+        # fetched_at 1 минуту назад, max_age=5 → проходит.
+        fresh_ts = time.time() - 60
+        env = {"P2P_MAX_AD_AGE_MIN": "5"}
+        with patch.dict(os.environ, env, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, fetched_at=fresh_ts)],
+                [self._ad("SELL", 103.0, fetched_at=fresh_ts)],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+    def test_max_ad_age_default_off(self):
+        # Дефолт 0 → старые ad'ы проходят.
+        old_ts = time.time() - 86400  # 1 день
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0, fetched_at=old_ts)],
+                [self._ad("SELL", 103.0, fetched_at=old_ts)],
+                min_spread_pct=1.0,
+                settlement_buffer_pct=0.35,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

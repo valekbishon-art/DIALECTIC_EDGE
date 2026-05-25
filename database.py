@@ -560,6 +560,55 @@ async def init_db():
             "ON p2p_audit_log (status, shown_at_ms DESC)"
         )
 
+        # ─── advisor_plans (M2 portfolio + /advise persistence) ────────────
+        # Хранит снапшоты AdvisorPlan для:
+        # 1) is_portfolio=0 — историю /advise вызовов (для /explain и
+        #    «последний план»).
+        # 2) is_portfolio=1 — активные виртуальные позиции для watcher'а
+        #    (закрывает по SL/TP, шлёт алерты юзеру).
+        # status переходит active → stopped/tp1/tp2/tp3/closed когда
+        # текущая цена пересекает уровень. PnL пересчитывается в close.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS advisor_plans (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id                  INTEGER NOT NULL,
+                asset                    TEXT    NOT NULL,
+                action                   TEXT    NOT NULL,
+                direction                TEXT,
+                confidence_pct           INTEGER NOT NULL DEFAULT 0,
+                entry_price              REAL,
+                stop_price               REAL,
+                stop_distance_pct        REAL,
+                risk_reward              REAL,
+                tp_levels_json           TEXT,
+                position_usd             REAL,
+                position_pct_of_capital  REAL,
+                capital_usd              REAL,
+                horizon_human            TEXT,
+                invalidation             TEXT,
+                rationale_json           TEXT,
+                btc_overlay_note         TEXT,
+                risk_profile             TEXT,
+                narrative                TEXT,
+                is_portfolio             INTEGER NOT NULL DEFAULT 0,
+                status                   TEXT    NOT NULL DEFAULT 'active',
+                created_at               INTEGER NOT NULL,
+                closed_at                INTEGER,
+                close_price              REAL,
+                close_reason             TEXT,
+                pnl_usd                  REAL,
+                pnl_pct                  REAL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_advisor_plans_user_active "
+            "ON advisor_plans (user_id, is_portfolio, status, created_at DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_advisor_plans_watcher "
+            "ON advisor_plans (is_portfolio, status, asset)"
+        )
+
         await db.commit()
 
     logger.info("✅ База данных инициализирована")

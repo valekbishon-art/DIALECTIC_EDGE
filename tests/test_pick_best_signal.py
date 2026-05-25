@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import unittest
 
-from signals import build_signals_message, pick_best_signal
+from signals import build_signals_message, pick_best_signal, pick_top_signals
 
 
 def _binance(long_pct=0, short_pct=0, price_change=0.0,
@@ -156,6 +156,126 @@ class TestPickBestSignal(unittest.TestCase):
             self.assertLess(best["r_score"], 60)
 
 
+class TestPickTopSignals(unittest.TestCase):
+    """`pick_top_signals` — расширение pick_best_signal на множественные сделки.
+
+    Возвращает топ-N (default 3) сигналов по r_score ↓, отфильтрованных по
+    порогу качества 50. Юзер просил «лучшая сделка обрабатывает больше 1
+    позиции» — этот сервис закрывает запрос.
+    """
+
+    def test_empty_returns_empty_list(self):
+        self.assertEqual(pick_top_signals([], {}, None), [])
+
+    def test_all_below_threshold_returns_empty(self):
+        signals = [{
+            "type": "PRICE_MOVE",
+            "symbol": "ADAUSDT",
+            "direction": "LONG",
+            "confidence": 30,
+            "reason": "+3%",
+        }]
+        data = {"ADAUSDT": _binance(price_change=3.0)}
+        self.assertEqual(pick_top_signals(signals, data, None), [])
+
+    def test_returns_top3_sorted_by_score(self):
+        # Три сигнала с разной силой alignment'а: BTC > ETH > SOL.
+        # Все должны попасть в top-3 (если score ≥ 50), в правильном порядке.
+        signals = [
+            {
+                "type": "BYBIT_TRADERS", "symbol": "SOLUSDT",
+                "direction": "LONG", "confidence": 72,
+                "reason": "72% трейдеров",
+            },
+            {
+                "type": "BYBIT_TRADERS", "symbol": "BTCUSDT",
+                "direction": "LONG", "confidence": 78,
+                "reason": "78% трейдеров",
+            },
+            {
+                "type": "BYBIT_TRADERS", "symbol": "ETHUSDT",
+                "direction": "LONG", "confidence": 75,
+                "reason": "75% трейдеров",
+            },
+        ]
+        data = {
+            "BTCUSDT": _binance(long_pct=78, short_pct=22, price_change=2.0,
+                                has_quant=True, quant_verdict="LONG"),
+            "ETHUSDT": _binance(long_pct=75, short_pct=25, price_change=1.5,
+                                has_quant=True, quant_verdict="LONG"),
+            "SOLUSDT": _binance(long_pct=72, short_pct=28, price_change=1.0,
+                                has_quant=True, quant_verdict="LONG"),
+        }
+        top = pick_top_signals(signals, data, None, top_n=3)
+        self.assertEqual(len(top), 3)
+        # Все аналогично подтверждены, BTC > ETH > SOL только по confidence.
+        symbols = [s["symbol"] for s in top]
+        self.assertEqual(symbols, ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+        # Score'ы убывают.
+        scores = [s["r_score"] for s in top]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_top_n_limits_results(self):
+        # 5 кандидатов, top_n=2 → возвращает максимум 2.
+        signals = [
+            {"type": "BYBIT_TRADERS", "symbol": f"{n}USDT", "direction": "LONG",
+             "confidence": 70 + i, "reason": "trades"}
+            for i, n in enumerate(["BTC", "ETH", "SOL", "BNB", "XRP"])
+        ]
+        data = {
+            f"{n}USDT": _binance(long_pct=70 + i, short_pct=30 - i,
+                                  has_quant=True, quant_verdict="LONG")
+            for i, n in enumerate(["BTC", "ETH", "SOL", "BNB", "XRP"])
+        }
+        top = pick_top_signals(signals, data, None, top_n=2)
+        self.assertEqual(len(top), 2)
+
+    def test_filters_below_min_score(self):
+        # Один сильный (>50), один слабый (<50) — слабый отсечён.
+        signals = [
+            {
+                "type": "BYBIT_TRADERS", "symbol": "BTCUSDT",
+                "direction": "LONG", "confidence": 78,
+                "reason": "strong",
+            },
+            {
+                "type": "PRICE_MOVE", "symbol": "DOGEUSDT",
+                "direction": "LONG", "confidence": 25,
+                "reason": "weak",
+            },
+        ]
+        data = {
+            "BTCUSDT": _binance(long_pct=78, short_pct=22,
+                                has_quant=True, quant_verdict="LONG"),
+            "DOGEUSDT": _binance(price_change=2.0),
+        }
+        top = pick_top_signals(signals, data, None, top_n=3)
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0]["symbol"], "BTCUSDT")
+
+    def test_backward_compat_pick_best_signal_returns_first(self):
+        # `pick_best_signal` теперь делегирует на `pick_top_signals(top_n=1)`.
+        # Должен возвращать тот же элемент что и `pick_top_signals(...)[0]`.
+        signals = [
+            {"type": "BYBIT_TRADERS", "symbol": "BTCUSDT", "direction": "LONG",
+             "confidence": 78, "reason": "strong"},
+            {"type": "BYBIT_TRADERS", "symbol": "ETHUSDT", "direction": "LONG",
+             "confidence": 70, "reason": "ok"},
+        ]
+        data = {
+            "BTCUSDT": _binance(long_pct=78, short_pct=22,
+                                has_quant=True, quant_verdict="LONG"),
+            "ETHUSDT": _binance(long_pct=70, short_pct=30,
+                                has_quant=True, quant_verdict="LONG"),
+        }
+        best = pick_best_signal(signals, data, None)
+        top = pick_top_signals(signals, data, None, top_n=3)
+        self.assertIsNotNone(best)
+        self.assertGreaterEqual(len(top), 1)
+        self.assertEqual(best["symbol"], top[0]["symbol"])
+        self.assertEqual(best["r_score"], top[0]["r_score"])
+
+
 class TestBuildSignalsMessageStar(unittest.TestCase):
     def test_marks_best_signal_with_star(self):
         signals = [
@@ -214,6 +334,57 @@ class TestBuildSignalsMessageStar(unittest.TestCase):
     def test_no_best_block_when_no_signals(self):
         msg = build_signals_message([], {}, None)
         self.assertNotIn("⭐ *ЛУЧШАЯ СДЕЛКА", msg)
+
+    def test_renders_top3_header_when_multiple_qualify(self):
+        # 3 сильных сигнала → должен появиться заголовок «ТОП-N СДЕЛОК».
+        signals = [
+            {"type": "BYBIT_TRADERS", "symbol": "BTCUSDT", "direction": "LONG",
+             "confidence": 78, "reason": "78% трейдеров"},
+            {"type": "BYBIT_TRADERS", "symbol": "ETHUSDT", "direction": "LONG",
+             "confidence": 75, "reason": "75% трейдеров"},
+            {"type": "BYBIT_TRADERS", "symbol": "SOLUSDT", "direction": "LONG",
+             "confidence": 72, "reason": "72% трейдеров"},
+        ]
+        data = {
+            "BTCUSDT": _binance(long_pct=78, short_pct=22,
+                                has_quant=True, quant_verdict="LONG"),
+            "ETHUSDT": _binance(long_pct=75, short_pct=25,
+                                has_quant=True, quant_verdict="LONG"),
+            "SOLUSDT": _binance(long_pct=72, short_pct=28,
+                                has_quant=True, quant_verdict="LONG"),
+        }
+        msg = build_signals_message(signals, data, None)
+        # Header должен быть «ТОП-3 СДЕЛОК» (3 квалифицировались).
+        self.assertIn("⭐ *ТОП-3 СДЕЛОК СЕЙЧАС*", msg)
+        self.assertNotIn("⭐ *ЛУЧШАЯ СДЕЛКА СЕЙЧАС*", msg)
+        # Все 3 sym'а помечены ⭐ в списке СИГНАЛОВ.
+        for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            line = next(
+                line for line in msg.splitlines()
+                if sym in line and "→" in line and "⭐" in line
+            )
+            self.assertIn("⭐", line)
+        # Медали присутствуют в блоке топа.
+        self.assertIn("🥇", msg)
+        self.assertIn("🥈", msg)
+        self.assertIn("🥉", msg)
+
+    def test_falls_back_to_singular_header_when_one_qualifies(self):
+        # 1 сильный + 1 слабый — заголовок «ЛУЧШАЯ СДЕЛКА» (singular).
+        signals = [
+            {"type": "BYBIT_TRADERS", "symbol": "BTCUSDT", "direction": "LONG",
+             "confidence": 78, "reason": "78% трейдеров"},
+            {"type": "PRICE_MOVE", "symbol": "DOGEUSDT", "direction": "LONG",
+             "confidence": 25, "reason": "+2.5%"},
+        ]
+        data = {
+            "BTCUSDT": _binance(long_pct=78, short_pct=22,
+                                has_quant=True, quant_verdict="LONG"),
+            "DOGEUSDT": _binance(price_change=2.5),
+        }
+        msg = build_signals_message(signals, data, None)
+        self.assertIn("⭐ *ЛУЧШАЯ СДЕЛКА СЕЙЧАС*", msg)
+        self.assertNotIn("⭐ *ТОП-", msg)
 
 
 if __name__ == "__main__":

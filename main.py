@@ -129,6 +129,9 @@ from refactor.handlers import (
     sniping_callback_data,
 )
 from refactor.handlers.advisor_handler import register_advisor_handlers
+from refactor.handlers.advisor_portfolio_handler import (
+    register_advisor_portfolio_handlers,
+)
 
 # Phase 4 Provider Imports — AI, Cache, Database, Market Data, News, Storage
 # ВАЖНО: build_short_report, parse_report_parts, extract_signal_pct_and_stars,
@@ -5875,6 +5878,7 @@ async def main():
     register_funding_handlers(dp)
     register_btc_handlers(dp)
     register_advisor_handlers(dp)
+    register_advisor_portfolio_handlers(dp)
     register_p2p_arbitrage_handlers(dp)
     register_postmortem_handlers(dp)
     register_sniping_handlers(dp)
