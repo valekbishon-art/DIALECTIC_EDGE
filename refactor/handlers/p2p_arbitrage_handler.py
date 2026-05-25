@@ -48,9 +48,19 @@ BINANCE_P2P_SEARCH_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/s
 BYBIT_P2P_SEARCH_URL = "https://api2.bybit.com/fiat/otc/item/online"
 DEFAULT_ROWS_PER_SIDE = 20
 
+# Bybit `side` имеет обратный смысл от Binance `tradeType`. На Bybit P2P API:
+#   side=0 → BID-ads (мейкер хочет купить USDT, тейкер продаёт)  → цены НИЖЕ спота
+#   side=1 → ASK-ads (мейкер хочет продать USDT, тейкер покупает) → цены ВЫШЕ спота
+# Семантика бота (см. `P2PAdvert.side_label`):
+#   trade_type="BUY"  = тейкер покупает USDT  = ASK-сторона = Bybit side=1
+#   trade_type="SELL" = тейкер продаёт USDT   = BID-сторона = Bybit side=0
+# До этого PR маппинг был инвертирован, из-за чего find_p2p_opportunities
+# скрещивал BID-стакан с ASK-стаканом и регулярно «находил» фантомные
+# спреды +10–14% (на деле это убытки, потому что обе цены не исполнимы как
+# заявлено). См. test_bybit_side_mapping_matches_orderbook_polarity ниже.
 BYBIT_SIDE_BY_TRADE_TYPE = {
-    "BUY": "0",
-    "SELL": "1",
+    "BUY": "1",
+    "SELL": "0",
 }
 
 
