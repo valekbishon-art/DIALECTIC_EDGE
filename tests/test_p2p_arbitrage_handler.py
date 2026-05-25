@@ -18,11 +18,16 @@ except Exception:
 if HAS_AIOGRAM:
     from refactor.handlers.p2p_arbitrage_handler import (
         BYBIT_SIDE_BY_TRADE_TYPE,
+        OKX_SIDE_BY_TRADE_TYPE,
         _bybit_payment_filter,
         _extract_bybit_rows,
+        _extract_okx_rows,
         _fetch_bybit_p2p_side,
+        _fetch_okx_p2p_side,
+        _okx_side_for_trade_type,
         _parse_p2p_command,
         fetch_bybit_p2p_ads,
+        fetch_okx_p2p_ads,
     )
 
 
@@ -299,6 +304,248 @@ class TestBybitSideMappingPolarity(unittest.IsolatedAsyncioTestCase):
             "BUY-ads (asks) must be priced HIGHER than SELL-ads (bids); "
             "inverted polarity means BYBIT_SIDE_BY_TRADE_TYPE is bugged again.",
         )
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
+class TestOkxSideMapping(unittest.TestCase):
+    """OKX P2P `side` имеет ту же семантику что у Bybit (MAKER-side) —
+    инвертирована относительно Binance `tradeType` (TAKER-side).
+
+    Live-проверено USDT/MXN:
+      side=buy  → data.buy   top 17.24 (ниже спота 17.28) → BIDs
+      side=sell → data.sell  top 17.35 (выше спота) → ASKs
+
+    Семантика бота (`P2PAdvert.trade_type`):
+      "BUY"  = taker buys USDT = ASK-side = OKX side="sell"
+      "SELL" = taker sells USDT = BID-side = OKX side="buy"
+
+    Эти проверки — guard против инверсии, аналогичной баге Bybit (PR #38).
+    """
+
+    def test_mapping_constants_buy_to_sell_sell_to_buy(self):
+        self.assertEqual(OKX_SIDE_BY_TRADE_TYPE["BUY"], "sell")
+        self.assertEqual(OKX_SIDE_BY_TRADE_TYPE["SELL"], "buy")
+
+    def test_helper_returns_inverted_side(self):
+        self.assertEqual(_okx_side_for_trade_type("BUY"), "sell")
+        self.assertEqual(_okx_side_for_trade_type("SELL"), "buy")
+        # case-insensitive
+        self.assertEqual(_okx_side_for_trade_type("buy"), "sell")
+        self.assertEqual(_okx_side_for_trade_type("sell"), "buy")
+        # неизвестное значение → fallback на "sell" (ASK-сторону, более «дорогую»)
+        self.assertEqual(_okx_side_for_trade_type("garbage"), "sell")
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
+class TestOkxResponseExtraction(unittest.TestCase):
+    """`_extract_okx_rows` фильтрует API-ответ в плоский список row'ов и
+    рапортует error'ы вне happy-path."""
+
+    def _resp(self, *, side: str, rows: list[dict] | None) -> dict:
+        return {"code": 0, "msg": None, "data": {side: rows, "recommend": [], "tagged": []}}
+
+    def test_happy_returns_requested_side(self):
+        # Запрашиваем side="sell" → ожидаем `data.sell`, игнорируем `data.buy`.
+        payload = {
+            "code": 0,
+            "data": {
+                "buy": [{"price": "10.0", "id": "B1"}],
+                "sell": [{"price": "11.0", "id": "S1"}, {"price": "11.5", "id": "S2"}],
+            },
+        }
+        rows, err = _extract_okx_rows(payload, side="sell", trade_type="BUY")
+        self.assertIsNone(err)
+        self.assertEqual([r["id"] for r in rows], ["S1", "S2"])
+
+    def test_null_side_returns_empty_no_error(self):
+        # `data.buy=null` (OKX так делает когда ничего нет) → пустой list, no error
+        payload = {"code": 0, "data": {"buy": None, "sell": []}}
+        rows, err = _extract_okx_rows(payload, side="buy", trade_type="SELL")
+        self.assertIsNone(err)
+        self.assertEqual(rows, [])
+
+    def test_error_code_propagated(self):
+        # OKX restricts trading в каких-то регионах (RUB, например):
+        payload = {"code": 17007, "msg": "region restricted", "data": None}
+        rows, err = _extract_okx_rows(payload, side="buy", trade_type="SELL")
+        self.assertEqual(rows, [])
+        self.assertIn("17007", err or "")
+        self.assertIn("region restricted", err or "")
+
+    def test_malformed_response_reported(self):
+        rows, err = _extract_okx_rows("not a dict", side="buy", trade_type="SELL")
+        self.assertEqual(rows, [])
+        self.assertIn("malformed", err or "")
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
+class TestOkxFetchPolarity(unittest.IsolatedAsyncioTestCase):
+    """End-to-end: после `fetch_okx_p2p_ads` BUY-ads (ASKs) должны быть
+    дороже SELL-ads (BIDs). Любая будущая инверсия в OKX_SIDE_BY_TRADE_TYPE
+    провалит этот тест.
+    """
+
+    BUY_ADS_RAW = [
+        {
+            "price": "17.35",
+            "quoteMinAmountPerOrder": "500",
+            "quoteMaxAmountPerOrder": "100000",
+            "availableAmount": "1000",
+            "paymentMethods": ["bank"],
+            "nickName": "AskMerchant1",
+            "completedOrderQuantity": 2000,
+            "completedRate": "0.99",
+            "creatorType": "certified",
+            "paymentTimeoutMinutes": 15,
+            "baseCurrency": "usdt",
+            "quoteCurrency": "mxn",
+            "id": "ask1",
+        },
+        {
+            "price": "17.40",
+            "quoteMinAmountPerOrder": "100",
+            "quoteMaxAmountPerOrder": "50000",
+            "paymentMethods": ["bank"],
+            "nickName": "AskMerchant2",
+            "completedOrderQuantity": 500,
+            "completedRate": "0.97",
+            "creatorType": "certified",
+            "baseCurrency": "usdt",
+            "quoteCurrency": "mxn",
+            "id": "ask2",
+        },
+    ]
+    SELL_ADS_RAW = [
+        {
+            "price": "17.24",
+            "quoteMinAmountPerOrder": "200",
+            "quoteMaxAmountPerOrder": "50000",
+            "paymentMethods": ["bank"],
+            "nickName": "BidMerchant1",
+            "completedOrderQuantity": 3000,
+            "completedRate": "0.995",
+            "creatorType": "certified",
+            "baseCurrency": "usdt",
+            "quoteCurrency": "mxn",
+            "id": "bid1",
+        },
+        {
+            "price": "17.20",
+            "quoteMinAmountPerOrder": "300",
+            "quoteMaxAmountPerOrder": "30000",
+            "paymentMethods": ["bank"],
+            "nickName": "BidMerchant2",
+            "completedOrderQuantity": 800,
+            "completedRate": "0.98",
+            "creatorType": "certified",
+            "baseCurrency": "usdt",
+            "quoteCurrency": "mxn",
+            "id": "bid2",
+        },
+    ]
+
+    async def test_fetch_okx_ads_polarity(self):
+        # Симулируем _fetch_okx_p2p_side: trade_type=BUY должен запросить
+        # `side="sell"` (где живут ASK-ads), trade_type=SELL → `side="buy"`.
+        captured_sides: list[str] = []
+
+        async def fake_side(session, *, trade_type, asset, fiat, pay_types, rows=20):
+            side = _okx_side_for_trade_type(trade_type)
+            captured_sides.append((trade_type, side))
+            if trade_type == "BUY":
+                return list(self.BUY_ADS_RAW), None
+            return list(self.SELL_ADS_RAW), None
+
+        with patch(
+            "refactor.handlers.p2p_arbitrage_handler._fetch_okx_p2p_side",
+            new=fake_side,
+        ):
+            buy_ads, sell_ads, errors = await fetch_okx_p2p_ads(asset="USDT", fiat="MXN")
+
+        # Каждый side был запрошен с инвертированным OKX-side
+        self.assertIn(("BUY", "sell"), captured_sides)
+        self.assertIn(("SELL", "buy"), captured_sides)
+        self.assertEqual(errors, ())
+
+        # Все BUY-ads (ASKs) ≥ всех SELL-ads (BIDs) — ключевой инвариант
+        self.assertTrue(buy_ads, "должны быть buy_ads")
+        self.assertTrue(sell_ads, "должны быть sell_ads")
+        min_ask = min(a.price for a in buy_ads)
+        max_bid = max(a.price for a in sell_ads)
+        self.assertGreater(
+            min_ask,
+            max_bid,
+            f"OKX polarity broken: min_ask={min_ask} ≤ max_bid={max_bid} — инверсия!",
+        )
+
+    async def test_fetch_okx_propagates_errors(self):
+        async def fake_side(session, *, trade_type, asset, fiat, pay_types, rows=20):
+            if trade_type == "SELL":
+                return [], "OKX SELL API error code=17007: region restricted"
+            return list(self.BUY_ADS_RAW), None
+
+        with patch(
+            "refactor.handlers.p2p_arbitrage_handler._fetch_okx_p2p_side",
+            new=fake_side,
+        ):
+            buy_ads, sell_ads, errors = await fetch_okx_p2p_ads(asset="USDT", fiat="RUB")
+
+        self.assertEqual(sell_ads, [])
+        self.assertGreater(len(buy_ads), 0)
+        self.assertEqual(
+            errors, ("OKX SELL API error code=17007: region restricted",)
+        )
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
+class TestOkxFetchHttpParams(unittest.IsolatedAsyncioTestCase):
+    """Verify HTTP-level: `_fetch_okx_p2p_side` шлёт GET с правильными
+    query-параметрами (включая инвертированный `side`).
+    """
+
+    async def _capture_request(self, *, trade_type: str) -> dict:
+        captured: dict = {}
+
+        class _FakeResp:
+            status = 200
+
+            async def text(self):
+                return "{}"
+
+            async def json(self):
+                return {"code": 0, "data": {"buy": [], "sell": []}}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return False
+
+        class _FakeSession:
+            def get(self, url, params=None, headers=None, timeout=None):
+                captured["url"] = url
+                captured["params"] = params
+                return _FakeResp()
+
+        await _fetch_okx_p2p_side(
+            _FakeSession(),
+            trade_type=trade_type,
+            asset="USDT",
+            fiat="MXN",
+            pay_types=(),
+        )
+        return captured
+
+    async def test_buy_request_uses_side_sell(self):
+        captured = await self._capture_request(trade_type="BUY")
+        self.assertEqual(captured["url"].endswith("/v3/c2c/tradingOrders/books"), True)
+        self.assertEqual(captured["params"]["side"], "sell")
+        self.assertEqual(captured["params"]["baseCurrency"], "USDT")
+        self.assertEqual(captured["params"]["quoteCurrency"], "MXN")
+
+    async def test_sell_request_uses_side_buy(self):
+        captured = await self._capture_request(trade_type="SELL")
+        self.assertEqual(captured["params"]["side"], "buy")
 
 
 if __name__ == "__main__":

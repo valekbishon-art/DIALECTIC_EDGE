@@ -1112,9 +1112,18 @@ def okx_enabled() -> bool:
 
 
 def parse_okx_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: str) -> P2PAdvert | None:
-    """Parse a (best-effort) OKX P2P advertisement row into a normalized advert.
+    """Parse an OKX P2P advertisement row into a normalized advert.
 
-    OKX API shapes vary; this parser is defensive and extracts common fields.
+    Канонические ключи (https://www.okx.com/v3/c2c/tradingOrders/books):
+      price, availableAmount, quoteMinAmountPerOrder, quoteMaxAmountPerOrder,
+      paymentMethods (list[str]), nickName, completedOrderQuantity,
+      completedRate (decimal "0.9975"), creatorType ("certified"/...),
+      paymentTimeoutMinutes, baseCurrency / quoteCurrency (lowercase),
+      badgeInfo.badgeList[].title ("Super Merchant" / ...).
+
+    Parser остаётся defensive — также понимает legacy-ключи (`minAmount`,
+    `surplusAmount`, `tradeMethods`...) на случай если OKX вернёт другую
+    форму через partner-эндпойнты.
     """
     try:
         # common price/min/max keys used by various providers
@@ -1124,8 +1133,18 @@ def parse_okx_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: str)
             or row.get("advPrice")
             or row.get("payAmount")
         )
-        min_amount = _to_float(row.get("minAmount") or row.get("minSingleTransAmount") or row.get("minLimit"))
-        max_amount = _to_float(row.get("maxAmount") or row.get("maxSingleTransAmount") or row.get("maxLimit"))
+        min_amount = _to_float(
+            row.get("quoteMinAmountPerOrder")
+            or row.get("minAmount")
+            or row.get("minSingleTransAmount")
+            or row.get("minLimit")
+        )
+        max_amount = _to_float(
+            row.get("quoteMaxAmountPerOrder")
+            or row.get("maxAmount")
+            or row.get("maxSingleTransAmount")
+            or row.get("maxLimit")
+        )
         if price is None or price <= 0 or min_amount is None or max_amount is None:
             return None
 
@@ -1146,7 +1165,13 @@ def parse_okx_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: str)
                 if normalized:
                     methods.append(normalized)
 
-        available_asset = _to_float(row.get("surplusAmount") or row.get("available") or row.get("lastQuantity") or row.get("quantity"))
+        available_asset = _to_float(
+            row.get("availableAmount")
+            or row.get("surplusAmount")
+            or row.get("available")
+            or row.get("lastQuantity")
+            or row.get("quantity")
+        )
         advertiser = str(
             row.get("nickName")
             or row.get("userName")
@@ -1154,16 +1179,46 @@ def parse_okx_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: str)
             or row.get("seller")
             or "unknown"
         )
-        completed_orders = _to_int(row.get("finishNum") or row.get("orderNum") or row.get("tradeQty"))
-        completion_rate_pct = _completion_rate_pct(row.get("completeRate") or row.get("completionRate") or row.get("recentExecuteRate"))
-        is_merchant = bool(row.get("isMerchant") or row.get("merchant") or row.get("userType") in ("MERCHANT", "BUSINESS"))
+        completed_orders = _to_int(
+            row.get("completedOrderQuantity")
+            or row.get("finishNum")
+            or row.get("orderNum")
+            or row.get("tradeQty")
+        )
+        completion_rate_pct = _completion_rate_pct(
+            row.get("completedRate")
+            or row.get("completeRate")
+            or row.get("completionRate")
+            or row.get("recentExecuteRate")
+        )
+
+        # OKX merchant signals: badgeInfo.badgeList[].title contains
+        # "Super Merchant" / "Verified Merchant" / etc., creatorType is
+        # "certified" for verified merchants.
+        badge_titles: list[str] = []
+        badge_info = row.get("badgeInfo")
+        if isinstance(badge_info, dict):
+            badge_list = badge_info.get("badgeList") or []
+            for badge in badge_list:
+                if isinstance(badge, dict):
+                    title = badge.get("title") or badge.get("hoverKey")
+                    if title:
+                        badge_titles.append(str(title).lower())
+        creator_type = str(row.get("creatorType") or "").lower()
+        is_merchant = bool(
+            row.get("isMerchant")
+            or row.get("merchant")
+            or row.get("userType") in ("MERCHANT", "BUSINESS")
+            or creator_type in {"certified", "merchant"}
+            or any("merchant" in t for t in badge_titles)
+        )
         advert_id = str(row.get("adId") or row.get("id") or "")
 
         return P2PAdvert(
             venue="OKX P2P",
             trade_type=trade_type.upper(),
-            asset=str(row.get("token") or asset).upper(),
-            fiat=str(row.get("fiat") or fiat).upper(),
+            asset=str(row.get("baseCurrency") or row.get("token") or asset).upper(),
+            fiat=str(row.get("quoteCurrency") or row.get("fiat") or fiat).upper(),
             price=price,
             min_amount_fiat=max(0.0, min_amount),
             max_amount_fiat=max(0.0, max_amount),
@@ -1175,7 +1230,11 @@ def parse_okx_ad(row: dict[str, Any], *, trade_type: str, asset: str, fiat: str)
             is_merchant=is_merchant,
             advert_id=advert_id,
             fetched_at=time.time(),
-            payment_window_min=_to_int(row.get("paymentLimit") or row.get("paymentPeriod")),
+            payment_window_min=_to_int(
+                row.get("paymentTimeoutMinutes")
+                or row.get("paymentLimit")
+                or row.get("paymentPeriod")
+            ),
             user_grade=_normalize_user_grade(row.get("userGrade")),
             vip_level=_normalize_vip_level(row.get("vipLevel")),
             account_age_days=_account_age_days_from_register_ms(
