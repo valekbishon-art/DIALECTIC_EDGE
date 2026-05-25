@@ -11,8 +11,14 @@ import logging
 from typing import Any
 
 import aiohttp
+from aiogram import F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from p2p_arbitrage import (
     P2PAdvert,
@@ -706,6 +712,29 @@ async def scan_all_pairs(
     return aggregated, errors, source_str
 
 
+P2P_DIVIDER = "─" * 22
+
+
+def _spread_emoji(net_spread_pct: float) -> str:
+    """Эмодзи-индикатор по величине спреда.
+
+    После M9-F (cap 8%) реалистичный профит ~1–3%, всё что выше — либо
+    тонкий рынок (UAH/TRY с устойчивой премией), либо опасное окно которое
+    закроется до settlement'а. Юзер должен сразу видеть «зелёное безопасное»
+    vs «жёлтое сомнительное» на сканировании.
+    """
+    if net_spread_pct >= 5.0:
+        return "🔥"
+    if net_spread_pct >= 2.0:
+        return "✅"
+    return "🟡"
+
+
+def _venue_label(venue: str | None) -> str:
+    """«Binance P2P» → «Binance», единый style across providers."""
+    return (venue or "?").replace(" P2P", "")
+
+
 def _format_multipair_report(
     triples: list[tuple[str, str, P2POpportunity]],
     *,
@@ -714,53 +743,149 @@ def _format_multipair_report(
     source: str,
     top_n: int = 10,
 ) -> str:
-    """Компактный мульти-пар отчёт: топ-N opportunities + сводка."""
+    """Компактный мульти-пар отчёт: топ-N opportunities + сводка.
+
+    Layout: header c сводкой → разделитель → entries (2 строки на entry) →
+    разделитель → footer с подсказками. Каждая entry имеет:
+      • эмодзи-индикатор риска по net spread (🔥 ≥ 5%, ✅ 2–5%, 🟡 < 2%)
+      • пара / spread / cross-venue route в одной строке
+      • buy/sell prices с delta vs spot в отдельной строке (выровнено)
+    """
     if not triples:
         return (
             f"*🧭 P2P arbitrage scanner*\n\n"
-            f"Сканировал {pair_count_scanned} пар ({source}) — пока никаких "
+            f"Сканировал *{pair_count_scanned}* пар ({source}) — пока никаких "
             f"арб-окон выше порога нет.\n\n"
-            f"Источники: {source}.\n"
-            f"_Попробуй позже или /p2p USDT TRY (или другую пару напрямую)._"
+            f"_Попробуй позже или `/p2p USDT TRY` (или другую пару напрямую)._"
         )
 
+    shown = min(top_n, len(triples))
     lines: list[str] = [
-        f"*🧭 P2P arbitrage — топ-{min(top_n, len(triples))} окон по миру*",
-        "",
-        f"_Сканировал {pair_count_scanned} пар ({source}) — найдено "
-        f"{len(triples)} opportunities._",
-        "",
+        f"*🧭 P2P arbitrage — топ-{shown} окон по миру*",
+        P2P_DIVIDER,
+        f"🔍 Сканировано: *{pair_count_scanned} пар* — _{source}_",
+        f"📊 Найдено: *{len(triples)}* opportunit" + ("y" if len(triples) == 1 else "ies"),
     ]
+    if errors:
+        lines.append(f"⚠️ Пропущено: *{len(errors)}* пар (нет ads / timeout)")
+    lines.append(P2P_DIVIDER)
+    lines.append("")
+
     for idx, (asset, fiat, opp) in enumerate(triples[:top_n], start=1):
-        # Per-line: ранг + пара + спред + площадки. Компактный single-line.
-        buy_src = opp.buy_ad.venue or "?"
-        sell_src = opp.sell_ad.venue or "?"
-        # Сокращаем «Binance P2P» / «Bybit P2P» до «Binance»/«Bybit».
-        buy_src = buy_src.replace(" P2P", "")
-        sell_src = sell_src.replace(" P2P", "")
-        # M9-E: показываем delta vs spot FX (реальный forex-курс), чтобы
-        # пользователь видел «buy на 25% ниже рынка = подозрительно».
-        # «vs spot» вместо «vs med» — это РЕАЛЬНЫЙ forex-курс, не median.
+        buy_src = _venue_label(opp.buy_ad.venue)
+        sell_src = _venue_label(opp.sell_ad.venue)
+        route_arrow = "↻" if buy_src == sell_src else "⇄"
+        # delta vs spot FX (реальный forex-курс) — anchor показывает,
+        # насколько ad дороже/дешевле рынка. «vs spot» ≠ «vs median».
         buy_delta = opp.buy_vs_median_pct
         sell_delta = opp.sell_vs_median_pct
-        buy_delta_str = f" ({buy_delta:+.1f}% vs spot)" if buy_delta is not None else ""
-        sell_delta_str = f" ({sell_delta:+.1f}% vs spot)" if sell_delta is not None else ""
+        buy_delta_str = f" _({buy_delta:+.1f}%)_" if buy_delta is not None else ""
+        sell_delta_str = f" _({sell_delta:+.1f}%)_" if sell_delta is not None else ""
+        emoji = _spread_emoji(opp.net_spread_pct)
         lines.append(
-            f"`{idx:2d}.` *{asset}/{fiat}* — *{opp.net_spread_pct:+.2f}%* "
-            f"({buy_src}→{sell_src})  "
-            f"buy {opp.buy_ad.price:,.4g}{buy_delta_str} → sell {opp.sell_ad.price:,.4g}{sell_delta_str}"
+            f"`#{idx:<2}` {emoji} *{asset}/{fiat}*  —  *{opp.net_spread_pct:+.2f}%*  "
+            f"`{buy_src} {route_arrow} {sell_src}`"
         )
-
-    lines.append("")
-    lines.append(
-        f"_Для деталей по конкретной паре: `/p2p USDT RUB`, "
-        f"`/p2p USDT TRY`, и т.д._"
-    )
-    if errors:
-        skipped = len(errors)
+        lines.append(
+            f"       💰 buy `{opp.buy_ad.price:,.4g}`{buy_delta_str}  →  "
+            f"💵 sell `{opp.sell_ad.price:,.4g}`{sell_delta_str}"
+        )
         lines.append("")
-        lines.append(f"_⚠ {skipped} пар пропущено (timeout/нет ads/etc)._")
+
+    lines.append(P2P_DIVIDER)
+    lines.append("_📖 Жми «Гайд» ниже — пошаговая инструкция как исполнить._")
+    lines.append(
+        "_🔎 Детали по паре: `/p2p USDT TRY` (или любая другая)._"
+    )
     return "\n".join(lines)
+
+
+def _multipair_inline_kb() -> InlineKeyboardMarkup:
+    """Inline-клавиатура под сообщение топ-N окон.
+
+    Сейчас одна кнопка — «Гайд» (показывает как реально исполнить арб).
+    Сюда же можно навешать «Refresh» / «Filters» в будущем.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Гайд: как исполнить", callback_data="p2p:guide")],
+    ])
+
+
+P2P_GUIDE_TEXT = (
+    "*📖 P2P-арбитраж — как исполнить*\n"
+    + P2P_DIVIDER
+    + "\n\n"
+    "*Что это?*\n"
+    "Покупаешь USDT/USDC на бирже A по низкой цене, переводишь в внутренний\n"
+    "кошелёк, продаёшь на бирже B по высокой. Профит = разница − fees − slippage.\n\n"
+
+    "*① Перед сделкой — проверь что окно живое*\n"
+    "• Открой обе ad'ы (buy + sell) на их биржах прямо сейчас.\n"
+    "• Цены могут уйти за 30–60 сек после моего скана — пересчитай.\n"
+    "• Если spread схлопнулся ниже *2%* — пропускай, slippage съест профит.\n\n"
+
+    "*② Проверь обоих контрагентов*\n"
+    "• ≥ *500* завершённых сделок\n"
+    "• ≥ *98%* completion rate\n"
+    "• Verified merchant (бейдж) — без него выше риск freeze/appeal\n"
+    "• Метод оплаты — тот, что у тебя реально есть на банке/кошельке\n\n"
+
+    "*③ Размер позиции*\n"
+    "• Не более *availableAmount* у обоих ad'ов\n"
+    "• Бери небольшую долю — если spread схлопнется пока ждёшь settlement,\n"
+    "  большая сумма даст большой убыток\n\n"
+
+    "*④ Тайминг*\n"
+    "• Buy-сторона: bank transfer 5–15 мин, USDT release сразу после\n"
+    "• Перевод внутри биржи: instant\n"
+    "• Sell-сторона: тот же 5–15 мин на release\n"
+    "• *Окно может уехать пока ты ждёшь.* Это главный риск.\n\n"
+
+    "*🚫 Когда пропускать (несмотря на красивый %)*\n"
+    "• Spread > *8%* без объяснения — wishlist-ad, не исполнится\n"
+    "• Экзотический метод оплаты (rare bank, intermediary)\n"
+    "• Сделок < 50 у advertiser'а\n"
+    "• Ad висит < 5 минут (без истории)\n"
+    "• Capital-control fiat (RUB, IRR, SDG) — риск bank freeze\n\n"
+
+    "*⚡ Реальный профит*\n"
+    "`Net % ≈ scanned_spread − 0.5%` (slippage за время settlement)\n"
+    "• Binance/Bybit/OKX P2P maker fee = *0*\n"
+    "• Внутрибиржевой перевод = *0*\n"
+    "• Окно +1.5% реально даёт ~*+1%*, +3% → ~*+2.5%*\n\n"
+
+    "*🚨 Главные риски*\n"
+    "• *Price moved* — sell-ad уехал вверх пока ждал settlement\n"
+    "• *Counterparty cancel* — ты уже отправил fiat, открываешь appeal\n"
+    "• *Bank freeze* — регулярные P2P-операции могут пометиться как подозрительные\n"
+    "• *Exchange KYC* — большие объёмы триггерят дополнительную верификацию\n\n"
+
+    + P2P_DIVIDER
+    + "\n_Не финансовый совет. P2P-арбитраж — это работа, не easy money._\n"
+    "_Начни с минимального лота чтобы прочувствовать механику._"
+)
+
+
+async def handle_p2p_guide_callback(callback: CallbackQuery) -> None:
+    """Inline-кнопка «📖 Гайд» под сообщением P2P top-N — показывает
+    пошаговый guide по исполнению P2P-арба.
+    """
+    try:
+        await callback.answer()
+    except Exception:
+        logger.debug("failed to ack p2p:guide callback", exc_info=True)
+    target = callback.message
+    if target is None:
+        return
+    try:
+        await target.answer(
+            P2P_GUIDE_TEXT,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        # Markdown иногда падает на спецсимволах — fallback в plain text.
+        await target.answer(P2P_GUIDE_TEXT)
 
 
 async def _answer_md(message: Message, text: str) -> None:
@@ -939,7 +1064,15 @@ async def _handle_p2p_multipair(message: Message) -> None:
     )
     if suppressed:
         text += f"\n_({suppressed} окон подавлено cooldown'ом {cooldown}s.)_"
-    await _answer_md(message, text)
+    try:
+        await message.answer(
+            text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=_multipair_inline_kb(),
+        )
+    except Exception:
+        await message.answer(text, reply_markup=_multipair_inline_kb())
     for key in surfaced_keys:
         try:
             store.record_alert(key)
@@ -989,3 +1122,4 @@ def register_p2p_arbitrage_handlers(dp) -> None:
     dp.message.register(handle_p2p_command, Command("p2p"))
     dp.message.register(handle_p2p_command, Command("p2parb"))
     dp.message.register(handle_p2p_audit_command, Command("p2paudit"))
+    dp.callback_query.register(handle_p2p_guide_callback, F.data == "p2p:guide")
