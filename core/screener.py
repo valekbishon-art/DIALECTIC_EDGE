@@ -77,12 +77,14 @@ class MarketScreener:
         vol_spike = await self._check_volume_spike(symbol)
         funding = await self._get_funding_rate(symbol)
 
-        # Логика
+        # Логика. Convention в остальном коде (data_sources.py, scorer.py):
+        # RSI ≤ 30 = oversold = 🟢 «Перепродан» (потенциал отскока, bull bias).
+        # RSI ≥ 70 = overbought = 🔴 «Перекуплен» (потенциал коррекции, bear bias).
         if rsi:
             if rsi < 30:
-                signals.append(f"📉 RSI Перекуплен ({rsi:.1f})")
+                signals.append(f"🟢 RSI Перепродан ({rsi:.1f})")
             elif rsi > 70:
-                signals.append(f"📈 RSI Перекуплен ({rsi:.1f})")
+                signals.append(f"🔴 RSI Перекуплен ({rsi:.1f})")
 
         if vol_spike:
             signals.append(f"🔥 Объем x{vol_spike:.1f}")
