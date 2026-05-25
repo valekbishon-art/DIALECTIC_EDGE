@@ -11,17 +11,23 @@ from p2p_arbitrage import (
     DEFAULT_P2P_ASSETS,
     DEFAULT_P2P_FIATS,
     P2PAdvert,
+    _is_within_band,
+    _median_price,
     alerts_enabled,
     bybit_enabled,
     canonical_payment_method,
     feature_enabled,
+    filter_outliers,
     find_p2p_opportunities,
     format_p2p_report,
     get_alert_chat_ids,
     get_alert_cooldown_sec,
     get_alert_interval_sec,
     get_assets,
+    get_dedup_price_bucket_pct,
     get_fiats,
+    get_max_spread_pct,
+    get_outlier_band_pct,
     parse_binance_ad,
     parse_bybit_ad,
 )
@@ -753,6 +759,519 @@ class TestM9CSmartFilters(unittest.TestCase):
                 settlement_buffer_pct=0.35,
             )
             self.assertEqual(len(opportunities), 1)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# M9-D: outlier protection (median band, max-spread cap, stricter dedup,
+# market-median reference). Регрессия на USDT/ILS юзер-кейс: бот показывал
+# 220 фейковых opps с buy=2.77 при медиане 3.7 (-25% отклонение). Цель:
+# выкинуть такие dead/typo-ads и показывать только реальные арб-окна.
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMedianHelpers(unittest.TestCase):
+    """Юнит-тесты на чистые медиа-хелперы (без env / DI)."""
+
+    def test_median_odd_n(self):
+        self.assertEqual(_median_price([1.0, 2.0, 3.0]), 2.0)
+
+    def test_median_even_n(self):
+        self.assertEqual(_median_price([1.0, 2.0, 3.0, 4.0]), 2.5)
+
+    def test_median_handles_unsorted(self):
+        self.assertEqual(_median_price([3.0, 1.0, 2.0, 4.0, 5.0]), 3.0)
+
+    def test_median_skips_invalid(self):
+        # Отрицательные и нули отфильтрованы (защита от мусора).
+        self.assertEqual(_median_price([0, -1, 2.0, 3.0, 4.0]), 3.0)
+
+    def test_median_too_few_samples_returns_none(self):
+        # < 3 sample'ов — медиана неопределена (DEFAULT_OUTLIER_MIN_SAMPLES).
+        self.assertIsNone(_median_price([3.7]))
+        self.assertIsNone(_median_price([3.7, 3.8]))
+
+    def test_median_empty(self):
+        self.assertIsNone(_median_price([]))
+
+    def test_within_band_centred(self):
+        # ±15% от 3.7: диапазон [3.145, 4.255].
+        self.assertTrue(_is_within_band(3.7, 3.7, 15.0))
+        self.assertTrue(_is_within_band(3.65, 3.7, 15.0))
+        self.assertTrue(_is_within_band(3.20, 3.7, 15.0))
+
+    def test_within_band_outlier(self):
+        # 2.77 при медиане 3.7 = -25% → outlier.
+        self.assertFalse(_is_within_band(2.77, 3.7, 15.0))
+        # 4.5 при медиане 3.7 = +21.6% → outlier.
+        self.assertFalse(_is_within_band(4.5, 3.7, 15.0))
+
+    def test_within_band_zero_band_means_disabled(self):
+        # band=0 → фильтр выключен, всё проходит.
+        self.assertTrue(_is_within_band(0.01, 100.0, 0))
+
+    def test_within_band_invalid_inputs(self):
+        # 0 / отрицательная медиана / цена → False.
+        self.assertFalse(_is_within_band(0, 3.7, 15.0))
+        self.assertFalse(_is_within_band(3.7, 0, 15.0))
+        self.assertFalse(_is_within_band(-1, 3.7, 15.0))
+
+
+class TestOutlierEnvHelpers(unittest.TestCase):
+    """env-хелперы (P2P_OUTLIER_BAND_PCT, _MAX_SPREAD_PCT, _DEDUP_*)."""
+
+    def test_outlier_band_defaults_to_15(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertAlmostEqual(get_outlier_band_pct(), 15.0)
+
+    def test_outlier_band_override(self):
+        with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "8.5"}, clear=True):
+            self.assertAlmostEqual(get_outlier_band_pct(), 8.5)
+
+    def test_outlier_band_invalid_value_falls_back(self):
+        with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "garbage"}, clear=True):
+            self.assertAlmostEqual(get_outlier_band_pct(), 15.0)
+
+    def test_outlier_band_zero_disables(self):
+        # 0 = выкл фильтр, не дефолт.
+        with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "0"}, clear=True):
+            self.assertEqual(get_outlier_band_pct(), 0.0)
+
+    def test_max_spread_defaults_to_20(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertAlmostEqual(get_max_spread_pct(), 20.0)
+
+    def test_max_spread_override(self):
+        with patch.dict(os.environ, {"P2P_MAX_SPREAD_PCT": "50"}, clear=True):
+            self.assertAlmostEqual(get_max_spread_pct(), 50.0)
+
+    def test_dedup_bucket_defaults_to_05(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertAlmostEqual(get_dedup_price_bucket_pct(), 0.5)
+
+    def test_dedup_bucket_override(self):
+        with patch.dict(os.environ, {"P2P_DEDUP_PRICE_BUCKET_PCT": "1.5"}, clear=True):
+            self.assertAlmostEqual(get_dedup_price_bucket_pct(), 1.5)
+
+
+class TestFilterOutliers(unittest.TestCase):
+    """Группировка по (asset, fiat, side) + median-band фильтр."""
+
+    def _ad(self, side: str, price: float, *, asset: str = "USDT", fiat: str = "ILS",
+            adv: str = "m") -> P2PAdvert:
+        return P2PAdvert(
+            venue="Bybit P2P",
+            trade_type=side,
+            asset=asset,
+            fiat=fiat,
+            price=price,
+            min_amount_fiat=100,
+            max_amount_fiat=10000,
+            payment_methods=("bank",),
+            advertiser=adv,
+            completed_orders=300,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_filters_outlier_by_pair_side(self):
+        # Регрессия на USDT/ILS user case: 3 dead BUY ads at 2.77/2.83/2.80
+        # против 5 real BUY at 3.65-3.75. Медиана 3.65, band 15% → диапазон
+        # [3.10, 4.20]. 2.77 → отлетит.
+        buy_ads = [
+            self._ad("BUY", 2.77, adv="dead1"),  # outlier
+            self._ad("BUY", 2.83, adv="dead2"),  # outlier
+            self._ad("BUY", 2.80, adv="dead3"),  # outlier
+            self._ad("BUY", 3.65, adv="real1"),
+            self._ad("BUY", 3.68, adv="real2"),
+            self._ad("BUY", 3.70, adv="real3"),
+            self._ad("BUY", 3.72, adv="real4"),
+            self._ad("BUY", 3.75, adv="real5"),
+        ]
+        filtered, medians = filter_outliers(buy_ads, band_pct=15.0)
+        prices = sorted(round(ad.price, 2) for ad in filtered)
+        self.assertNotIn(2.77, prices)
+        self.assertNotIn(2.80, prices)
+        self.assertNotIn(2.83, prices)
+        self.assertIn(3.65, prices)
+        self.assertIn(3.75, prices)
+        # Медиана сохранилась в выводе для reporting'а.
+        self.assertIn(("USDT", "ILS", "BUY"), medians)
+
+    def test_band_zero_passes_all(self):
+        # band=0 → выкл фильтр, даже дикие outliers проходят.
+        buy_ads = [self._ad("BUY", p) for p in (2.77, 2.83, 3.7, 3.8, 99.0)]
+        filtered, _ = filter_outliers(buy_ads, band_pct=0.0)
+        self.assertEqual(len(filtered), len(buy_ads))
+
+    def test_too_few_samples_skip_filter(self):
+        # 2 sample'а в группе → медиана неопределена → все ad'ы проходят
+        # (graceful — нет якоря, нечем сравнивать).
+        buy_ads = [self._ad("BUY", 2.77), self._ad("BUY", 3.7)]
+        filtered, _ = filter_outliers(buy_ads, band_pct=15.0)
+        self.assertEqual(len(filtered), 2)
+
+    def test_separate_groups_by_pair(self):
+        # USDT/ILS и USDT/RUB не должны смешиваться (медианы разные).
+        ads = [
+            self._ad("BUY", 3.7, fiat="ILS", adv="a"),
+            self._ad("BUY", 3.72, fiat="ILS", adv="b"),
+            self._ad("BUY", 3.68, fiat="ILS", adv="c"),
+            self._ad("BUY", 95.0, fiat="RUB", adv="d"),
+            self._ad("BUY", 95.5, fiat="RUB", adv="e"),
+            self._ad("BUY", 96.0, fiat="RUB", adv="f"),
+        ]
+        filtered, medians = filter_outliers(ads, band_pct=15.0)
+        self.assertEqual(len(filtered), len(ads))
+        ils_med = medians.get(("USDT", "ILS", "BUY"))
+        rub_med = medians.get(("USDT", "RUB", "BUY"))
+        self.assertIsNotNone(ils_med)
+        self.assertIsNotNone(rub_med)
+        self.assertLess(ils_med, 10)
+        self.assertGreater(rub_med, 50)
+
+    def test_separate_groups_by_side(self):
+        # BUY и SELL — разные группы. Outlier в одной не влияет на другую.
+        ads = [
+            self._ad("BUY", 3.5, adv="b1"),
+            self._ad("BUY", 3.7, adv="b2"),
+            self._ad("BUY", 3.65, adv="b3"),
+            self._ad("SELL", 3.75, adv="s1"),
+            self._ad("SELL", 3.78, adv="s2"),
+            self._ad("SELL", 3.76, adv="s3"),
+        ]
+        filtered, medians = filter_outliers(ads, band_pct=15.0)
+        self.assertEqual(len(filtered), 6)
+        self.assertIn(("USDT", "ILS", "BUY"), medians)
+        self.assertIn(("USDT", "ILS", "SELL"), medians)
+
+
+class TestMaxSpreadCap(unittest.TestCase):
+    """Hard cap на финальный net_spread_pct."""
+
+    def _ad(self, side: str, price: float, *, adv: str = "m") -> P2PAdvert:
+        return P2PAdvert(
+            venue="Bybit P2P",
+            trade_type=side,
+            asset="USDT",
+            fiat="VES",
+            price=price,
+            min_amount_fiat=100,
+            max_amount_fiat=10000,
+            payment_methods=("bank",),
+            advertiser=adv,
+            completed_orders=500,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_cap_drops_high_spread(self):
+        # buy 100, sell 140 → 40% spread. Default cap 20% → дроп.
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0)],
+                [self._ad("SELL", 140.0, adv="s")],
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                outlier_band_pct=0,  # выкл outlier чтобы изолировать cap
+            )
+            self.assertEqual(len(opportunities), 0)
+
+    def test_cap_passes_reasonable_spread(self):
+        # buy 100, sell 115 → 15% spread. Default cap 20% → passes.
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0)],
+                [self._ad("SELL", 115.0, adv="s")],
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                outlier_band_pct=0,
+            )
+            self.assertEqual(len(opportunities), 1)
+            self.assertAlmostEqual(opportunities[0].net_spread_pct, 15.0, places=2)
+
+    def test_cap_env_override(self):
+        # Override cap через env: 50% → даже 40% проходит.
+        with patch.dict(os.environ, {"P2P_MAX_SPREAD_PCT": "50"}, clear=True):
+            opportunities = find_p2p_opportunities(
+                [self._ad("BUY", 100.0)],
+                [self._ad("SELL", 140.0, adv="s")],
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                outlier_band_pct=0,
+            )
+            self.assertEqual(len(opportunities), 1)
+
+    def test_cap_zero_disables(self):
+        # cap=0 → выкл, любой спред проходит.
+        opportunities = find_p2p_opportunities(
+            [self._ad("BUY", 100.0)],
+            [self._ad("SELL", 999.0, adv="s")],
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=0,
+            max_spread_pct=0,
+        )
+        self.assertEqual(len(opportunities), 1)
+
+
+class TestStricterDedup(unittest.TestCase):
+    """Price-bucket dedup поверх advertiser-pair dedup."""
+
+    def _ad(self, side: str, price: float, *, adv: str = "m") -> P2PAdvert:
+        return P2PAdvert(
+            venue="Bybit P2P",
+            trade_type=side,
+            asset="USDT",
+            fiat="ILS",
+            price=price,
+            min_amount_fiat=100,
+            max_amount_fiat=10000,
+            payment_methods=("bank",),
+            advertiser=adv,
+            completed_orders=500,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_collapses_identical_price_different_advertisers(self):
+        # Юзер-кейс: rows #1 = #2 (buy 2.77 → sell 3.75 с разными парами
+        # advertiser'ов). Раньше дедуп ловил только same-pair → пропускал
+        # 5 одинаковых по цене ads. Теперь schлопывается в 1.
+        buy_ads = [self._ad("BUY", 3.65, adv=f"b{i}") for i in range(5)]
+        sell_ads = [self._ad("SELL", 3.75, adv=f"s{i}") for i in range(5)]
+        opportunities = find_p2p_opportunities(
+            buy_ads,
+            sell_ads,
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=0,  # выкл — нас интересует только dedup
+            max_spread_pct=0,
+            dedup_price_bucket_pct=0.5,
+        )
+        # 5 × 5 = 25 кросс-пар, но все цены идентичны → ровно 1 opp.
+        self.assertEqual(len(opportunities), 1)
+
+    def test_keeps_different_price_buckets(self):
+        # Разные цены (за пределами 0.5% bucket'а) — разные opps.
+        buy_ads = [
+            self._ad("BUY", 3.60, adv="b1"),  # bucket 720
+            self._ad("BUY", 3.70, adv="b2"),  # bucket 740 (> 0.5% разница)
+        ]
+        sell_ads = [self._ad("SELL", 3.85, adv="s1")]
+        opportunities = find_p2p_opportunities(
+            buy_ads,
+            sell_ads,
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=0,
+            max_spread_pct=0,
+            dedup_price_bucket_pct=0.5,
+            max_results=10,
+        )
+        self.assertEqual(len(opportunities), 2)
+
+    def test_same_advertiser_different_prices_collapsed(self):
+        # Один buy advertiser «alice» с двумя ad'ами на близких ценах
+        # → дедуп схлопывает её в одну opp (с лучшим спредом).
+        buy_ads = [
+            self._ad("BUY", 3.60, adv="alice"),
+            self._ad("BUY", 3.61, adv="alice"),  # тот же advertiser, близкая цена
+        ]
+        sell_ads = [self._ad("SELL", 3.80, adv="bob")]
+        opportunities = find_p2p_opportunities(
+            buy_ads,
+            sell_ads,
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=0,
+            max_spread_pct=0,
+            dedup_price_bucket_pct=0.5,
+            max_results=10,
+        )
+        # Должна остаться только одна opp (лучшая по спреду — 3.60 → 3.80).
+        self.assertEqual(len(opportunities), 1)
+        self.assertAlmostEqual(opportunities[0].buy_ad.price, 3.60, places=2)
+
+    def test_bucket_zero_disables_price_dedup(self):
+        # bucket=0 → только legacy advertiser-pair dedup, идентичные цены
+        # с разными advertiser-парами проходят.
+        buy_ads = [self._ad("BUY", 3.65, adv=f"b{i}") for i in range(3)]
+        sell_ads = [self._ad("SELL", 3.75, adv=f"s{i}") for i in range(3)]
+        opportunities = find_p2p_opportunities(
+            buy_ads,
+            sell_ads,
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=0,
+            max_spread_pct=0,
+            dedup_price_bucket_pct=0,
+            max_results=10,
+        )
+        # 3 × 3 = 9 advertiser-пар, все уникальны → 9 opps.
+        self.assertEqual(len(opportunities), 9)
+
+
+class TestMedianAnnotation(unittest.TestCase):
+    """Median price reference в отчёте: «buy 2.77 vs median 3.70 (-25%)»."""
+
+    def _ad(self, side: str, price: float, *, adv: str = "m") -> P2PAdvert:
+        return P2PAdvert(
+            venue="Bybit P2P",
+            trade_type=side,
+            asset="USDT",
+            fiat="ILS",
+            price=price,
+            min_amount_fiat=100,
+            max_amount_fiat=10000,
+            payment_methods=("bank",),
+            advertiser=adv,
+            completed_orders=500,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_opportunity_has_median_fields(self):
+        buy_ads = [self._ad("BUY", p, adv=f"b{i}") for i, p in enumerate([3.65, 3.70, 3.72])]
+        sell_ads = [self._ad("SELL", p, adv=f"s{i}") for i, p in enumerate([3.75, 3.76, 3.78])]
+        opportunities = find_p2p_opportunities(
+            buy_ads,
+            sell_ads,
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=15.0,
+        )
+        self.assertGreater(len(opportunities), 0)
+        opp = opportunities[0]
+        self.assertIsNotNone(opp.median_buy_price)
+        self.assertIsNotNone(opp.median_sell_price)
+        self.assertAlmostEqual(opp.median_buy_price, 3.70, places=2)
+        self.assertAlmostEqual(opp.median_sell_price, 3.76, places=2)
+
+    def test_buy_vs_median_pct_property(self):
+        # buy 3.65 при median 3.70 = (3.65-3.70)/3.70*100 = -1.35%
+        buy_ads = [self._ad("BUY", p, adv=f"b{i}") for i, p in enumerate([3.65, 3.70, 3.72])]
+        sell_ads = [self._ad("SELL", p, adv=f"s{i}") for i, p in enumerate([3.75, 3.76, 3.78])]
+        opportunities = find_p2p_opportunities(
+            buy_ads,
+            sell_ads,
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=15.0,
+        )
+        opp = opportunities[0]
+        self.assertIsNotNone(opp.buy_vs_median_pct)
+        self.assertAlmostEqual(opp.buy_vs_median_pct, -1.35, places=1)
+
+    def test_report_shows_median_annotation(self):
+        buy_ads = [self._ad("BUY", p, adv=f"b{i}") for i, p in enumerate([3.65, 3.70, 3.72])]
+        sell_ads = [self._ad("SELL", p, adv=f"s{i}") for i, p in enumerate([3.75, 3.76, 3.78])]
+        opportunities = find_p2p_opportunities(
+            buy_ads,
+            sell_ads,
+            min_spread_pct=0.1,
+            settlement_buffer_pct=0.0,
+            outlier_band_pct=15.0,
+        )
+        report = format_p2p_report(
+            opportunities, asset="USDT", fiat="ILS", pay_types=()
+        )
+        # Должна быть строка «vs median 3.7000» где-то.
+        self.assertIn("vs median", report)
+        self.assertIn("3.7000", report)
+
+
+class TestRegressionUserCaseUSDTILS(unittest.TestCase):
+    """Конкретный регресс на сценарий, который пользователь словил:
+    бот показал buy=2.77 → sell=3.75 с псевдо-спредом 35% (фейк).
+    Цель: с дефолт-фильтрами эта opp дроп'ается полностью.
+    """
+
+    def _ad(
+        self,
+        side: str,
+        price: float,
+        *,
+        adv: str,
+        venue: str = "Bybit P2P",
+    ) -> P2PAdvert:
+        return P2PAdvert(
+            venue=venue,
+            trade_type=side,
+            asset="USDT",
+            fiat="ILS",
+            price=price,
+            min_amount_fiat=100,
+            max_amount_fiat=10000,
+            payment_methods=("bank",),
+            advertiser=adv,
+            completed_orders=500,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_user_case_outliers_dropped_with_defaults(self):
+        # Реалистичный USDT/ILS pool: 3 dead BUY ads + 5 real BUY ads.
+        # Реальные SELL ads на 3.73-3.78. Раньше: top opp = buy 2.77 → sell 3.78
+        # = «35% спред». После M9-D: 2.77/2.83 дроп'аются как outliers.
+        buy_ads = [
+            self._ad("BUY", 2.77, adv="dead1"),
+            self._ad("BUY", 2.83, adv="dead2"),
+            self._ad("BUY", 2.80, adv="dead3"),
+            self._ad("BUY", 3.65, adv="real_b1"),
+            self._ad("BUY", 3.68, adv="real_b2"),
+            self._ad("BUY", 3.70, adv="real_b3"),
+            self._ad("BUY", 3.72, adv="real_b4"),
+            self._ad("BUY", 3.75, adv="real_b5"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 3.73, adv="real_s1"),
+            self._ad("SELL", 3.75, adv="real_s2"),
+            self._ad("SELL", 3.76, adv="real_s3"),
+            self._ad("SELL", 3.78, adv="real_s4"),
+        ]
+        # Дефолтная конфигурация: outlier band=15%, max-spread cap=20%.
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                max_results=10,
+            )
+        # Все oops должны быть реальными (buy >= 3.65, spread <= 5%).
+        self.assertGreater(len(opportunities), 0)
+        for opp in opportunities:
+            self.assertGreaterEqual(opp.buy_ad.price, 3.60, f"BUY {opp.buy_ad.price} — outlier!")
+            self.assertLess(opp.net_spread_pct, 5.0, f"net_spread {opp.net_spread_pct}% — фейк-арб!")
+
+    def test_user_case_without_outlier_filter_still_caps_at_20(self):
+        # Контрольная: если выключить outlier-фильтр (P2P_OUTLIER_BAND_PCT=0),
+        # max-spread cap всё равно дроп'нет «35% арб» (>20% default cap).
+        buy_ads = [
+            self._ad("BUY", 2.77, adv="dead1"),
+            self._ad("BUY", 3.65, adv="real_b1"),
+            self._ad("BUY", 3.70, adv="real_b2"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 3.75, adv="real_s1"),
+            self._ad("SELL", 3.78, adv="real_s2"),
+        ]
+        with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "0"}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                max_results=10,
+            )
+        # buy=2.77 → sell=3.78 = +36% net. Cap=20% дроп. Но real opps пройдут.
+        for opp in opportunities:
+            self.assertLessEqual(opp.net_spread_pct, 20.0, "max-spread cap не сработал!")
 
 
 if __name__ == "__main__":

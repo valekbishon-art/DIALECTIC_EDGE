@@ -570,10 +570,16 @@ def _format_multipair_report(
         # Сокращаем «Binance P2P» / «Bybit P2P» до «Binance»/«Bybit».
         buy_src = buy_src.replace(" P2P", "")
         sell_src = sell_src.replace(" P2P", "")
+        # M9-D: показываем delta vs market median рядом с ценой,
+        # чтобы пользователь видел «buy на 25% ниже рынка = подозрительно».
+        buy_delta = opp.buy_vs_median_pct
+        sell_delta = opp.sell_vs_median_pct
+        buy_delta_str = f" ({buy_delta:+.1f}% vs med)" if buy_delta is not None else ""
+        sell_delta_str = f" ({sell_delta:+.1f}% vs med)" if sell_delta is not None else ""
         lines.append(
             f"`{idx:2d}.` *{asset}/{fiat}* — *{opp.net_spread_pct:+.2f}%* "
             f"({buy_src}→{sell_src})  "
-            f"buy {opp.buy_ad.price:,.4g} → sell {opp.sell_ad.price:,.4g}"
+            f"buy {opp.buy_ad.price:,.4g}{buy_delta_str} → sell {opp.sell_ad.price:,.4g}{sell_delta_str}"
         )
 
     lines.append("")
