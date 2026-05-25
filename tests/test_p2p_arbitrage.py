@@ -16,6 +16,7 @@ from p2p_arbitrage import (
     alerts_enabled,
     bybit_enabled,
     canonical_payment_method,
+    compute_market_anchor,
     feature_enabled,
     filter_outliers,
     find_p2p_opportunities,
@@ -34,6 +35,35 @@ from p2p_arbitrage import (
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def setUpModule() -> None:
+    """Запретить HTTP-fetch open.er-api.com во всём тест-модуле.
+
+    Тесты используют синтетические цены 100/103 для USDT/RUB — это не
+    отражает реальный spot (~75 RUB/USD). Если оставить spot anchor
+    включённым, фильтр забракует все synthetic ads как outliers.
+    Решение: переводим fiat_fx в test-mode (defeat-нет ``clear=True``
+    patches которые иначе стёрли бы env-флаг). + сбрасываем cache.
+    Тесты которым нужен spot anchor используют USD-пеги (SAR/AED/HKD)
+    которые есть в hardcoded fallback и работают даже без remote.
+    """
+    os.environ["P2P_FX_DISABLE_REMOTE"] = "1"
+    try:
+        from market_indicators.fiat_fx import reset_cache, set_test_mode
+        set_test_mode(True)
+        reset_cache()
+    except Exception:
+        pass
+
+
+def tearDownModule() -> None:
+    try:
+        from market_indicators.fiat_fx import reset_cache, set_test_mode
+        set_test_mode(False)
+        reset_cache()
+    except Exception:
+        pass
 
 
 def load_fixture(name: str) -> dict:
@@ -836,9 +866,11 @@ class TestOutlierEnvHelpers(unittest.TestCase):
         with patch.dict(os.environ, {"P2P_OUTLIER_BAND_PCT": "0"}, clear=True):
             self.assertEqual(get_outlier_band_pct(), 0.0)
 
-    def test_max_spread_defaults_to_20(self):
+    def test_max_spread_defaults_to_15(self):
+        # M9-E: дефолт понижен с 20% → 15% (реальный P2P-арб даже в VES редко
+        # sustained > 12%).
         with patch.dict(os.environ, {}, clear=True):
-            self.assertAlmostEqual(get_max_spread_pct(), 20.0)
+            self.assertAlmostEqual(get_max_spread_pct(), 15.0)
 
     def test_max_spread_override(self):
         with patch.dict(os.environ, {"P2P_MAX_SPREAD_PCT": "50"}, clear=True):
@@ -1115,14 +1147,22 @@ class TestStricterDedup(unittest.TestCase):
 
 
 class TestMedianAnnotation(unittest.TestCase):
-    """Median price reference в отчёте: «buy 2.77 vs median 3.70 (-25%)»."""
+    """Spot-anchor reference в отчёте: «buy 3.12 vs market 3.75 (-16.8%)»."""
 
-    def _ad(self, side: str, price: float, *, adv: str = "m") -> P2PAdvert:
+    def _ad(
+        self,
+        side: str,
+        price: float,
+        *,
+        adv: str = "m",
+        asset: str = "USDT",
+        fiat: str = "ILS",
+    ) -> P2PAdvert:
         return P2PAdvert(
             venue="Bybit P2P",
             trade_type=side,
-            asset="USDT",
-            fiat="ILS",
+            asset=asset,
+            fiat=fiat,
             price=price,
             min_amount_fiat=100,
             max_amount_fiat=10000,
@@ -1135,8 +1175,17 @@ class TestMedianAnnotation(unittest.TestCase):
         )
 
     def test_opportunity_has_median_fields(self):
-        buy_ads = [self._ad("BUY", p, adv=f"b{i}") for i, p in enumerate([3.65, 3.70, 3.72])]
-        sell_ads = [self._ad("SELL", p, adv=f"s{i}") for i, p in enumerate([3.75, 3.76, 3.78])]
+        # M9-E: median_buy_price / median_sell_price теперь хранят ЕДИНЫЙ
+        # market anchor (spot FX), а не median per-side. При asset='USDC' и
+        # fiat='SAR' (USD peg fallback 3.75) обе цены равны anchor=3.75.
+        buy_ads = [
+            self._ad("BUY", p, adv=f"b{i}", asset="USDC", fiat="SAR")
+            for i, p in enumerate([3.70, 3.72, 3.74])
+        ]
+        sell_ads = [
+            self._ad("SELL", p, adv=f"s{i}", asset="USDC", fiat="SAR")
+            for i, p in enumerate([3.78, 3.80, 3.82])
+        ]
         opportunities = find_p2p_opportunities(
             buy_ads,
             sell_ads,
@@ -1148,13 +1197,20 @@ class TestMedianAnnotation(unittest.TestCase):
         opp = opportunities[0]
         self.assertIsNotNone(opp.median_buy_price)
         self.assertIsNotNone(opp.median_sell_price)
-        self.assertAlmostEqual(opp.median_buy_price, 3.70, places=2)
-        self.assertAlmostEqual(opp.median_sell_price, 3.76, places=2)
+        # SAR peg = 3.75 — единый anchor для обоих side'ов.
+        self.assertAlmostEqual(opp.median_buy_price, 3.75, places=2)
+        self.assertAlmostEqual(opp.median_sell_price, 3.75, places=2)
 
     def test_buy_vs_median_pct_property(self):
-        # buy 3.65 при median 3.70 = (3.65-3.70)/3.70*100 = -1.35%
-        buy_ads = [self._ad("BUY", p, adv=f"b{i}") for i, p in enumerate([3.65, 3.70, 3.72])]
-        sell_ads = [self._ad("SELL", p, adv=f"s{i}") for i, p in enumerate([3.75, 3.76, 3.78])]
+        # M9-E: vs anchor=spot FX. SAR peg=3.75, buy=3.70: (3.70-3.75)/3.75=-1.33%.
+        buy_ads = [
+            self._ad("BUY", p, adv=f"b{i}", asset="USDC", fiat="SAR")
+            for i, p in enumerate([3.70, 3.72, 3.74])
+        ]
+        sell_ads = [
+            self._ad("SELL", p, adv=f"s{i}", asset="USDC", fiat="SAR")
+            for i, p in enumerate([3.78, 3.80, 3.82])
+        ]
         opportunities = find_p2p_opportunities(
             buy_ads,
             sell_ads,
@@ -1164,11 +1220,18 @@ class TestMedianAnnotation(unittest.TestCase):
         )
         opp = opportunities[0]
         self.assertIsNotNone(opp.buy_vs_median_pct)
-        self.assertAlmostEqual(opp.buy_vs_median_pct, -1.35, places=1)
+        self.assertAlmostEqual(opp.buy_vs_median_pct, -1.33, places=1)
 
     def test_report_shows_median_annotation(self):
-        buy_ads = [self._ad("BUY", p, adv=f"b{i}") for i, p in enumerate([3.65, 3.70, 3.72])]
-        sell_ads = [self._ad("SELL", p, adv=f"s{i}") for i, p in enumerate([3.75, 3.76, 3.78])]
+        # M9-E: «vs market» (spot FX), не «vs median». SAR peg 3.7500.
+        buy_ads = [
+            self._ad("BUY", p, adv=f"b{i}", asset="USDC", fiat="SAR")
+            for i, p in enumerate([3.70, 3.72, 3.74])
+        ]
+        sell_ads = [
+            self._ad("SELL", p, adv=f"s{i}", asset="USDC", fiat="SAR")
+            for i, p in enumerate([3.78, 3.80, 3.82])
+        ]
         opportunities = find_p2p_opportunities(
             buy_ads,
             sell_ads,
@@ -1177,11 +1240,10 @@ class TestMedianAnnotation(unittest.TestCase):
             outlier_band_pct=15.0,
         )
         report = format_p2p_report(
-            opportunities, asset="USDT", fiat="ILS", pay_types=()
+            opportunities, asset="USDC", fiat="SAR", pay_types=()
         )
-        # Должна быть строка «vs median 3.7000» где-то.
-        self.assertIn("vs median", report)
-        self.assertIn("3.7000", report)
+        self.assertIn("vs market", report)
+        self.assertIn("3.7500", report)
 
 
 class TestRegressionUserCaseUSDTILS(unittest.TestCase):
@@ -1271,7 +1333,146 @@ class TestRegressionUserCaseUSDTILS(unittest.TestCase):
             )
         # buy=2.77 → sell=3.78 = +36% net. Cap=20% дроп. Но real opps пройдут.
         for opp in opportunities:
-            self.assertLessEqual(opp.net_spread_pct, 20.0, "max-spread cap не сработал!")
+            self.assertLessEqual(opp.net_spread_pct, 15.0, "max-spread cap не сработал!")
+
+
+class TestSpotAnchorOutlierFilter(unittest.TestCase):
+    """M9-E: фильтр опирается на ВНЕШНИЙ forex-курс (open.er-api.com / peg
+    fallback), а не на median той же стороны. Этот тест-класс закрывает
+    конкретные кейсы из live-deployment которые M9-D (PR #35) пропустил:
+
+      • USDC/SAR: buy 3.12 проходил M9-D потому что BUY-median тоже был 3.60
+        (смещён wishlist-ads), отклонение -13.5% < band 15%. После M9-E
+        anchor=SAR peg 3.75, deviation = (3.12-3.75)/3.75 = -16.8% → дроп.
+
+      • USDC/VES: buy 579.5 проходил M9-D (BUY-median тоже 660), -12.7%.
+        После M9-E real spot ~530, buy 579.5 теперь WITHIN band → проходит
+        (но это уже на стороне VES-волатильности, не фейк). Сценарий не
+        тестируем без mocked spot — слишком хрупко к API.
+
+      • USDC/BYN: buy 2.32 (-0.9% vs BUY-median) — sell 2.77 (+9.5% vs
+        SELL-median). После M9-E anchor=BYN spot ~3.27, sell 2.77 = -15.3%
+        outlier → дроп.
+    """
+
+    def _ad(
+        self,
+        side: str,
+        price: float,
+        *,
+        adv: str,
+        asset: str = "USDC",
+        fiat: str = "SAR",
+        venue: str = "Bybit P2P",
+    ) -> P2PAdvert:
+        return P2PAdvert(
+            venue=venue,
+            trade_type=side,
+            asset=asset,
+            fiat=fiat,
+            price=price,
+            min_amount_fiat=100,
+            max_amount_fiat=10000,
+            payment_methods=("bank",),
+            advertiser=adv,
+            completed_orders=500,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_usdc_sar_wishlist_buy_dropped_via_peg_anchor(self):
+        # SAR peg = 3.75 (hardcoded fallback). buy 3.12 = -16.8% → дроп.
+        # buy 3.50 = -6.7% → проходит. Все sells ~3.74-3.76 → проходят.
+        buy_ads = [
+            self._ad("BUY", 3.12, adv="wishlist1"),  # outlier vs peg
+            self._ad("BUY", 3.18, adv="wishlist2"),  # outlier vs peg
+            self._ad("BUY", 3.50, adv="real1"),  # passes
+            self._ad("BUY", 3.55, adv="real2"),  # passes
+            self._ad("BUY", 3.60, adv="real3"),  # passes
+        ]
+        sell_ads = [
+            self._ad("SELL", 3.74, adv="real_s1"),
+            self._ad("SELL", 3.75, adv="real_s2"),
+            self._ad("SELL", 3.76, adv="real_s3"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                max_results=20,
+            )
+        # Ни одна opp не должна иметь buy <= 3.18 (outliers).
+        for opp in opportunities:
+            self.assertGreater(
+                opp.buy_ad.price, 3.18,
+                f"buy {opp.buy_ad.price} — wishlist outlier vs SAR peg 3.75!",
+            )
+            # Real арб SAR-peg редко > 5% (peg стабилен десятилетия).
+            self.assertLess(opp.net_spread_pct, 10.0)
+
+    def test_max_spread_cap_15_kills_19pct_fake(self):
+        # Live-deployment кейс: USDC/SAR показывал «19.84%» как «нормальный»
+        # арб (proходил cap=20). M9-E понизил cap до 15 — этот opps drop.
+        # Используем asset/fiat без peg fallback и без remote → филтр пропу-
+        # стит обе ads, и только max-spread cap отрабатывает.
+        buy_ads = [
+            self._ad("BUY", 3.12, adv="buyer", asset="USDC", fiat="UAH"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 3.75, adv="seller", asset="USDC", fiat="UAH"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            opportunities = find_p2p_opportunities(
+                buy_ads,
+                sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                max_results=20,
+            )
+        # 20.2% gross > 15% cap → дроп.
+        self.assertEqual(len(opportunities), 0)
+
+    def test_compute_market_anchor_prefers_spot_over_median(self):
+        # USDC/SAR: 5 ads все = 3.61 (BUY-median = 3.61). Spot=3.75. Anchor
+        # = spot (НЕ median).
+        ads = [
+            self._ad("BUY", 3.61, adv=f"b{i}", asset="USDC", fiat="SAR")
+            for i in range(5)
+        ]
+        anchor = compute_market_anchor("USDC", "SAR", ads)
+        self.assertAlmostEqual(anchor, 3.75, places=2)
+
+    def test_compute_market_anchor_falls_back_to_median_for_non_stable(self):
+        # BTC не USD-stable → spot lookup пропускается → combined median.
+        ads = [
+            self._ad("BUY", 95000.0, adv="b1", asset="BTC", fiat="USD"),
+            self._ad("BUY", 95100.0, adv="b2", asset="BTC", fiat="USD"),
+            self._ad("SELL", 95200.0, adv="s1", asset="BTC", fiat="USD"),
+            self._ad("SELL", 95300.0, adv="s2", asset="BTC", fiat="USD"),
+            self._ad("SELL", 95400.0, adv="s3", asset="BTC", fiat="USD"),
+        ]
+        anchor = compute_market_anchor("BTC", "USD", ads)
+        # Combined median = 95200 (3-й из 5).
+        self.assertAlmostEqual(anchor, 95200.0, places=0)
+
+    def test_compute_market_anchor_returns_none_when_no_data(self):
+        # Non-stable asset + 2 ads (< 3 для median) → None.
+        ads = [
+            self._ad("BUY", 95000.0, adv="b1", asset="BTC", fiat="USD"),
+            self._ad("SELL", 95200.0, adv="s1", asset="BTC", fiat="USD"),
+        ]
+        self.assertIsNone(compute_market_anchor("BTC", "USD", ads))
+
+    def test_compute_market_anchor_override_takes_priority(self):
+        # anchor_override явно задан → используется он, не spot/median.
+        ads = [
+            self._ad("BUY", 100.0, adv="b1", asset="USDC", fiat="SAR"),
+        ]
+        anchor = compute_market_anchor("USDC", "SAR", ads, anchor_override=42.0)
+        self.assertAlmostEqual(anchor, 42.0)
 
 
 if __name__ == "__main__":
