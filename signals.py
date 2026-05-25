@@ -1081,6 +1081,15 @@ def _split_markets_message(text: str, *, max_len: int = 4000) -> list[str]:
     # Первая часть не имеет "[" префикса; остальным возвращаем
     parts: list[str] = [sections[0]] + [f"[{s}" for s in sections[1:]]
 
+    # Юзер: «первая страница не работает у нас всё сьехало». Без этого
+    # склеивания parts[0] = только заголовок («💲 *Рынки — крипта* — _дата_»),
+    # и если parts[1] переполняет max_len — заголовок flush'ится как первая
+    # пустая страница, а контент уезжает на стр 2. Склеиваем заголовок с
+    # первой секцией: даже если суммарно overflow — `_split_by_assets`
+    # пакует по строкам и заголовок остаётся в стр 1.
+    if len(parts) > 1 and not parts[0].lstrip().startswith("["):
+        parts = [parts[0] + "\n\n" + parts[1]] + parts[2:]
+
     chunks: list[str] = []
     cur = ""
     for s in parts:

@@ -72,6 +72,49 @@ class TestSplitMarketsMessage(unittest.TestCase):
             self.assertLessEqual(len(c), 250)
 
 
+    def test_header_not_left_as_empty_first_chunk(self):
+        """Регрессия: юзер «первая страница не работает у нас всё сьехало».
+
+        Без склейки заголовка с первой секцией: parts[0] = header (просто
+        «💲 *Рынки — крипта* — _25.05 08:48_»), parts[1] = тяжёлая секция.
+        Если parts[1] > max_len, header flush'ится в первый chunk как
+        одиночный → стр 1/4 = пустой заголовок, стр 2 = первая секция.
+        Юзер видит пустую первую страницу. После фикса: header должен
+        слиться с первой секцией, никаких header-only chunk'ов.
+        """
+        header = "💲 *Рынки — крипта* — _25.05 08:48_"
+        section_body = "  Bitcoin (BTC): $79,110\n    ТРЕНД: SIDEWAYS\n" * 50
+        text = f"{header}\n\n[КРИПТОРЫНОК]\n{section_body.rstrip()}"
+        chunks = _split_markets_message(text, max_len=500)
+        # Первый chunk должен содержать и заголовок, и хотя бы часть секции.
+        self.assertIn("Рынки — крипта", chunks[0])
+        self.assertIn("[КРИПТОРЫНОК]", chunks[0])
+        # Никакого «голого заголовка» — первый chunk должен иметь контент.
+        self.assertGreater(
+            len(chunks[0]), len(header) + 5,
+            f"первый chunk = почти только header ({len(chunks[0])} chars)",
+        )
+
+    def test_header_merged_when_summary_section_overflows(self):
+        # Конкретный сценарий: одна большая секция [КРИПТОРЫНОК] с 15 активами
+        # (как для /markets section=crypto). Header должен быть на стр 1.
+        header = "📊 *Рынки — сводка*"
+        # Симулируем 15 активов с раздутым форматом (рич-форматтер).
+        asset_block = (
+            "  Bitcoin (BTC): $79,110\n"
+            "    24ч: +1.2%  7д: -3.4%  30д: +12.5%\n"
+            "    MA-50: $77,200  MA-200: $65,000\n"
+            "    SL LONG: $76,500  TP1/TP2/TP3: $80k/$82k/$85k\n"
+            "    Quant: BUY  Markov P(up)=0.62\n"
+        )
+        text = f"{header}\n\n[КРИПТОРЫНОК]\n" + asset_block * 15
+        chunks = _split_markets_message(text, max_len=900)
+        # Header должен жить в стр 1, не отдельным пустым chunk'ом.
+        self.assertGreater(len(chunks), 1, "ожидаем многостраничный вывод")
+        self.assertIn("Рынки — сводка", chunks[0])
+        self.assertIn("Bitcoin", chunks[0])
+
+
 class TestSplitByAssets(unittest.TestCase):
     def test_returns_single_chunk_when_fits(self):
         section = "[КРИПТОРЫНОК]\n  Bitcoin: $79,110"
