@@ -17,6 +17,7 @@ except Exception:
 
 if HAS_AIOGRAM:
     from refactor.handlers.p2p_arbitrage_handler import (
+        BYBIT_SIDE_BY_TRADE_TYPE,
         _bybit_payment_filter,
         _extract_bybit_rows,
         _fetch_bybit_p2p_side,
@@ -159,6 +160,145 @@ class TestBybitMerchantServerSideFilter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("payload", captured)
         self.assertEqual(captured["payload"].get("vaMaker"), False)
         self.assertEqual(captured["payload"].get("verificationFilter"), 0)
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
+class TestBybitSideMappingPolarity(unittest.IsolatedAsyncioTestCase):
+    """Regression guard: Bybit ``side`` имеет ОБРАТНЫЙ смысл от Binance ``tradeType``.
+
+    Bybit P2P:
+      side=0 → BID-ads (мейкер хочет купить USDT, тейкер ПРОДАЁТ) → цены НИЖЕ спота
+      side=1 → ASK-ads (мейкер хочет продать USDT, тейкер ПОКУПАЕТ) → цены ВЫШЕ спота
+
+    Семантика бота (см. ``P2PAdvert.side_label``):
+      trade_type="BUY"  = тейкер покупает USDT  → должен брать ASK-сторону = Bybit side=1
+      trade_type="SELL" = тейкер продаёт USDT   → должен брать BID-сторону = Bybit side=0
+
+    Исторически здесь была инверсия (``{"BUY":"0","SELL":"1"}``): бот скрещивал
+    BID-стакан с ASK-стаканом и регулярно «находил» фантомные спреды +10–14%
+    (на деле -10% убытки, если их пытаться исполнить). Тест ловит регрессию
+    на нескольких уровнях: константа, HTTP-payload, end-to-end полярность.
+    """
+
+    def test_mapping_constants_buy_to_1_sell_to_0(self):
+        # Маппинг — единственная точка истины в коде. Если кто-то снова
+        # «починит» его обратно на 0/1 — этот тест упадёт первым.
+        self.assertEqual(BYBIT_SIDE_BY_TRADE_TYPE["BUY"], "1")
+        self.assertEqual(BYBIT_SIDE_BY_TRADE_TYPE["SELL"], "0")
+
+    async def _capture_payload_side(self, trade_type: str) -> str:
+        captured: dict = {}
+
+        class _FakeResp:
+            status = 200
+
+            async def text(self) -> str:
+                return "{}"
+
+            async def json(self) -> dict:
+                return {"result": {"items": []}}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return False
+
+        class _FakeSession:
+            def post(self, url, json=None, headers=None, timeout=None):
+                captured["payload"] = json
+                return _FakeResp()
+
+        await _fetch_bybit_p2p_side(
+            _FakeSession(),
+            trade_type=trade_type,
+            asset="USDC",
+            fiat="MXN",
+            pay_types=(),
+        )
+        return captured["payload"]["side"]
+
+    async def test_buy_request_uses_side_1_in_payload(self):
+        self.assertEqual(await self._capture_payload_side("BUY"), "1")
+
+    async def test_sell_request_uses_side_0_in_payload(self):
+        self.assertEqual(await self._capture_payload_side("SELL"), "0")
+
+    async def test_orderbook_polarity_after_mapping(self):
+        """End-to-end: BUY-ads (asks) должны быть ДОРОЖЕ SELL-ads (bids).
+
+        Полярность реального стакана — лучший детектор инверсии. Если она
+        сломается, ``find_p2p_opportunities`` снова начнёт скрещивать
+        BID×ASK с одной площадки и плодить фантомные «арбитражи».
+        """
+        ask_fixture = {
+            "ret_code": 0,
+            "ret_msg": "SUCCESS",
+            "result": {
+                "items": [
+                    {
+                        "id": "ask1",
+                        "price": "17.89",
+                        "minAmount": "1000",
+                        "maxAmount": "10000",
+                        "nickName": "asker",
+                        "tokenId": "USDC",
+                        "currencyId": "MXN",
+                        "side": 1,
+                        "finishNum": 100,
+                        "recentExecuteRate": 99,
+                        "payments": [],
+                        "lastQuantity": "1000",
+                    }
+                ]
+            },
+        }
+        bid_fixture = {
+            "ret_code": 0,
+            "ret_msg": "SUCCESS",
+            "result": {
+                "items": [
+                    {
+                        "id": "bid1",
+                        "price": "17.19",
+                        "minAmount": "1000",
+                        "maxAmount": "10000",
+                        "nickName": "bidder",
+                        "tokenId": "USDC",
+                        "currencyId": "MXN",
+                        "side": 0,
+                        "finishNum": 100,
+                        "recentExecuteRate": 99,
+                        "payments": [],
+                        "lastQuantity": "1000",
+                    }
+                ]
+            },
+        }
+
+        async def fake_side(*_, **kwargs):
+            # После фикса: trade_type=BUY (тейкер покупает) ходит за ASK-фикстурой,
+            # trade_type=SELL (тейкер продаёт) — за BID. До фикса было наоборот,
+            # и assertGreater ниже падал.
+            fixture = ask_fixture if kwargs["trade_type"] == "BUY" else bid_fixture
+            rows, error = _extract_bybit_rows(fixture, trade_type=kwargs["trade_type"])
+            return rows, error
+
+        with patch(
+            "refactor.handlers.p2p_arbitrage_handler._fetch_bybit_p2p_side",
+            new=fake_side,
+        ):
+            buy_ads, sell_ads, errors = await fetch_bybit_p2p_ads(asset="USDC", fiat="MXN")
+
+        self.assertEqual(errors, ())
+        self.assertEqual(len(buy_ads), 1)
+        self.assertEqual(len(sell_ads), 1)
+        self.assertGreater(
+            buy_ads[0].price,
+            sell_ads[0].price,
+            "BUY-ads (asks) must be priced HIGHER than SELL-ads (bids); "
+            "inverted polarity means BYBIT_SIDE_BY_TRADE_TYPE is bugged again.",
+        )
 
 
 if __name__ == "__main__":
