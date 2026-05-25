@@ -133,6 +133,24 @@ DEFAULT_TIER1_BANKS: tuple[str, ...] = (
 DEFAULT_MIN_EXECUTABLE_FIAT = 0.0
 DEFAULT_MAX_AD_AGE_MIN = 0  # 0 = выкл
 
+# M9-D outlier protection — пользователь словил кейс USDT/ILS buy 2.77 при
+# рыночной медиане ~3.7 (отклонение -25%), что породило фейковый спред 35%.
+# Защита от такого:
+#   • OUTLIER_BAND_PCT — режем adverts, чья цена отклоняется от медианы той
+#     же стороны (BUY или SELL) той же пары больше чем на N%. Default 15%
+#     достаточно широк чтобы не задевать живой шум (1-3% на стабильном
+#     рынке) и при этом дроп'ает явные dead/typo-ads.
+#   • MAX_SPREAD_PCT — hard cap на net_spread_pct. Реальный P2P-арб
+#     практически никогда не превышает 15% даже в hyperinflation-фиатах
+#     (VES/ARS). 20% — комфортный потолок для «шумного» отчёта.
+#   • DEDUP_PRICE_BUCKET_PCT — bucket size для стрикт-dedup'а opportunities:
+#     если две opps имеют buy/sell цены в пределах ±N% друг от друга, они
+#     схлопываются в одну (даже если advertiser-пары разные). Default 0.5%.
+DEFAULT_OUTLIER_BAND_PCT = 15.0
+DEFAULT_MAX_SPREAD_PCT = 20.0
+DEFAULT_DEDUP_PRICE_BUCKET_PCT = 0.5
+DEFAULT_OUTLIER_MIN_SAMPLES = 3
+
 PAYMENT_METHOD_ALIASES = {
     "tinkoffnew": "tinkoff",
     "tinkoff": "tinkoff",
@@ -245,10 +263,28 @@ class P2POpportunity:
     slippage_pct: float = 0.0
     cost_payment_method: str = ""
     score: float = 0.0
+    # M9-D: рыночные медианы по той же стороне, той же паре — нужны
+    # для outlier-detection в отчёте («buy на 25% ниже медианы =
+    # подозрительно»). None если медиану не считали (legacy code-path
+    # или мало sample'ов).
+    median_buy_price: float | None = None
+    median_sell_price: float | None = None
 
     @property
     def gross_profit_fiat(self) -> float:
         return self.executable_asset * (self.sell_ad.price - self.buy_ad.price)
+
+    @property
+    def buy_vs_median_pct(self) -> float | None:
+        if self.median_buy_price is None or self.median_buy_price <= 0:
+            return None
+        return (self.buy_ad.price - self.median_buy_price) / self.median_buy_price * 100.0
+
+    @property
+    def sell_vs_median_pct(self) -> float | None:
+        if self.median_sell_price is None or self.median_sell_price <= 0:
+            return None
+        return (self.sell_ad.price - self.median_sell_price) / self.median_sell_price * 100.0
 
 
 @dataclass(frozen=True)
@@ -671,6 +707,54 @@ def get_min_executable_fiat() -> float:
         DEFAULT_MIN_EXECUTABLE_FIAT,
         min_val=0.0,
         max_val=1e12,
+    )
+
+
+def get_outlier_band_pct() -> float:
+    """M9-D: max отклонение цены ad'а от медианы той же стороны (BUY/SELL)
+    той же пары. 0 = выкл outlier-фильтр (legacy behavior).
+
+    Default 15% достаточно широк чтобы не задевать нормальный P2P-шум
+    (1-3% разброс), но дроп'ает dead/typo-ads типа USDT/ILS buy 2.77
+    при медиане 3.7 (-25% отклонение).
+    """
+    return _env_float(
+        "P2P_OUTLIER_BAND_PCT",
+        DEFAULT_OUTLIER_BAND_PCT,
+        min_val=0.0,
+        max_val=100.0,
+    )
+
+
+def get_max_spread_pct() -> float:
+    """M9-D: hard cap на ``net_spread_pct``. Opps выше этого — мусор/шум
+    (нереальный арб), не показываем. 0 = выкл cap (legacy).
+
+    Реальный P2P-арб даже в гиперинфляционных фиатах редко превышает 15%
+    (VES/ARS premium на USDT 5-12% sustained). 20% дефолтом — комфорт.
+    """
+    return _env_float(
+        "P2P_MAX_SPREAD_PCT",
+        DEFAULT_MAX_SPREAD_PCT,
+        min_val=0.0,
+        max_val=1000.0,
+    )
+
+
+def get_dedup_price_bucket_pct() -> float:
+    """M9-D: bucket size для price-aware dedup'а. Две opps схлопываются
+    в одну если buy/sell цены лежат в пределах ±N% друг от друга
+    (даже если advertiser-пары разные).
+
+    Default 0.5% — реальные «копии» одного и того же окна обычно идут
+    с дельтой ≤ 0.3% по цене (разные мерчанты, тот же эффективный рынок).
+    0 = выкл price-bucket dedup (только advertiser-pair как раньше).
+    """
+    return _env_float(
+        "P2P_DEDUP_PRICE_BUCKET_PCT",
+        DEFAULT_DEDUP_PRICE_BUCKET_PCT,
+        min_val=0.0,
+        max_val=10.0,
     )
 
 
@@ -1256,6 +1340,82 @@ def _risk_level(
     return "HIGH", tuple(warnings)
 
 
+def _median_price(prices: list[float]) -> float | None:
+    """Median цены или None если samples < ``DEFAULT_OUTLIER_MIN_SAMPLES``.
+
+    Минимум sample'ов важен: на 1-2 ad'ах медиана неинформативна (любой
+    случайный outlier станет «нормой»). Поэтому ниже порога — возвращаем
+    None, и outlier-фильтр graceful-skip'ает (пропускает все ads без фильтра).
+    """
+    valid = [p for p in prices if isinstance(p, (int, float)) and p > 0]
+    if len(valid) < DEFAULT_OUTLIER_MIN_SAMPLES:
+        return None
+    valid.sort()
+    n = len(valid)
+    mid = n // 2
+    if n % 2 == 1:
+        return float(valid[mid])
+    return (float(valid[mid - 1]) + float(valid[mid])) / 2.0
+
+
+def _is_within_band(price: float, median: float, band_pct: float) -> bool:
+    """True если ``price`` лежит в ``±band_pct%`` от ``median``.
+
+    band_pct=0 → always True (фильтр выключен).
+    median<=0 или price<=0 → False (нечего сравнивать).
+    """
+    if band_pct <= 0:
+        return True
+    if median <= 0 or price <= 0:
+        return False
+    deviation = abs(price - median) / median * 100.0
+    return deviation <= band_pct
+
+
+def filter_outliers(
+    ads: list[P2PAdvert],
+    *,
+    band_pct: float | None = None,
+) -> tuple[list[P2PAdvert], dict[tuple[str, str, str], float]]:
+    """Дроп'ает adverts, чья цена отклоняется от медианы той же группы
+    (asset, fiat, trade_type) больше чем на ``band_pct%``.
+
+    Группировка важна — для USDT/ILS медиана BUY ~3.7, а для USDT/RUB ~95,
+    их нельзя смешивать. Возвращает ``(filtered_ads, medians)`` где
+    medians — dict ``(asset, fiat, side) → median_price`` (для reporting'а).
+
+    Защита от Phenomenom Gas Mass effect: если в группе < 3 sample'ов,
+    медиана неопределена, фильтр skip'ается (все ads проходят).
+    """
+    band = get_outlier_band_pct() if band_pct is None else band_pct
+    if band <= 0:
+        return ads, {}
+
+    # Группируем цены по (asset, fiat, side).
+    groups: dict[tuple[str, str, str], list[float]] = {}
+    for ad in ads:
+        key = (ad.asset.upper(), ad.fiat.upper(), ad.trade_type.upper())
+        groups.setdefault(key, []).append(float(ad.price))
+
+    medians: dict[tuple[str, str, str], float] = {}
+    for key, prices in groups.items():
+        m = _median_price(prices)
+        if m is not None:
+            medians[key] = m
+
+    filtered: list[P2PAdvert] = []
+    for ad in ads:
+        key = (ad.asset.upper(), ad.fiat.upper(), ad.trade_type.upper())
+        median = medians.get(key)
+        if median is None:
+            # Слишком мало sample'ов чтобы делать вывод — пропускаем без фильтра.
+            filtered.append(ad)
+            continue
+        if _is_within_band(float(ad.price), median, band):
+            filtered.append(ad)
+    return filtered, medians
+
+
 def find_p2p_opportunities(
     buy_ads: list[P2PAdvert],
     sell_ads: list[P2PAdvert],
@@ -1267,6 +1427,9 @@ def find_p2p_opportunities(
     merchant_required: bool = False,
     preferred_pay_types: tuple[str, ...] = (),
     max_results: int = DEFAULT_MAX_RESULTS,
+    outlier_band_pct: float | None = None,
+    max_spread_pct: float | None = None,
+    dedup_price_bucket_pct: float | None = None,
 ) -> list[P2POpportunity]:
     legacy_buffer_pct = get_settlement_buffer_pct() if settlement_buffer_pct is None else settlement_buffer_pct
 
@@ -1306,7 +1469,33 @@ def find_p2p_opportunities(
             merchant_required=merchant_required,
         )
     ]
+
+    # M9-D: median-based outlier filter. Сначала вычисляем медианы по
+    # ВСЕМ оригинальным ad'ам (до quality filter) — это даёт более
+    # репрезентативную «рыночную медиану», т.к. quality-filter может
+    # дроп'нуть половину рынка, а нам важна медиана не «качественных», а
+    # «всех» (чтобы заметить cluster outlier'ов от низко-rated merchants).
+    band = get_outlier_band_pct() if outlier_band_pct is None else outlier_band_pct
+    buy_medians: dict[tuple[str, str, str], float] = {}
+    sell_medians: dict[tuple[str, str, str], float] = {}
+    if band > 0:
+        # Медиана считается на оригинальном пуле (не на отфильтрованном),
+        # иначе исчезает «якорь» относительно которого сравниваем outlier'ы.
+        _, buy_medians = filter_outliers(list(buy_ads), band_pct=band)
+        _, sell_medians = filter_outliers(list(sell_ads), band_pct=band)
+
+        def _passes_outlier(ad: P2PAdvert, medians: dict[tuple[str, str, str], float]) -> bool:
+            key = (ad.asset.upper(), ad.fiat.upper(), ad.trade_type.upper())
+            median = medians.get(key)
+            if median is None:
+                return True
+            return _is_within_band(float(ad.price), median, band)
+
+        buys = [ad for ad in buys if _passes_outlier(ad, buy_medians)]
+        sells = [ad for ad in sells if _passes_outlier(ad, sell_medians)]
+
     min_exec_fiat = get_min_executable_fiat()
+    cap_spread = get_max_spread_pct() if max_spread_pct is None else max_spread_pct
     out: list[P2POpportunity] = []
     for buy_ad in buys:
         for sell_ad in sells:
@@ -1338,8 +1527,17 @@ def find_p2p_opportunities(
             net = gross - costs.buffer_pct
             if net < min_spread_pct:
                 continue
+            # M9-D: hard cap на сумасшедшие спреды. Если net > P2P_MAX_SPREAD_PCT
+            # (default 20%) — это с очень высокой вероятностью шум (dead/typo
+            # ad, mismatched payment-stream, проигнорированный outlier фильтр).
+            # Реальный P2P-арб > 20% — единичный кейс (только VES-hyperinflation
+            # flash). Дропаем чтобы не показывать пользователю «фейковый» 35%-арб.
+            if cap_spread > 0 and net > cap_spread:
+                continue
             risk, warnings = _risk_level(buy_ad, sell_ad, shared_methods, executable_fiat=executable_fiat)
             score = net * get_risk_weight(risk)
+            buy_key = (buy_ad.asset.upper(), buy_ad.fiat.upper(), "BUY")
+            sell_key = (sell_ad.asset.upper(), sell_ad.fiat.upper(), "SELL")
             out.append(P2POpportunity(
                 asset=buy_ad.asset,
                 fiat=buy_ad.fiat,
@@ -1359,17 +1557,58 @@ def find_p2p_opportunities(
                 slippage_pct=costs.slippage_pct,
                 cost_payment_method=costs.payment_method,
                 score=score,
+                median_buy_price=buy_medians.get(buy_key),
+                median_sell_price=sell_medians.get(sell_key),
             ))
     out.sort(key=lambda opp: (opp.score, opp.net_spread_pct, opp.executable_fiat), reverse=True)
+
+    # M9-D: stricter dedup — учитываем 3 вектора одинаковости:
+    #   1. та же advertiser-пара (legacy);
+    #   2. тот же advertiser хотя бы с одной стороны + price-bucket другой
+    #      стороны совпадает — один мерчант, разные ad'ы на одинаковую цену;
+    #   3. price-bucket пара совпадает целиком — разные мерчанты, но
+    #      идентичный по цене сетап (тот же рыночный сигнал, бесполезно
+    #      дублировать в отчёте).
+    # Bucket size настраивается env'ой; 0 = price-aware dedup выключен.
+    bucket_pct = (
+        get_dedup_price_bucket_pct() if dedup_price_bucket_pct is None else dedup_price_bucket_pct
+    )
+
+    def _bucket(price: float) -> int:
+        if bucket_pct <= 0 or price <= 0:
+            return 0
+        # Bucket index: цена / (bucket_pct%-of-price). Цены в одном бакете
+        # отличаются ≤ bucket_pct% друг от друга по rounding'у к ближайшему.
+        scale = 100.0 / bucket_pct
+        return int(round(price * scale))
+
     deduped: list[P2POpportunity] = []
     seen_advertisers: set[tuple[str, str]] = set()
+    seen_price_buckets: set[tuple[str, str, int, int]] = set()
+    seen_buy_adv_sell_bucket: set[tuple[str, str, str, int]] = set()
+    seen_sell_adv_buy_bucket: set[tuple[str, str, int, str]] = set()
     for opportunity in out:
-        advertiser_pair = (
-            opportunity.buy_ad.advertiser.strip().casefold(),
-            opportunity.sell_ad.advertiser.strip().casefold(),
-        )
+        buy_adv = opportunity.buy_ad.advertiser.strip().casefold()
+        sell_adv = opportunity.sell_ad.advertiser.strip().casefold()
+        advertiser_pair = (buy_adv, sell_adv)
         if advertiser_pair in seen_advertisers:
             continue
+        buy_b = _bucket(opportunity.buy_ad.price)
+        sell_b = _bucket(opportunity.sell_ad.price)
+        asset_fiat = (opportunity.asset.upper(), opportunity.fiat.upper())
+        if bucket_pct > 0:
+            price_pair_key = asset_fiat + (buy_b, sell_b)
+            if price_pair_key in seen_price_buckets:
+                continue
+            buy_collision = asset_fiat + (buy_adv, sell_b)
+            if buy_collision in seen_buy_adv_sell_bucket:
+                continue
+            sell_collision = asset_fiat + (buy_b, sell_adv)
+            if sell_collision in seen_sell_adv_buy_bucket:
+                continue
+            seen_price_buckets.add(price_pair_key)
+            seen_buy_adv_sell_bucket.add(buy_collision)
+            seen_sell_adv_buy_bucket.add(sell_collision)
         seen_advertisers.add(advertiser_pair)
         deduped.append(opportunity)
         if len(deduped) >= max_results:
@@ -1412,6 +1651,20 @@ def _payment_window_text(ad: P2PAdvert) -> str:
     if ad.payment_window_min is None:
         return "pay `n/a`"
     return f"pay `{ad.payment_window_min}m`"
+
+
+def _median_annotation(price: float, median: float | None, *, side: str) -> str:
+    """Возвращает суффикс типа ` · vs median 3.7000 (-25.0%) ⚠️ outlier` или пустую строку.
+
+    Включает emoji-предупреждение если отклонение > 10% — это явный сигнал
+    что ad либо dead, либо typo, либо payment-stream странный.
+    """
+    if median is None or median <= 0 or price <= 0:
+        return ""
+    delta_pct = (price - median) / median * 100.0
+    band = get_outlier_band_pct()
+    warn = " ⚠️ outlier" if band > 0 and abs(delta_pct) > min(10.0, band) else ""
+    return f" · vs median `{median:.4f}` ({delta_pct:+.1f}%){warn}"
 
 
 def format_p2p_report(
@@ -1458,10 +1711,12 @@ def format_p2p_report(
             report_warnings.append(f"данные старше TTL {opportunity_ttl_sec} сек")
         buy_safe = _escape_md(buy.advertiser)
         sell_safe = _escape_md(sell.advertiser)
+        buy_med_suffix = _median_annotation(buy.price, opp.median_buy_price, side="BUY")
+        sell_med_suffix = _median_annotation(sell.price, opp.median_sell_price, side="SELL")
         lines.extend([
             f"*{idx}. Net {opp.net_spread_pct:+.2f}%* · gross `{opp.gross_spread_pct:+.2f}%` · score `{opp.score:.2f}` · risk `{opp.risk_level}` · {age_text}",
-            f"   Buy: `{buy.price:.4f}` {opp.fiat} · {buy.venue} · {buy_safe} · orders `{buy.completed_orders or 0}` · done `{buy.completion_rate_pct or 0:.1f}%` · {_payment_window_text(buy)}",
-            f"   Sell: `{sell.price:.4f}` {opp.fiat} · {sell.venue} · {sell_safe} · orders `{sell.completed_orders or 0}` · done `{sell.completion_rate_pct or 0:.1f}%` · {_payment_window_text(sell)}",
+            f"   Buy: `{buy.price:.4f}` {opp.fiat} · {buy.venue} · {buy_safe} · orders `{buy.completed_orders or 0}` · done `{buy.completion_rate_pct or 0:.1f}%` · {_payment_window_text(buy)}{buy_med_suffix}",
+            f"   Sell: `{sell.price:.4f}` {opp.fiat} · {sell.venue} · {sell_safe} · orders `{sell.completed_orders or 0}` · done `{sell.completion_rate_pct or 0:.1f}%` · {_payment_window_text(sell)}{sell_med_suffix}",
             f"   Size: up to `{opp.executable_fiat:,.0f}` {opp.fiat} ≈ `{opp.executable_asset:,.2f}` {opp.asset}; gross PnL ≈ `{opp.gross_profit_fiat:,.0f}` {opp.fiat}",
             _cost_line(opp),
             f"   Payment overlap: `{shared_safe}`",
