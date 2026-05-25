@@ -23,12 +23,15 @@ from p2p_arbitrage import (
     format_p2p_report,
     get_alert_cooldown_sec,
     get_assets,
+    get_button_scan_assets,
+    get_button_scan_fiats,
     get_fiats,
     get_max_results,
     get_min_completion_rate_pct,
     get_min_orders,
     get_min_spread_pct,
     get_pay_types,
+    get_scan_concurrency,
     get_settlement_buffer_pct,
     merchant_only,
     okx_enabled,
@@ -406,6 +409,185 @@ def _parse_p2p_command(text: str) -> tuple[str, str, tuple[str, ...]]:
     return asset, fiat, pay_types
 
 
+def _has_explicit_pair(text: str) -> bool:
+    """`/p2p USDT RUB` (explicit) или `🧭 P2P арбитраж` (button) ?
+
+    Только командный синтаксис `/p2p ...` с хотя бы одним тикерным
+    аргументом считается explicit single-pair режимом. Persistent
+    button шлёт текст без `/`-префикса → multi-pair scan.
+    """
+    parts = (text or "").split()
+    if len(parts) < 2:
+        return False
+    first = parts[0]
+    # Persistent button = текст без `/`-префикса → button mode.
+    if not first.startswith("/"):
+        return False
+    token = parts[1].strip()
+    if not token:
+        return False
+    # Тикер: 2-6 ASCII букв, любой регистр (USDT/usdt/Usdt).
+    if not token.isascii():
+        return False
+    if not (2 <= len(token) <= 6):
+        return False
+    return token.isalpha()
+
+
+def _filter_pay_types_for_fiat(pay_types: tuple[str, ...], fiat: str) -> tuple[str, ...]:
+    """В multi-pair scan не передаём RU-banks-фильтр в TRY/ARS/etc.
+
+    Юзер мог установить ``P2P_ARBITRAGE_PAY_TYPES=sber,tinkoff`` для RUB —
+    но эти банки не существуют в TRY-маркете, и фильтр оставит 0 ads.
+    Поэтому для multi-pair: если ``pay_types`` непуст и fiat ≠ RUB,
+    игнорируем pay_types для этой пары (graceful degradation).
+    """
+    if not pay_types:
+        return ()
+    if fiat.upper() == "RUB":
+        return pay_types
+    return ()
+
+
+async def scan_all_pairs(
+    *,
+    assets: tuple[str, ...] | None = None,
+    fiats: tuple[str, ...] | None = None,
+    pay_types: tuple[str, ...] = (),
+    rows: int = DEFAULT_ROWS_PER_SIDE,
+    concurrency: int | None = None,
+    per_pair_timeout_sec: float = 8.0,
+) -> tuple[list[tuple[str, str, P2POpportunity]], list[str], str]:
+    """Multi-pair P2P scan: проходит по всем парам (asset × fiat) параллельно.
+
+    Возвращает:
+      • list[(asset, fiat, opportunity)] — все opportunities со всех пар,
+        отсортированные по net_spread_pct desc (топ снаружи)
+      • list[str] — accumulated errors per pair
+      • str — source description ("Binance + Bybit")
+
+    Юзер: «расширить p2p до всех валютных пар в мире — а то кнопка не
+    показывает выгоду». Раньше button сканировал ОДНУ пару USDT/RUB и в
+    эффективном RU-market'е почти никогда не находил арб. Теперь сканер
+    проходит ~60 пар (CIS + LATAM + MENA + AFRICA × USDT/USDC/FDUSD) и
+    показывает топ-N арб-окон по всему миру.
+
+    Параллелизм: semaphore=N (default 5) ограничивает одновременные
+    fetch'и чтобы не словить 429 от Binance/Bybit. Per-pair timeout
+    защищает от висящих запросов в slow-fiat-markets.
+    """
+    assets_list = assets if assets is not None else get_button_scan_assets()
+    fiats_list = fiats if fiats is not None else get_button_scan_fiats()
+    sem = asyncio.Semaphore(max(1, concurrency if concurrency is not None else get_scan_concurrency()))
+
+    aggregated: list[tuple[str, str, P2POpportunity]] = []
+    errors: list[str] = []
+    sources_seen: list[str] = []
+
+    async def _scan_one_pair(asset: str, fiat: str) -> None:
+        async with sem:
+            try:
+                buy_ads, sell_ads, pair_errors, source = await asyncio.wait_for(
+                    fetch_p2p_ads(
+                        asset=asset,
+                        fiat=fiat,
+                        pay_types=_filter_pay_types_for_fiat(pay_types, fiat),
+                        rows=rows,
+                    ),
+                    timeout=per_pair_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                errors.append(f"{asset}/{fiat}: timeout {per_pair_timeout_sec}s")
+                return
+            except Exception as e:
+                errors.append(f"{asset}/{fiat}: fetch failed: {e}")
+                return
+
+            if source and source not in sources_seen:
+                sources_seen.append(source)
+            for pe in pair_errors:
+                errors.append(f"{asset}/{fiat}: {pe}")
+
+            try:
+                opps = find_p2p_opportunities(
+                    buy_ads,
+                    sell_ads,
+                    min_spread_pct=get_min_spread_pct(),
+                    settlement_buffer_pct=get_settlement_buffer_pct(),
+                    min_completion_rate_pct=get_min_completion_rate_pct(),
+                    min_orders=get_min_orders(),
+                    merchant_required=merchant_only(),
+                    preferred_pay_types=_filter_pay_types_for_fiat(pay_types, fiat),
+                    max_results=get_max_results(),
+                )
+            except Exception as e:
+                errors.append(f"{asset}/{fiat}: find_opportunities error: {e}")
+                return
+
+            for opp in opps:
+                aggregated.append((asset, fiat, opp))
+
+    await asyncio.gather(
+        *(_scan_one_pair(a, f) for a in assets_list for f in fiats_list),
+        return_exceptions=False,
+    )
+
+    # Sort by raw spread (highest profit first).
+    aggregated.sort(key=lambda triple: triple[2].net_spread_pct, reverse=True)
+    source_str = " + ".join(sources_seen) or "Binance"
+    return aggregated, errors, source_str
+
+
+def _format_multipair_report(
+    triples: list[tuple[str, str, P2POpportunity]],
+    *,
+    pair_count_scanned: int,
+    errors: list[str],
+    source: str,
+    top_n: int = 10,
+) -> str:
+    """Компактный мульти-пар отчёт: топ-N opportunities + сводка."""
+    if not triples:
+        return (
+            f"*🧭 P2P arbitrage scanner*\n\n"
+            f"Сканировал {pair_count_scanned} пар ({source}) — пока никаких "
+            f"арб-окон выше порога нет.\n\n"
+            f"Источники: {source}.\n"
+            f"_Попробуй позже или /p2p USDT TRY (или другую пару напрямую)._"
+        )
+
+    lines: list[str] = [
+        f"*🧭 P2P arbitrage — топ-{min(top_n, len(triples))} окон по миру*",
+        "",
+        f"_Сканировал {pair_count_scanned} пар ({source}) — найдено "
+        f"{len(triples)} opportunities._",
+        "",
+    ]
+    for idx, (asset, fiat, opp) in enumerate(triples[:top_n], start=1):
+        # Per-line: ранг + пара + спред + площадки. Компактный single-line.
+        buy_src = opp.buy_ad.venue or "?"
+        sell_src = opp.sell_ad.venue or "?"
+        # Сокращаем «Binance P2P» / «Bybit P2P» до «Binance»/«Bybit».
+        buy_src = buy_src.replace(" P2P", "")
+        sell_src = sell_src.replace(" P2P", "")
+        lines.append(
+            f"`{idx:2d}.` *{asset}/{fiat}* — *{opp.net_spread_pct:+.2f}%* "
+            f"({buy_src}→{sell_src})  "
+            f"buy {opp.buy_ad.price:,.4g} → sell {opp.sell_ad.price:,.4g}"
+        )
+
+    lines.append("")
+    lines.append(
+        f"_Для деталей по конкретной паре: `/p2p USDT RUB`, "
+        f"`/p2p USDT TRY`, и т.д._"
+    )
+    if errors:
+        skipped = len(errors)
+        lines.append("")
+        lines.append(f"_⚠ {skipped} пар пропущено (timeout/нет ads/etc)._")
+    return "\n".join(lines)
+
+
 async def _answer_md(message: Message, text: str) -> None:
     try:
         await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
@@ -422,7 +604,14 @@ async def handle_p2p_command(message: Message) -> None:
         )
         return
 
-    asset, fiat, pay_types = _parse_p2p_command(message.text or "")
+    raw_text = message.text or ""
+    # Button click (persistent keyboard, без явных аргументов) — multi-pair
+    # глобальный скан. /p2p USDT RUB — single-pair (backward compat).
+    if not _has_explicit_pair(raw_text):
+        await _handle_p2p_multipair(message)
+        return
+
+    asset, fiat, pay_types = _parse_p2p_command(raw_text)
     source_hint = "Binance + Bybit + OKX" if (bybit_enabled() or okx_enabled()) else "Binance"
     wait_msg = await message.answer(f"⏳ Сканирую P2P стакан {source_hint}...")
     buy_ads, sell_ads, errors, source = await fetch_p2p_ads(
@@ -493,6 +682,104 @@ async def handle_p2p_command(message: Message) -> None:
             await persist_opportunities_for_audit(send_ops)
     except Exception:
         logger.exception("failed to persist P2P opportunities for self-audit")
+
+
+async def _handle_p2p_multipair(message: Message) -> None:
+    """Button-click handler: multi-pair scan ~60 пар, топ-N opportunities.
+
+    Юзер: «расширить p2p до всех валютных пар в мире — кнопка ничего
+    не показывает». Раньше button = single-pair USDT/RUB scan = почти
+    никогда не находил арб (RU market эффективен). Теперь = global scan
+    по высокоарбитражным регионам.
+    """
+    assets_list = get_button_scan_assets()
+    fiats_list = get_button_scan_fiats()
+    pay_types = get_pay_types()
+    pair_count = len(assets_list) * len(fiats_list)
+
+    source_hint = "Binance + Bybit" if bybit_enabled() else "Binance"
+    wait_msg = await message.answer(
+        f"⏳ Сканирую {pair_count} P2P пар по миру ({source_hint})...\n"
+        f"_~10-15 сек, не уходи._",
+        parse_mode="Markdown",
+    )
+
+    try:
+        triples, errors, source = await scan_all_pairs(
+            assets=assets_list,
+            fiats=fiats_list,
+            pay_types=pay_types,
+        )
+    except Exception as e:
+        logger.exception("p2p multipair scan failed")
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await _answer_md(message, f"*🧭 P2P arbitrage*\n\nСканер упал: `{e}`")
+        return
+
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+
+    # Dedup через JsonAlertStore: каждое opportunity получает свой ключ,
+    # чтобы не спамить одинаковыми окнами в течение cooldown'а.
+    store = JsonAlertStore()
+    cooldown = get_alert_cooldown_sec()
+    surfaced: list[tuple[str, str, P2POpportunity]] = []
+    surfaced_keys: list[str] = []
+    suppressed = 0
+    for asset, fiat, opp in triples:
+        key = opportunity_key(opp)
+        if store.should_alert(key, cooldown):
+            surfaced.append((asset, fiat, opp))
+            surfaced_keys.append(key)
+        else:
+            suppressed += 1
+
+    if not surfaced:
+        await _answer_md(
+            message,
+            _format_multipair_report(
+                [],
+                pair_count_scanned=pair_count,
+                errors=errors,
+                source=source,
+            )
+            + (
+                f"\n\n_({suppressed} окон подавлено cooldown'ом {cooldown}s.)_"
+                if suppressed
+                else ""
+            ),
+        )
+        return
+
+    text = _format_multipair_report(
+        surfaced,
+        pair_count_scanned=pair_count,
+        errors=errors,
+        source=source,
+    )
+    if suppressed:
+        text += f"\n_({suppressed} окон подавлено cooldown'ом {cooldown}s.)_"
+    await _answer_md(message, text)
+    for key in surfaced_keys:
+        try:
+            store.record_alert(key)
+        except Exception:
+            logger.exception("failed to record alert %s", key)
+
+    # Self-audit: персистим все surfaced opportunities, если фича on.
+    try:
+        from p2p_audit import feature_enabled as _audit_enabled
+        from p2p_audit_io import persist_opportunities_for_audit
+
+        if _audit_enabled() and surfaced:
+            await persist_opportunities_for_audit([opp for _, _, opp in surfaced])
+    except Exception:
+        logger.exception("failed to persist multi-pair opportunities for self-audit")
 
 
 async def handle_p2p_audit_command(message: Message) -> None:

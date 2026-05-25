@@ -80,34 +80,42 @@ class TestP2PEnv(unittest.TestCase):
             self.assertEqual(get_assets(), ("USDT", "BTC"))
 
     def test_default_assets_cover_stables_btc_eth_alts(self):
-        # Дефолт расширен на 7 активов: USDT/USDC/DAI (стейблы), BTC/ETH
-        # (крупные), SOL/LTC (альты). Пользователь явно попросил LTC/SOL/DAI в
-        # дополнение к базовым.
+        # Дефолт расширен на 10 активов: USDT/USDC/FDUSD/DAI (стейблы),
+        # BTC/ETH/BNB (крупные), SOL/TRX/LTC (альты). Юзер явно попросил
+        # «расширить p2p до всех валютных пар в мире».
         with patch.dict(os.environ, {}, clear=True):
             assets = get_assets()
-            self.assertEqual(
-                set(assets),
-                {"USDT", "USDC", "BTC", "ETH", "DAI", "SOL", "LTC"},
-            )
+            # Должны быть стейблы (USDT/USDC), большая крипта (BTC/ETH),
+            # ликвидные альты (SOL/LTC) — это baseline coverage.
+            for required in ("USDT", "USDC", "BTC", "ETH", "SOL", "LTC"):
+                self.assertIn(required, assets, f"{required} missing from defaults")
             self.assertEqual(assets, DEFAULT_P2P_ASSETS)
+            self.assertGreaterEqual(len(assets), 7)
 
     def test_default_fiats_cover_majors_and_cis(self):
-        # Фиаты: RUB/USD/EUR (лидеры) + KZT/UAH/BYN (CIS-зонт для пользователей
-        # Казахстана). Расширено по явному запросу пользователя.
+        # Фиаты раскрыты до global coverage: CIS (RUB/UAH/KZT/BYN) + LATAM
+        # (ARS/VES/COP/...) + ASIA (VND/THB/IDR/...) + MENA (TRY/AED/...) +
+        # AFRICA (NGN/KES/...) + EUROPE + MAJORS. Юзер: «расширить p2p до
+        # всех валютных пар в мире — кнопка ничего не показывает».
         with patch.dict(os.environ, {}, clear=True):
             fiats = get_fiats()
-            self.assertEqual(
-                set(fiats),
-                {"RUB", "USD", "EUR", "KZT", "UAH", "BYN"},
-            )
+            # CIS-зонт + США/ЕС — обязательны (baseline для RU/KZ юзеров).
+            for required in ("RUB", "USD", "EUR", "KZT", "UAH", "BYN"):
+                self.assertIn(required, fiats, f"{required} missing from defaults")
+            # Топ high-arb регионы должны быть включены (TRY/ARS/NGN/VND).
+            for arb_market in ("TRY", "ARS", "NGN", "VND"):
+                self.assertIn(arb_market, fiats, f"{arb_market} missing — high-arb market")
             self.assertEqual(fiats, DEFAULT_P2P_FIATS)
+            self.assertGreaterEqual(len(fiats), 30, "global coverage <30 фиатов")
 
-    def test_default_cartesian_product_yields_42_pairs(self):
-        # Санити-тест: 7 × 6 = 42, чтобы не выросло незаметно в 200+.
+    def test_default_cartesian_product_yields_global_coverage(self):
+        # Раньше было 42 пары (7×6). Теперь ~10 × ~55 = ~550 пар для global
+        # scheduler-scan'а. Санити: чтобы юзер реально видел арб-окна по
+        # миру, нужно ≥ 200 пар покрытия.
         with patch.dict(os.environ, {}, clear=True):
             assets = get_assets()
             fiats = get_fiats()
-            self.assertEqual(len(assets) * len(fiats), 42)
+            self.assertGreaterEqual(len(assets) * len(fiats), 200)
 
     def test_assets_env_override_still_works(self):
         # Override через P2P_ARBITRAGE_ASSETS по-прежнему сужает список.
