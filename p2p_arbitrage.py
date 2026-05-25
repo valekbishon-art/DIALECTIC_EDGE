@@ -19,19 +19,78 @@ _UNKNOWN_BYBIT_ID_LOG_LIMIT = 50
 _unknown_bybit_ids_logged: set[str] = set()
 
 
-# По умолчанию сканер смотрит широко: стейблы (USDT/USDC/DAI) + крупные
-# монеты (BTC/ETH) + ликвидные альты (SOL/LTC). По фиатам — лидеры RU/US/EU
-# плюс полный CIS-зонт (KZT/UAH/BYN) для расширения географии (пользователь
-# работает с Казахстаном и хочет видеть локальные окна). Override через
-# P2P_ARBITRAGE_ASSETS / P2P_ARBITRAGE_FIATS если нужно сузить или сместить
-# фокус. Сканер graceful-degrade'ит если венчур не торгует пару — просто
-# пропустит её без ошибки.
-DEFAULT_P2P_ASSETS = ("USDT", "USDC", "BTC", "ETH", "DAI", "SOL", "LTC")
-DEFAULT_P2P_FIATS = ("RUB", "USD", "EUR", "KZT", "UAH", "BYN")
-# Inter-pair дроссель: 7×6=42 пары × 2 venue × 2 side = 168 HTTP-запросов на
-# скан. Чтобы не словить 429 от Binance/Bybit, scheduler спит 0.3-0.5s между
-# парами. Override через P2P_ARBITRAGE_SCAN_THROTTLE_SEC.
-DEFAULT_SCAN_THROTTLE_SEC = 0.35
+# По умолчанию сканер смотрит ШИРОКО — юзер: «расширить p2p до всех валютных
+# пар в мире хз, а то щас вообще смысла нет в этой кнопке, нужно хоть что-то
+# показывала бы хоть какую-нибудь выгоду». Поэтому ассеты = все ликвидные
+# стейблы + крупная крипта + хайвол альты; фиаты = global coverage по
+# регионам где P2P-spread исторически выше эффективности orderbook'а
+# (TRY/ARS/VES/NGN — chronic inflation, P2P премия 2-5%; INR/IDR/VND —
+# capital controls; UAH/KZT — постсоветские рейлы).
+#
+# Override через P2P_ARBITRAGE_ASSETS / P2P_ARBITRAGE_FIATS если нужно
+# сузить или сместить фокус. Сканер graceful-degrade'ит если венчур не
+# торгует пару — просто пропустит её без ошибки.
+DEFAULT_P2P_ASSETS: tuple[str, ...] = (
+    "USDT",   # доминантный стейбл, ~80% P2P volume
+    "USDC",   # второй стейбл, более регуляторный
+    "FDUSD",  # First Digital — растёт на Binance
+    "BTC",    # самая ликвидная крипта на P2P
+    "ETH",    # вторая по ликвидности
+    "BNB",    # дешёвый transfer fee → удобно для арб-loops
+    "SOL",    # высоковолатильная альта
+    "TRX",    # дешёвый USDT-сеть-кошелёк (TRC20)
+    "DAI",    # MakerDAO стейбл
+    "LTC",    # legacy высокая ликвидность
+)
+# Региональные группы фиатов — для P2P_ARBITRAGE_FIAT_GROUP=cis|latam|asia|...
+# DEFAULT_P2P_FIATS = объединение всех (global coverage). Юзер можно
+# переключить на одну регион-группу через env, чтобы сузить скан.
+P2P_FIAT_GROUPS: dict[str, tuple[str, ...]] = {
+    # СНГ + соседи: исторически высокая P2P премия (контроль капитала,
+    # санкции, спрос на USDT). Юзер работает с Казахстаном.
+    "cis": ("RUB", "UAH", "KZT", "BYN", "AMD", "GEL", "AZN", "UZS"),
+    # Латинская Америка: chronic inflation (ARS 100%+, VES hyperinflation)
+    # → P2P премия 5-15% реальна. COP/MXN/PEN/CLP/BRL — крупные рынки.
+    "latam": ("ARS", "VES", "COP", "MXN", "PEN", "CLP", "BRL", "BOB"),
+    # Азия: capital controls (CNY/INR) + huge volume markets (IDR/VND/THB).
+    "asia": ("VND", "THB", "IDR", "INR", "PKR", "PHP", "MYR", "BDT"),
+    # MENA + Турция: TRY — крупнейший P2P-market в мире после CIS,
+    # инфляция 60-80%. AED/SAR — стабильные dollar-pegs (мало арба).
+    "mena": ("TRY", "AED", "SAR", "EGP", "ILS", "MAD", "TND", "LBP"),
+    # Африка: NGN (Naira) — huge P2P премия из-за CBN-ограничений;
+    # KES/GHS/ZAR/UGX — растущие рынки.
+    "africa": ("NGN", "KES", "GHS", "ZAR", "UGX", "TZS"),
+    # Европа (без EUR): малая P2P премия в развитых, но PLN/TRY-граница
+    # иногда даёт окна. GBP/CHF/SEK/NOK — для completeness.
+    "europe": ("GBP", "CHF", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON"),
+    # Big reserve currencies (USD/EUR/JPY/etc) — мало арба, но baseline.
+    "fiat_majors": ("USD", "EUR", "JPY", "CNY", "HKD", "SGD", "KRW", "TWD"),
+}
+# По умолчанию объединяем все группы (~50 фиатов) — даёт «global coverage».
+# Юзер может сузить через P2P_ARBITRAGE_FIAT_GROUP=cis (только CIS) или
+# P2P_ARBITRAGE_FIATS=RUB,USD (полный override).
+def _build_default_fiats() -> tuple[str, ...]:
+    """Дедуплицированное объединение всех групп для global-mode скана."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for group_key in ("cis", "latam", "asia", "mena", "africa", "europe", "fiat_majors"):
+        for fiat in P2P_FIAT_GROUPS.get(group_key, ()):
+            if fiat not in seen:
+                seen.add(fiat)
+                result.append(fiat)
+    return tuple(result)
+
+
+DEFAULT_P2P_FIATS: tuple[str, ...] = _build_default_fiats()
+# Inter-pair дроссель: 10×~50=500 пар × 2 venue × 2 side = 2000 HTTP-запросов
+# на полный скан. С semaphore=5 параллелизма и 0.15s sleep получаем ~60s
+# walltime на full-global scan — это окей для scheduler-loop'а раз в 30 мин.
+# Для on-demand button scan мы режем scope (см. get_button_scan_fiats).
+DEFAULT_SCAN_THROTTLE_SEC = 0.15
+# Параллелизм multi-pair скана — semaphore для async asyncio.gather. Чем
+# выше, тем быстрее, но риск 429. Default 5 — компромисс между скоростью и
+# rate limits Binance/Bybit P2P API (~10 req/sec/IP).
+DEFAULT_SCAN_CONCURRENCY = 5
 DEFAULT_MIN_SPREAD_PCT = 1.0
 DEFAULT_SETTLEMENT_BUFFER_PCT = 0.35
 DEFAULT_BANK_FEE_PCT = 0.0
@@ -289,7 +348,74 @@ def get_assets() -> tuple[str, ...]:
 
 
 def get_fiats() -> tuple[str, ...]:
-    return _env_csv("P2P_ARBITRAGE_FIATS", DEFAULT_P2P_FIATS)
+    """Активный список фиатов для сканирования.
+
+    Приоритет резолва:
+      1. ``P2P_ARBITRAGE_FIATS=RUB,USD,...`` — полный явный override (всегда выигрывает)
+      2. ``P2P_ARBITRAGE_FIAT_GROUP=cis|latam|asia|mena|africa|europe|fiat_majors`` — одна region-группа
+      3. ``DEFAULT_P2P_FIATS`` — global coverage (~50 фиатов из всех групп)
+    """
+    raw = os.getenv("P2P_ARBITRAGE_FIATS", "").strip()
+    if raw:
+        return _env_csv("P2P_ARBITRAGE_FIATS", DEFAULT_P2P_FIATS)
+
+    group = os.getenv("P2P_ARBITRAGE_FIAT_GROUP", "").strip().lower()
+    if group and group in P2P_FIAT_GROUPS:
+        return P2P_FIAT_GROUPS[group]
+
+    return DEFAULT_P2P_FIATS
+
+
+def get_button_scan_fiats() -> tuple[str, ...]:
+    """Sub-список фиатов для on-demand button scan'а (быстрая выдача).
+
+    Полный global scan (~50 фиатов × 10 ассетов = 500 пар) занимает ~60s
+    walltime даже с semaphore=5. Это окей для scheduler-loop'а раз в 30 мин,
+    но плохо для button-click (юзер ожидает результат за 5-15s).
+
+    Поэтому button по умолчанию сужается до:
+      • топ-арб-фиатов (CIS + LATAM + TRY/NGN) = 20 фиатов
+      • стейблов (USDT/USDC/FDUSD) — где P2P премия живёт = 3 ассета
+      = ~60 пар × 4 HTTP/пара = 240 HTTP-запросов / button click ≈ 8-12s
+    Override через ``P2P_BUTTON_FIATS=RUB,USD,TRY,...``.
+    """
+    raw = os.getenv("P2P_BUTTON_FIATS", "").strip()
+    if raw:
+        return _env_csv("P2P_BUTTON_FIATS", DEFAULT_P2P_FIATS)
+    # Default: high-arb-potential регионы (без low-arb fiat_majors/europe).
+    seen: set[str] = set()
+    out: list[str] = []
+    for grp in ("cis", "latam", "mena", "africa"):
+        for f in P2P_FIAT_GROUPS.get(grp, ()):
+            if f not in seen:
+                seen.add(f)
+                out.append(f)
+    return tuple(out)
+
+
+def get_button_scan_assets() -> tuple[str, ...]:
+    """Sub-список ассетов для on-demand button scan'а.
+
+    Стейблы (USDT/USDC/FDUSD) — концентрируют 95% P2P-объёма, поэтому
+    button по умолчанию сужается до них для быстрой выдачи. Override
+    через ``P2P_BUTTON_ASSETS=USDT,USDC,BTC,...``.
+    """
+    raw = os.getenv("P2P_BUTTON_ASSETS", "").strip()
+    if raw:
+        return _env_csv("P2P_BUTTON_ASSETS", DEFAULT_P2P_ASSETS)
+    return ("USDT", "USDC", "FDUSD")
+
+
+def get_scan_concurrency() -> int:
+    """Semaphore-параллелизм multi-pair скана. Default 5 (см. DEFAULT_SCAN_CONCURRENCY)."""
+    raw = os.getenv("P2P_SCAN_CONCURRENCY", "").strip()
+    if not raw:
+        return DEFAULT_SCAN_CONCURRENCY
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SCAN_CONCURRENCY
+    return max(1, min(20, value))
 
 
 def get_scan_throttle_sec() -> float:
