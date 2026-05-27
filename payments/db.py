@@ -30,6 +30,27 @@ def _is_enabled() -> bool:
     return bool(DATABASE_URL)
 
 
+def _admin_ids() -> set[int]:
+    """Parse `ADMIN_IDS` env (comma-separated). Empty -> empty set."""
+    raw = os.getenv("ADMIN_IDS", "")
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for chunk in raw.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            out.add(int(chunk))
+        except ValueError:
+            continue
+    return out
+
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in _admin_ids()
+
+
 def _normalize_url(url: str) -> tuple[str, dict]:
     """Convert a libpq-style PostgreSQL URL to one asyncpg/SQLAlchemy accept.
 
@@ -198,7 +219,12 @@ async def grant_vip(user_id: int, days: int = 30) -> Optional[datetime]:
 
 
 async def check_vip(user_id: int) -> bool:
-    """Check if user has active VIP subscription."""
+    """Check if user has active VIP subscription.
+
+    Admins (`ADMIN_IDS` env) always pass without DB lookup.
+    """
+    if _is_admin(user_id):
+        return True
     if not _is_enabled():
         return True  # No paywall when Postgres is off
     try:
@@ -233,7 +259,17 @@ async def check_vip(user_id: int) -> bool:
 
 
 async def get_vip_info(user_id: int) -> dict:
-    """Get VIP status details for display."""
+    """Get VIP status details for display.
+
+    Admins (`ADMIN_IDS` env) always shown as VIP with no expiry.
+    """
+    if _is_admin(user_id):
+        return {
+            "is_vip": True,
+            "subscription_end": None,
+            "pg_enabled": _is_enabled(),
+            "is_admin": True,
+        }
     if not _is_enabled():
         return {"is_vip": True, "subscription_end": None, "pg_enabled": False}
     try:
