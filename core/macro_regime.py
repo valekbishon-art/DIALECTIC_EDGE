@@ -2,7 +2,7 @@
 macro_regime.py — Макро-режим рынка (равно как «фон»).
 
 Считаем три независимых сигнала, объединяем в один MacroRegime:
-1. Тренд S&P (через SPY): EMA200 + SMA50 + текущая цена.
+1. Тренд S&P 500 (через ^GSPC): EMA200 + SMA50 + текущая цена.
 2. Breadth: % акций S&P-500 выше 50DMA (тикер `^A50` на Yahoo Finance,
    при ошибке — fallback-прокси по корзине крупных ETF/Mag-7).
 3. DXY (доллар) — растёт вверх → headwind для рисковых активов,
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _time
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -167,7 +168,7 @@ async def detect_macro_regime() -> MacroRegime:
     """Считает макро-режим. Никогда не бросает: при сетевых сбоях возвращает
     NEUTRAL с пометкой UNKNOWN."""
     async with aiohttp.ClientSession() as session:
-        spy_task = _fetch_yahoo_closes(session, "SPY", range_="2y", interval="1d")
+        spy_task = _fetch_yahoo_closes(session, "%5EGSPC", range_="2y", interval="1d")
         dxy_task = _fetch_yahoo_closes(session, "DX-Y.NYB", range_="1y", interval="1d")
         breadth_task = _fetch_breadth(session)
         spy_closes, dxy_closes, (breadth_pct, breadth_src) = await asyncio.gather(
@@ -285,8 +286,6 @@ async def detect_macro_regime() -> MacroRegime:
 
 # ─── Кэш ─────────────────────────────────────────────────────────────────────
 # Не дёргаем Yahoo каждый цикл — макро меняется медленно. TTL 30 минут.
-
-import time as _time
 
 _cache_value: Optional[MacroRegime] = None
 _cache_ts: float = 0.0

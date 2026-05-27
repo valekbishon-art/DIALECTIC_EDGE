@@ -936,6 +936,13 @@ def _extract_key_trigger(report_text: str) -> str:
             match = re.search(pattern, haystack, re.IGNORECASE)
             if match:
                 val = _clean_line(match.group(0))
+                # Strip «КЛЮЧЕВОЙ ТРИГГЕР:» header so callers don't duplicate it.
+                val = re.sub(
+                    r"^ключевой\s+триггер\s*:?\s*",
+                    "",
+                    val,
+                    flags=re.IGNORECASE,
+                ).strip()
                 if len(val) > 5:
                     return val[:200]
     return ""
