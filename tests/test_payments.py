@@ -28,6 +28,46 @@ class TestPaymentsDbHelpers(unittest.TestCase):
         db_mod.DATABASE_URL = orig
 
 
+class TestNormalizeUrl(unittest.TestCase):
+    """_normalize_url translates libpq-style URLs for asyncpg."""
+
+    def test_neon_url(self):
+        from payments.db import _normalize_url
+        url, args = _normalize_url(
+            "postgresql://u:p@host/db?sslmode=require"
+        )
+        self.assertTrue(url.startswith("postgresql+asyncpg://"))
+        self.assertNotIn("sslmode", url)
+        self.assertEqual(args, {"ssl": "require"})
+
+    def test_postgres_prefix(self):
+        from payments.db import _normalize_url
+        url, args = _normalize_url("postgres://u:p@host/db?sslmode=verify-full")
+        self.assertTrue(url.startswith("postgresql+asyncpg://"))
+        self.assertEqual(args, {"ssl": "verify-full"})
+
+    def test_no_sslmode(self):
+        from payments.db import _normalize_url
+        url, args = _normalize_url("postgresql://u:p@host/db")
+        self.assertTrue(url.startswith("postgresql+asyncpg://"))
+        self.assertEqual(args, {})
+
+    def test_sslmode_disable(self):
+        from payments.db import _normalize_url
+        _, args = _normalize_url("postgresql://u:p@host/db?sslmode=disable")
+        self.assertEqual(args, {"ssl": False})
+
+    def test_drops_channel_binding_keeps_others(self):
+        from payments.db import _normalize_url
+        url, args = _normalize_url(
+            "postgresql://u:p@host/db"
+            "?sslmode=require&channel_binding=require&application_name=app"
+        )
+        self.assertEqual(args, {"ssl": "require"})
+        self.assertIn("application_name=app", url)
+        self.assertNotIn("channel_binding", url)
+
+
 class TestCryptoPayHelpers(unittest.TestCase):
     """Unit tests for crypto_pay module."""
 
