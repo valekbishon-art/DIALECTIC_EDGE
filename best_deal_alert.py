@@ -1,16 +1,25 @@
 """
-best_deal_alert.py — push-алерт лучшего setup'а из `core/signal_scorer.rank_signals`.
+best_deal_alert.py — push-алерт лучших setup'ов из `core/signal_scorer.rank_signals`.
 
-Идея: команда `/signal` уже даёт top-1 setup по score 0-100, но пользователь должен
-сам её нажать. Юзер: «если лучшая сделка набирает свои 60 из 100 очков чтобы она
-приходила пользователю сама а не по вызову кнопки».
+Идея: команда `/signal` уже даёт top-N setups по score 0-100, но пользователь
+должен сам её нажать. Юзер: «если лучшая сделка набирает свои 60 из 100 очков
+чтобы она приходила пользователю сама а не по вызову кнопки».
 
 Этот модуль:
   - Раз в `INTERVAL_SEC` (default 1h) тянет live-prices и пускает `rank_signals`.
-  - Если `top` есть (score ≥ DEFAULT_MIN_SCORE=60) — шлёт алерт подписчикам.
+  - Если есть tradable_setups (score ≥ DEFAULT_MIN_SCORE=60) — шлёт алерт
+    подписчикам с **топ-N** (default 3) setup'ами в одном сообщении.
   - Анти-спам: пара (asset, direction) не отправляется чаще раз в `COOLDOWN_HOURS`,
     кроме случая когда score прыгнул на ≥SCORE_BUMP пунктов (significant strengthening).
+    Если хотя бы 1 из N setup'ов «новый» (cooldown прошёл или score bump) — шлём
+    батч из ВСЕХ текущих топ-N. Иначе — пропуск.
   - Никакой автоматической торговли. Только информация + дисклеймер.
+
+Юзер: «Лучшая сделка должна включать в себя больше 1 актива, хотя бы 2-3».
+Раньше: per-юзер `user_top = setup; break` после первого совпадения — 1 сетап.
+Сейчас: per-юзер собираем до `BEST_DEAL_ALERT_TOP_N` setup'ов (default 3) из
+`tradable_setups`, фильтруем по allowed-list, рендерим батчем с медалями
+🥇🥈🥉.
 
 Никогда не падает целиком — каждая ошибка логируется и итерация пропускается.
 """
@@ -36,6 +45,11 @@ DEFAULT_SCORE_BUMP = 15
 
 # Интервал между проверками. Час — компромисс между «свежо» и «не зашумлять».
 DEFAULT_INTERVAL_SEC = 3600
+
+# Сколько setup'ов показываем в одном алерте (1..5 разумно). Юзер: «лучшая
+# сделка должна включать в себя 2-3 актива». 3 — золотая середина: видно
+# top-3 setup без перегруза.
+DEFAULT_TOP_N = 3
 
 
 def _env_int(name: str, default: int, *, min_val: int = 0, max_val: int = 10**9) -> int:
@@ -81,6 +95,16 @@ def get_score_bump() -> int:
     )
 
 
+def get_top_n() -> int:
+    """Сколько setup'ов рендерим в одном auto-push сообщении (1..5)."""
+    return _env_int(
+        "BEST_DEAL_ALERT_TOP_N",
+        DEFAULT_TOP_N,
+        min_val=1,
+        max_val=5,
+    )
+
+
 @dataclass(frozen=True)
 class _LastAlert:
     asset: str
@@ -89,48 +113,86 @@ class _LastAlert:
     fired_at: datetime
 
 
-def _format_alert(setup) -> str:
-    """Рендерит SignalSetup в Telegram-сообщение (Markdown).
+_MEDALS: tuple[str, ...] = ("🥇", "🥈", "🥉")
 
-    Поля setup: asset, direction (LONG/SHORT), score, entry, stop, target, sigma_1d_pct,
-                rr (risk/reward), reason (короткое объяснение).
+
+def _format_single_setup(setup, *, idx: int, total: int) -> list[str]:
+    """Один setup-блок в формате батч-алерта. Возвращает list строк.
+
+    idx начинается с 1. Если total == 1 — без медали, иначе медаль по
+    позиции (🥇/🥈/🥉/🔸).
     """
-    direction_emoji = "🟢" if setup.direction == "LONG" else "🔴"
     arrow = "↑" if setup.direction == "LONG" else "↓"
-    sigma_str = (
-        f" · σ̂₁d={setup.sigma_1d_pct:.2f}%"
-        if getattr(setup, "sigma_1d_pct", None) is not None
-        else ""
-    )
-    rr_str = (
-        f" · R/R={setup.rr:.2f}"
-        if getattr(setup, "rr", None) is not None
-        else ""
-    )
+    direction_emoji = "🟢" if setup.direction == "LONG" else "🔴"
+    sigma = getattr(setup, "sigma_1d_pct", None)
+    rr = getattr(setup, "rr", None)
+    # `rank_signals.SignalSetup.rr_ratio` — fallback если поле `rr` отсутствует.
+    if rr is None:
+        rr = getattr(setup, "rr_ratio", None)
     reason = getattr(setup, "reason", "") or ""
+    if not reason:
+        # SignalSetup использует поле `reasons` (list); join первые 2 ради краткости.
+        reasons_list = getattr(setup, "reasons", None) or []
+        if isinstance(reasons_list, (list, tuple)) and reasons_list:
+            reason = "; ".join(str(r) for r in reasons_list[:2])
 
-    lines = [
-        f"{direction_emoji} *AUTO-PUSH: лучший setup score ≥ 60*",
-        f"_{datetime.now().strftime('%d.%m.%Y %H:%M UTC')}_",
-        "",
-        f"*{setup.asset}* {arrow} *{setup.direction}* · score *{setup.score}/100*{sigma_str}{rr_str}",
-        f"Entry: `${setup.entry:,.4f}`  ·  Stop: `${setup.stop:,.4f}`  ·  Target: `${setup.target:,.4f}`",
+    sigma_str = f" · σ̂₁d={sigma:.2f}%" if isinstance(sigma, (int, float)) else ""
+    rr_str = f" · R/R={rr:.2f}" if isinstance(rr, (int, float)) else ""
+
+    if total == 1:
+        head_prefix = direction_emoji
+    else:
+        head_prefix = _MEDALS[idx - 1] if 1 <= idx <= len(_MEDALS) else "🔸"
+
+    out: list[str] = [
+        f"{head_prefix} *{setup.asset}* {arrow} *{setup.direction}* · "
+        f"score *{setup.score}/100*{sigma_str}{rr_str}",
+        f"  Entry: `${setup.entry:,.4f}`  ·  Stop: `${setup.stop:,.4f}`  ·  "
+        f"Target: `${setup.target:,.4f}`",
     ]
     if reason:
+        out.append(f"  _{reason}_")
+    return out
+
+
+def _format_alert(setups) -> str:
+    """Рендерит 1..N SignalSetup'ов в Telegram-сообщение (Markdown).
+
+    Принимает как одиночный setup (backward-compat для старых тестов), так
+    и list/tuple setup'ов (новый формат «топ-N»). Если N >= 2 — заголовок
+    «ТОП-N лучших setups», иначе «лучший setup».
+    """
+    if not isinstance(setups, (list, tuple)):
+        setups_list = [setups]
+    else:
+        setups_list = list(setups)
+    if not setups_list:
+        return ""
+
+    total = len(setups_list)
+    if total == 1:
+        head_emoji = "🟢" if setups_list[0].direction == "LONG" else "🔴"
+        title = f"{head_emoji} *AUTO-PUSH: лучший setup score ≥ 60*"
+    else:
+        title = f"⭐ *AUTO-PUSH: ТОП-{total} setups score ≥ 60*"
+
+    lines: list[str] = [
+        title,
+        f"_{datetime.now().strftime('%d.%m.%Y %H:%M UTC')}_",
+        "",
+    ]
+    for idx, setup in enumerate(setups_list, start=1):
+        lines.extend(_format_single_setup(setup, idx=idx, total=total))
         lines.append("")
-        lines.append(f"_{reason}_")
 
     lines.extend(
         [
-            "",
             "⏳ *Горизонт:* 1-3 дня (vol-target sizing, не позиция «купи и держи»).",
             "",
-            "💡 _Это не приказ войти, а информация о лучшем актуальном setup'е по нашей "
-            "скоринговой модели (0-100, ≥60 = проверенный сильный сигнал). Решение — за тобой. "
-            "Если /daily вердикт NEUTRAL — взвесь дважды: эти два сигнала могут противоречить._",
+            "💡 _Это не приказ войти, а наш scoring (0-100, ≥60 = сильный сигнал). "
+            "Решение — за тобой. Если /daily вердикт NEUTRAL — взвесь дважды._",
             "",
-            "⚠️ _Я бы вошёл при подтверждении свечой за уровнем и стопе на месте. "
-            "Это не финансовый совет, своими деньгами рискуешь ты. DYOR._",
+            "⚠️ _Вход — подтверждение свечой за уровнем + стоп на месте. DYOR._",
         ]
     )
     return "\n".join(lines)
@@ -179,9 +241,15 @@ class BestDealAlertSystem:
     async def check_and_alert(self, subscribers: list[dict]) -> int:
         """Один цикл: live-prices → rank_signals → per-user send.
 
-        Каждому подписчику отправляем его *персональный* лучший setup среди
-        активов, на которые он подписан. Если у пользователя пустой список —
-        пропускаем (он явно снял всё).
+        Каждому подписчику собираем **топ-N** setup'ов (`BEST_DEAL_ALERT_TOP_N`,
+        default 3) среди активов, на которые он подписан, и отправляем одним
+        батч-сообщением. Если у пользователя пустой allowed-list (явно «Снять
+        все») — пропускаем.
+
+        Cooldown: per-(user, asset, direction). Шлём батч, если **хотя бы
+        один** из топ-N setup'ов прошёл cooldown (новый или score bump'нул).
+        Иначе — батч пропускаем целиком (чтобы не дублировать тот же расклад
+        каждый час).
         """
         if not subscribers:
             return 0
@@ -216,6 +284,11 @@ class BestDealAlertSystem:
         if not tradable:
             return 0
 
+        top_n_cfg = get_top_n()
+        cooldown_h = get_cooldown_hours()
+        bump = get_score_bump()
+        now = datetime.now()
+
         sent = 0
         for user in subscribers:
             user_id = user.get("user_id")
@@ -225,34 +298,47 @@ class BestDealAlertSystem:
             if allowed is not None and not allowed:
                 # Юзер явно «Снять все» — ничего не шлём.
                 continue
-            user_top = None
+            # Собираем топ-N setup'ов по allowed-фильтру, сохраняя порядок score↓.
+            user_setups: list = []
             for s in tradable:
                 if not isinstance(s, SignalSetup):
                     continue
                 if allowed is not None and s.asset.upper() not in allowed:
                     continue
-                user_top = s
-                break
-            if user_top is None:
+                user_setups.append(s)
+                if len(user_setups) >= top_n_cfg:
+                    break
+            if not user_setups:
                 continue
-            # Per-user cooldown ключ: (user_id, asset, direction).
-            cooldown_key = f"{user_id}:{user_top.asset}:{user_top.direction}"
-            prev = self._last.get(cooldown_key)
-            if prev is not None:
-                hours_passed = (datetime.now() - prev.fired_at).total_seconds() / 3600
-                if hours_passed < get_cooldown_hours() and user_top.score < prev.score + get_score_bump():
-                    continue
+            # Cooldown-фильтр: если ВСЕ setup'ы юзера уже отправлены недавно
+            # и без score-bump'а — пропускаем весь батч (не дублируем расклад).
+            any_new = False
+            for s in user_setups:
+                cooldown_key = f"{user_id}:{s.asset}:{s.direction}"
+                prev = self._last.get(cooldown_key)
+                if prev is None:
+                    any_new = True
+                    break
+                hours_passed = (now - prev.fired_at).total_seconds() / 3600
+                if hours_passed >= cooldown_h or s.score >= prev.score + bump:
+                    any_new = True
+                    break
+            if not any_new:
+                continue
 
-            message = _format_alert(user_top)
+            message = _format_alert(user_setups)
             try:
                 await self.bot.send_message(user_id, message, parse_mode="Markdown")
                 sent += 1
-                self._last[cooldown_key] = _LastAlert(
-                    asset=user_top.asset,
-                    direction=user_top.direction,
-                    score=int(user_top.score),
-                    fired_at=datetime.now(),
-                )
+                # Маркируем ВСЕ setup'ы из батча как отправленные.
+                for s in user_setups:
+                    cooldown_key = f"{user_id}:{s.asset}:{s.direction}"
+                    self._last[cooldown_key] = _LastAlert(
+                        asset=s.asset,
+                        direction=s.direction,
+                        score=int(s.score),
+                        fired_at=now,
+                    )
                 await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(
@@ -260,7 +346,7 @@ class BestDealAlertSystem:
                 )
 
         if sent:
-            logger.info("best-deal alert: sent to %s users", sent)
+            logger.info("best-deal alert: sent batch to %s users", sent)
         return sent
 
 
@@ -269,8 +355,10 @@ __all__ = [
     "DEFAULT_COOLDOWN_HOURS",
     "DEFAULT_INTERVAL_SEC",
     "DEFAULT_SCORE_BUMP",
+    "DEFAULT_TOP_N",
     "feature_enabled",
     "get_check_interval_sec",
     "get_cooldown_hours",
     "get_score_bump",
+    "get_top_n",
 ]
