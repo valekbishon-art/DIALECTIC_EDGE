@@ -132,6 +132,14 @@ class TestCryptoPayNoToken(unittest.IsolatedAsyncioTestCase):
         cp.CRYPTOBOT_API_TOKEN = orig
 
 
+_HAS_AIOGRAM = True
+try:
+    import aiogram  # noqa: F401
+except ImportError:
+    _HAS_AIOGRAM = False
+
+
+@unittest.skipUnless(_HAS_AIOGRAM, "aiogram not installed (unit-fast)")
 class TestSubscriptionHandlerImports(unittest.TestCase):
     """Smoke test: subscription handler imports without side effects."""
 
