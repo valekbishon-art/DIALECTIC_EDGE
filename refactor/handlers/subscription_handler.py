@@ -2,9 +2,12 @@
 refactor/handlers/subscription_handler.py — VIP subscription & payment handler.
 
 Commands:
-  /subscribe — show subscription status + pay button
+  /premium — show VIP status + pay button (CryptoBot)
   Callback: sub:pay — create CryptoBot invoice
-  Callback: sub:check:<invoice_url> — check payment status
+  Callback: sub:check — check payment status
+
+Note: команда `/subscribe` (legacy) — это выбор времени авто-рассылки
+дайджеста, она живёт в main.py и НЕ относится к платной подписке.
 
 Paywall decorator:
   @require_vip — wraps any handler; if user is not VIP, shows pay button instead.
@@ -51,9 +54,9 @@ def _status_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
-@router.message(Command("subscribe"))
-async def cmd_subscribe(message: Message) -> None:
-    """Show subscription status."""
+@router.message(Command("premium"))
+async def cmd_premium(message: Message) -> None:
+    """Show VIP subscription status / payment entry point."""
     from payments.db import get_vip_info
 
     user_id = message.from_user.id
@@ -184,7 +187,7 @@ def require_vip(handler: Callable) -> Callable:
         await message.answer(
             f"🔒 *Эта функция доступна только VIP подписчикам*\n\n"
             f"Стоимость: *{SUB_PRICE_AMOUNT} {SUB_PRICE_ASSET}* в месяц\n"
-            f"Подробнее: /subscribe",
+            f"Подробнее: /premium",
             parse_mode="Markdown",
             reply_markup=_status_keyboard(),
         )
