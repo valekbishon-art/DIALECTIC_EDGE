@@ -19,24 +19,53 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      # PostgreSQL
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # AI providers — primary + fallbacks
       AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
+      AI_DEBATE_PRIMARY: ${{ secrets.AI_DEBATE_PRIMARY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+      GROQ_API_KEY_3: ${{ secrets.GROQ_API_KEY_3 }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+      OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
+      OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+      OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
+      OPENROUTER_API_KEY_6: ${{ secrets.OPENROUTER_API_KEY_6 }}
+      OPENROUTER_API_KEY_7: ${{ secrets.OPENROUTER_API_KEY_7 }}
+      OPENROUTER_API_KEY_8: ${{ secrets.OPENROUTER_API_KEY_8 }}
+      OPENROUTER_API_KEY_9: ${{ secrets.OPENROUTER_API_KEY_9 }}
+      OPENROUTER_API_KEY_10: ${{ secrets.OPENROUTER_API_KEY_10 }}
+      OPENROUTER_API_KEY_11: ${{ secrets.OPENROUTER_API_KEY_11 }}
+      OPENROUTER_API_KEY_12: ${{ secrets.OPENROUTER_API_KEY_12 }}
       OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
       OPENROUTER_BULL_MODEL: ${{ secrets.OPENROUTER_BULL_MODEL }}
       OPENROUTER_BEAR_MODEL: ${{ secrets.OPENROUTER_BEAR_MODEL }}
       OPENROUTER_VERIFIER_MODEL: ${{ secrets.OPENROUTER_VERIFIER_MODEL }}
       OPENROUTER_SYNTH_MODEL: ${{ secrets.OPENROUTER_SYNTH_MODEL }}
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      CEREBRAS_MODEL: ${{ secrets.CEREBRAS_MODEL }}
       TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
+      TOGETHER_API_KEY_2: ${{ secrets.TOGETHER_API_KEY_2 }}
+      TOGETHER_MODEL: ${{ secrets.TOGETHER_MODEL }}
       MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      MISTRAL_API_KEY_2: ${{ secrets.MISTRAL_API_KEY_2 }}
+      MISTRAL_MODEL: ${{ secrets.MISTRAL_MODEL }}
+      MISTRAL_SYNTH_MODEL: ${{ secrets.MISTRAL_SYNTH_MODEL }}
+      # Data providers
       FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
       ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      BYBIT_API_KEY: ${{ secrets.BYBIT_API_KEY }}
+      BYBIT_SECRET_KEY: ${{ secrets.BYBIT_SECRET_KEY }}
+      ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+      # GitHub (for DIGEST_CACHE.md commits)
+      GITHUB_TOKEN_PAT: ${{ secrets.GH_PAT }}
+      # Debate config
       DEBATE_ROUNDS: "2"
       MAX_TOKENS: "1500"
       AGENT_TEMP: "0.4"
