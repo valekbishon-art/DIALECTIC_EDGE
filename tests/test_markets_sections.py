@@ -507,5 +507,264 @@ class TestMarketsPagination(unittest.TestCase):
         self.assertIn("3/3", labels_over)
 
 
+class TestCryptoDeterministicPagination(unittest.TestCase):
+    """Юзер: «кнопка-листалка в markets должна быть по умолчанию, а сейчас
+    она появляется не всегда с первого раза — её надо нащупать постоянно
+    тыкая».
+
+    Корень — раньше пагинация зависела от `len(text) > 4000`: текст с/без
+    `skip_sr` мог влезать в одно сообщение → кнопок нет. Сейчас режем
+    КРИПТУ детерминированно по `MARKETS_CRYPTO_PAGE_SIZE` (default 5)
+    активов на страницу — независимо от длины.
+
+    Эти тесты проверяют:
+      • 15 активов с default page_size=5 → ровно 3 страницы (даже если
+        prices = только BTC, страницы 2/3 будут содержать только header
+        с индикатором).
+      • Каждая страница содержит ровно тех тикеров что должны (BTC/ETH/.../
+        XRP на стр 1, ADA/DOGE/.../DOT на стр 2, TRX/TON/.../SUI на стр 3).
+      • Заголовок страницы содержит индикатор `(стр K/N)`.
+      • env `MARKETS_CRYPTO_PAGE_SIZE` меняет число страниц.
+    """
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _mock_fetchers(self, prices=None, signals_msg="ignore"):
+        prices = prices or {}
+        bundle = {
+            "binance_data": [], "signals": [], "verdict": None,
+            "signals_message": signals_msg,
+        }
+
+        async def fake_prices():
+            return prices
+
+        async def fake_bundle(github_repo):
+            return bundle
+
+        return fake_prices, fake_bundle
+
+    def _make_15_assets_fixture(self):
+        """Realistic prices dict для всех 15 крипто-тикеров CRYPTO_KEYS."""
+        from web_search import CRYPTO_KEYS
+
+        return {
+            k: {
+                "price": 100.0 + i * 10,
+                "change_24h": 0.5 + (i % 3 - 1),
+                "ma50": 95.0 + i * 10,
+                "ma200": 110.0 + i * 10,
+                "above_ma50": True,
+                "above_ma200": False,
+                "trend": "BEARISH",
+                "trend_emoji": "🔴",
+                "source": "Binance",
+            }
+            for i, k in enumerate(CRYPTO_KEYS)
+        }
+
+    def test_crypto_section_yields_three_pages_by_default(self):
+        """15 активов, page_size=5 → 3 страницы."""
+        fixture = self._make_15_assets_fixture()
+        fake_prices, fake_bundle = self._mock_fetchers(prices=fixture)
+        from signals import build_markets_section_message
+
+        with patch("web_search.fetch_realtime_prices", new=fake_prices), \
+             patch("signals.fetch_markets_bundle", new=fake_bundle):
+            msgs, _ = self._run(
+                build_markets_section_message("o/r", section="crypto")
+            )
+        self.assertEqual(
+            len(msgs), 3,
+            f"Expected 3 deterministic pages, got {len(msgs)}",
+        )
+
+    def test_crypto_pages_have_correct_assets_per_page(self):
+        """Стр 1: BTC/ETH/SOL/BNB/XRP. Стр 2: ADA/DOGE/AVAX/LINK/DOT.
+        Стр 3: TRX/TON/LTC/NEAR/SUI."""
+        fixture = self._make_15_assets_fixture()
+        fake_prices, fake_bundle = self._mock_fetchers(prices=fixture)
+        from signals import build_markets_section_message
+
+        with patch("web_search.fetch_realtime_prices", new=fake_prices), \
+             patch("signals.fetch_markets_bundle", new=fake_bundle):
+            msgs, _ = self._run(
+                build_markets_section_message("o/r", section="crypto")
+            )
+
+        # Стр 1 — BTC присутствует, NEAR — нет (он на стр 3).
+        self.assertIn("BTC", msgs[0])
+        self.assertNotIn("Near (NEAR)", msgs[0])
+
+        # Стр 2 — ADA присутствует, BTC — нет (BTC только на стр 1).
+        self.assertIn("ADA", msgs[1])
+        self.assertNotIn("Bitcoin (BTC)", msgs[1])
+
+        # Стр 3 — NEAR или SUI присутствует.
+        self.assertTrue("NEAR" in msgs[2] or "SUI" in msgs[2])
+        self.assertNotIn("Bitcoin (BTC)", msgs[2])
+
+    def test_crypto_page_header_contains_indicator(self):
+        """Каждая страница содержит `(стр K/N)` в заголовке."""
+        fixture = self._make_15_assets_fixture()
+        fake_prices, fake_bundle = self._mock_fetchers(prices=fixture)
+        from signals import build_markets_section_message
+
+        with patch("web_search.fetch_realtime_prices", new=fake_prices), \
+             patch("signals.fetch_markets_bundle", new=fake_bundle):
+            msgs, _ = self._run(
+                build_markets_section_message("o/r", section="crypto")
+            )
+
+        self.assertIn("(стр 1/3)", msgs[0])
+        self.assertIn("(стр 2/3)", msgs[1])
+        self.assertIn("(стр 3/3)", msgs[2])
+
+    def test_crypto_pagination_stable_when_prices_partial(self):
+        """Даже если prices содержит только 1-2 актива, страниц всё равно 3.
+
+        Это главный фикс: раньше количество страниц зависело от длины
+        текста, поэтому при частично пропущенных данных (что бывает на
+        первом fetch'е) кнопок не появлялось. Теперь они всегда есть.
+        """
+        partial = {"BTC": self._make_15_assets_fixture()["BTC"]}
+        fake_prices, fake_bundle = self._mock_fetchers(prices=partial)
+        from signals import build_markets_section_message
+
+        with patch("web_search.fetch_realtime_prices", new=fake_prices), \
+             patch("signals.fetch_markets_bundle", new=fake_bundle):
+            msgs, _ = self._run(
+                build_markets_section_message("o/r", section="crypto")
+            )
+
+        # 3 страницы даже когда данных только на BTC.
+        self.assertEqual(len(msgs), 3)
+        # BTC на стр 1; стр 2/3 — пустые тела с header.
+        self.assertIn("Bitcoin (BTC)", msgs[0])
+        self.assertIn("(стр 2/3)", msgs[1])
+        self.assertIn("(стр 3/3)", msgs[2])
+
+    def test_crypto_page_size_env_override(self):
+        """`MARKETS_CRYPTO_PAGE_SIZE=3` → 5 страниц для 15 активов."""
+        import os as _os
+
+        fixture = self._make_15_assets_fixture()
+        fake_prices, fake_bundle = self._mock_fetchers(prices=fixture)
+        from signals import build_markets_section_message
+
+        with patch.dict(_os.environ, {"MARKETS_CRYPTO_PAGE_SIZE": "3"}), \
+             patch("web_search.fetch_realtime_prices", new=fake_prices), \
+             patch("signals.fetch_markets_bundle", new=fake_bundle):
+            msgs, _ = self._run(
+                build_markets_section_message("o/r", section="crypto")
+            )
+        # 15 / 3 = 5 страниц.
+        self.assertEqual(len(msgs), 5)
+        self.assertIn("(стр 1/5)", msgs[0])
+        self.assertIn("(стр 5/5)", msgs[4])
+
+    def test_crypto_page_size_env_invalid_falls_back(self):
+        """`MARKETS_CRYPTO_PAGE_SIZE=abc` → fallback на default 5."""
+        import os as _os
+
+        fixture = self._make_15_assets_fixture()
+        fake_prices, fake_bundle = self._mock_fetchers(prices=fixture)
+        from signals import build_markets_section_message
+
+        with patch.dict(_os.environ, {"MARKETS_CRYPTO_PAGE_SIZE": "abc"}), \
+             patch("web_search.fetch_realtime_prices", new=fake_prices), \
+             patch("signals.fetch_markets_bundle", new=fake_bundle):
+            msgs, _ = self._run(
+                build_markets_section_message("o/r", section="crypto")
+            )
+        # Fallback 5 → 3 страницы.
+        self.assertEqual(len(msgs), 3)
+
+    def test_crypto_each_page_fits_in_telegram_cap(self):
+        """5 активов с полным S/R должны влезать в одну Telegram-страницу
+        (cap 4096). Без этого фикса splits на 2-3 chunks на длинных fixtures."""
+        fixture = self._make_15_assets_fixture()
+        fake_prices, fake_bundle = self._mock_fetchers(prices=fixture)
+        from signals import build_markets_section_message
+
+        with patch("web_search.fetch_realtime_prices", new=fake_prices), \
+             patch("signals.fetch_markets_bundle", new=fake_bundle):
+            msgs, _ = self._run(
+                build_markets_section_message("o/r", section="crypto")
+            )
+        for i, m in enumerate(msgs):
+            # Запас 96 на status_text который добавит main.
+            self.assertLessEqual(
+                len(m), 4000,
+                f"Page {i+1} too long: {len(m)} chars",
+            )
+
+
+class TestFormatPricesSectionCryptoFilter(unittest.TestCase):
+    """`format_prices_section(..., crypto_assets=[...])` — фильтр по тикерам
+    в [КРИПТОРЫНОК] для пагинации /markets."""
+
+    def test_filter_renders_only_specified_assets(self):
+        from web_search import format_prices_section
+
+        prices = {
+            "BTC": _btc_fixture(),
+            "ETH": _eth_fixture(),
+        }
+        out = format_prices_section(
+            prices, section="crypto", crypto_assets=("BTC",),
+        )
+        self.assertIn("Bitcoin (BTC)", out)
+        self.assertNotIn("Ethereum", out)
+        self.assertNotIn("(ETH)", out)
+
+    def test_filter_preserves_canonical_order(self):
+        """Порядок всегда CRYPTO_KEYS, не порядок в crypto_assets."""
+        from web_search import format_prices_section
+
+        prices = {"BTC": _btc_fixture(), "ETH": _eth_fixture()}
+        # Передаём в обратном порядке.
+        out = format_prices_section(
+            prices, section="crypto", crypto_assets=("ETH", "BTC"),
+        )
+        btc_idx = out.find("Bitcoin (BTC)")
+        eth_idx = out.find("Ethereum (ETH)")
+        self.assertGreaterEqual(btc_idx, 0)
+        self.assertGreaterEqual(eth_idx, 0)
+        self.assertLess(btc_idx, eth_idx, "BTC должен быть первым по канону")
+
+    def test_filter_with_unknown_ticker_is_silent(self):
+        """Незнакомый тикер просто игнорится — без crash."""
+        from web_search import format_prices_section
+
+        out = format_prices_section(
+            {"BTC": _btc_fixture()}, section="crypto",
+            crypto_assets=("BTC", "WTF_UNKNOWN"),
+        )
+        self.assertIn("Bitcoin (BTC)", out)
+        self.assertNotIn("WTF_UNKNOWN", out)
+
+    def test_filter_empty_yields_only_header(self):
+        """Пустой фильтр → секция [КРИПТОРЫНОК] без активов."""
+        from web_search import format_prices_section
+
+        out = format_prices_section(
+            {"BTC": _btc_fixture()}, section="crypto",
+            crypto_assets=(),
+        )
+        self.assertIn("[КРИПТОРЫНОК]", out)
+        self.assertNotIn("Bitcoin (BTC)", out)
+
+    def test_filter_none_renders_all_assets(self):
+        """`crypto_assets=None` (default) — старая семантика, всё подряд."""
+        from web_search import format_prices_section
+
+        prices = {"BTC": _btc_fixture(), "ETH": _eth_fixture()}
+        out = format_prices_section(prices, section="crypto")
+        self.assertIn("Bitcoin (BTC)", out)
+        self.assertIn("Ethereum (ETH)", out)
+
+
 if __name__ == "__main__":
     unittest.main()

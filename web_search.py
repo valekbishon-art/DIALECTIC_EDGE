@@ -1422,6 +1422,7 @@ def _sr_lines(
 
 def format_prices_for_agents(
     prices: dict, *, for_user: bool = False, skip_sr: bool = False,
+    crypto_assets: tuple[str, ...] | list[str] | None = None,
 ) -> str:
     """Рендерит prices dict в текст для агентов или пользователя.
 
@@ -1437,6 +1438,13 @@ def format_prices_for_agents(
         при клике на «💲 Крипта» S/R появляются полностью.
         ─ без AI-инструкции снизу
         ─ пустая строка между активами (для читаемости)
+      crypto_assets — опциональный фильтр по тикерам в секции [КРИПТОРЫНОК].
+        Если задан — рендерим только эти тикеры (в каноническом порядке
+        CRYPTO_KEYS). Неизвестные тикеры выпадают. Пустой set → только
+        заголовок `[КРИПТОРЫНОК]` без тела. Нужен для детерминированной
+        пагинации /markets (жёсткие страницы по 5 активов вместо резаки
+        по длине текста). AI-агенты вызывают без этого параметра — им нужен
+        полный контекст.
     """
     if not prices:
         return "Рыночные данные временно недоступны."
@@ -1452,8 +1460,16 @@ def format_prices_for_agents(
         lines.append(f"=== ВЕРИФИЦИРОВАННЫЕ РЫНОЧНЫЕ ДАННЫЕ ({now}) ===")
 
     lines.append("\n[КРИПТОРЫНОК]")
+    # Фильтр по crypto_assets — None значит «все» (старая семантика).
+    # Порядок всегда канонический CRYPTO_KEYS, независимо от порядка
+    # в crypto_assets — чтобы BTC всегда первым.
+    if crypto_assets is None:
+        crypto_keys_to_use: tuple[str, ...] = CRYPTO_KEYS
+    else:
+        asset_set = {str(a).upper() for a in crypto_assets}
+        crypto_keys_to_use = tuple(k for k in CRYPTO_KEYS if k in asset_set)
     crypto_iter: list[tuple[str, str]] = [
-        (k, CRYPTO_LABELS.get(k, k)) for k in CRYPTO_KEYS
+        (k, CRYPTO_LABELS.get(k, k)) for k in crypto_keys_to_use
     ]
     for k, label in crypto_iter:
         if k in prices:
@@ -1812,6 +1828,7 @@ _SECTION_HEADER_RAW: dict[str, str] = {
 
 def format_prices_section(
     prices: dict, *, section: str = "all", skip_sr: bool = False,
+    crypto_assets: tuple[str, ...] | list[str] | None = None,
 ) -> str:
     """Per-секционный рендер цен с полной информацией (24ч/7д/30д, MA-триггеры,
     SL/TP LONG/SHORT, Quant-вердикт, ТРЕНД+MA50/200, Random walk/Markov, объём).
@@ -1824,12 +1841,16 @@ def format_prices_section(
       • ``all``    — всё подряд (то же что `format_prices_for_agents(for_user=True)`)
     `skip_sr`: пропустить S/R-строки (для summary-экрана, где текст должен
     влезать в одно сообщение).
+    `crypto_assets`: фильтр по тикерам (передаётся в `format_prices_for_agents`).
+    Используется для детерминированной пагинации крипты в /markets.
     Возвращает текст с пустыми строками между активами и заголовком секции
     (`[КРИПТОРЫНОК]` и т.д.) — совместимо со старым форматом /markets.
     """
     if not prices:
         return "Рыночные данные временно недоступны."
-    full = format_prices_for_agents(prices, for_user=True, skip_sr=skip_sr)
+    full = format_prices_for_agents(
+        prices, for_user=True, skip_sr=skip_sr, crypto_assets=crypto_assets,
+    )
     if section == "all":
         return full.lstrip("\n")
     header = _SECTION_HEADER_RAW.get(section)
