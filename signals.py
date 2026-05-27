@@ -812,6 +812,30 @@ MARKETS_SECTIONS: tuple[str, ...] = (
 )
 
 
+def _crypto_page_size() -> int:
+    """Сколько активов на страницу /markets→💲 Крипта.
+
+    Юзер: «кнопка-листалка в markets должна быть по умолчанию, а сейчас
+    она появляется не всегда с первого раза — её надо нащупать постоянно
+    тыкая». Корень — пагинация раньше срабатывала только если `len(text)
+    > 4000`, поэтому при динамических данных (15 активов с/без S/R)
+    страниц получалось то 1, то 2-3. Сейчас режем КРИПТУ
+    детерминированно по `MARKETS_CRYPTO_PAGE_SIZE` активов на страницу
+    (default 5 → 3 страницы для 15 активов), и кнопки `◀ 1/3 ▶`
+    показываются всегда независимо от длины текста.
+
+    Env `MARKETS_CRYPTO_PAGE_SIZE` (1..15, default 5). 0/invalid → default.
+    """
+    raw = os.getenv("MARKETS_CRYPTO_PAGE_SIZE", "").strip()
+    if not raw:
+        return 5
+    try:
+        v = int(raw)
+    except ValueError:
+        return 5
+    return max(1, min(15, v))
+
+
 def _markets_header(section: str) -> str:
     titles = {
         "summary": "📊 *Рынки — сводка*",
@@ -933,20 +957,39 @@ async def build_markets_section_message(
         )
 
     elif section == "crypto":
-        # Крипта: 15 активов с S/R может выйти за 4000 символов → splits на 2
-        # страницы и часть активов уезжает на стр 2 (юзер: «10-15 крипт
-        # пропали»). Если рендер влезает с S/R — отдаём полный вид; иначе
-        # включаем `skip_sr` чтобы все 15 влезали в одну страницу без
-        # пагинации, а S/R остаются доступны по `/signal`.
-        full_render = format_prices_section(prices, section="crypto") or ""
-        # Заголовок секции = ~50 символов; запас 200 на title/footer.
-        if len(full_render) > 3700:
-            body_parts.append(
-                format_prices_section(prices, section="crypto", skip_sr=True)
-                or "Нет данных"
-            )
-        else:
-            body_parts.append(full_render or "Нет данных")
+        # Крипта: ДЕТЕРМИНИРОВАННАЯ пагинация по `MARKETS_CRYPTO_PAGE_SIZE`
+        # активов на страницу (default 5 → 3 страницы для 15 активов).
+        # Юзер: «кнопка-листалка должна быть по умолчанию, а сейчас
+        # появляется не всегда с первого раза». Раньше пагинация зависела
+        # от `len(text) > 4000` — нестабильно при пропусках/skip_sr;
+        # сейчас порежем сами и сразу вернём готовые страницы.
+        # Каждая страница с полным S/R, без `skip_sr`-уродцев.
+        from web_search import CRYPTO_KEYS
+
+        page_size = _crypto_page_size()
+        page_count = (len(CRYPTO_KEYS) + page_size - 1) // page_size
+        pages_text: list[str] = []
+        for page_idx in range(page_count):
+            slice_keys = CRYPTO_KEYS[page_idx * page_size : (page_idx + 1) * page_size]
+            body = format_prices_section(
+                prices, section="crypto", crypto_assets=slice_keys,
+            ) or "Нет данных"
+            # Заголовок страницы — общий с обёрткой, добавляем индикатор
+            # «(стр K/N)» прямо в section-header чтобы юзер видел свою
+            # позицию даже без pagination row (на случай очень узкого
+            # клиента или копипасты).
+            page_header = (
+                header + f" _(стр {page_idx + 1}/{page_count})_\n\n" + body
+            ).rstrip()
+            pages_text.append(page_header)
+        if not pages_text:
+            pages_text = [header + "\n\nНет данных"]
+
+        # Возвращаем сразу — каждый pages_text[i] это отдельное сообщение,
+        # обходим header+body_parts ниже и `_split_markets_message`. Эти
+        # страницы гарантированно влезают в Telegram cap (5 активов × ~600
+        # символов ≈ 3000), даже с полным S/R.
+        return pages_text, bundle
 
     elif section == "macro":
         body_parts.append(format_prices_section(prices, section="macro") or "Нет данных")
