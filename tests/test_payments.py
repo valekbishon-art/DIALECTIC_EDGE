@@ -91,6 +91,61 @@ class TestCryptoPayHelpers(unittest.TestCase):
         self.assertTrue(int(cp.SUB_PRICE_AMOUNT) > 0)
 
 
+class TestAdminBypass(unittest.IsolatedAsyncioTestCase):
+    """Admins (ADMIN_IDS env) bypass paywall regardless of DB state."""
+
+    async def test_admin_bypass_with_postgres_on(self):
+        import os
+        import payments.db as db_mod
+        orig_admin = os.environ.get("ADMIN_IDS", "")
+        orig_url = db_mod.DATABASE_URL
+        try:
+            os.environ["ADMIN_IDS"] = "111,222,333"
+            db_mod.DATABASE_URL = "postgresql://x/y"  # enabled, but admin returns early
+            self.assertTrue(await db_mod.check_vip(222))
+            info = await db_mod.get_vip_info(222)
+            self.assertTrue(info["is_vip"])
+            self.assertTrue(info["is_admin"])
+        finally:
+            if orig_admin:
+                os.environ["ADMIN_IDS"] = orig_admin
+            else:
+                os.environ.pop("ADMIN_IDS", None)
+            db_mod.DATABASE_URL = orig_url
+
+    async def test_non_admin_not_bypassed(self):
+        import os
+        import payments.db as db_mod
+        orig_admin = os.environ.get("ADMIN_IDS", "")
+        try:
+            os.environ["ADMIN_IDS"] = "111,222"
+            # ADMIN_IDS set but user 999 isn't in list; DB is off so falls back to True.
+            self.assertFalse(db_mod._is_admin(999))
+            self.assertTrue(db_mod._is_admin(222))
+        finally:
+            if orig_admin:
+                os.environ["ADMIN_IDS"] = orig_admin
+            else:
+                os.environ.pop("ADMIN_IDS", None)
+
+    def test_admin_ids_parsing(self):
+        import os
+        import payments.db as db_mod
+        orig = os.environ.get("ADMIN_IDS", "")
+        try:
+            os.environ["ADMIN_IDS"] = "111, 222 ; 333"  # mixed separators + whitespace
+            self.assertEqual(db_mod._admin_ids(), {111, 222, 333})
+            os.environ["ADMIN_IDS"] = ""
+            self.assertEqual(db_mod._admin_ids(), set())
+            os.environ["ADMIN_IDS"] = "abc,123"  # bad entries skipped
+            self.assertEqual(db_mod._admin_ids(), {123})
+        finally:
+            if orig:
+                os.environ["ADMIN_IDS"] = orig
+            else:
+                os.environ.pop("ADMIN_IDS", None)
+
+
 class TestCheckVipFallback(unittest.IsolatedAsyncioTestCase):
     """check_vip should return True when Postgres is disabled (no paywall)."""
 
