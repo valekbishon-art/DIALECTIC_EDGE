@@ -786,10 +786,17 @@ def _markets_header(section: str) -> str:
     return f"{titles.get(section, '📊 *Рынки*')} — _{now}_"
 
 
+# Пагинация вкладки «💲 Крипта»: 15 активов в одном сообщении
+# ломают Telegram-лимит (4096) + неудобны для чтения. Разбиваем
+# по страницам по ``MARKETS_CRYPTO_PAGE_SIZE`` активов на страницу.
+MARKETS_CRYPTO_PAGE_SIZE = 5
+
+
 async def build_markets_section_message(
     github_repo: str | None = None,
     *,
     section: str = "summary",
+    page: int = 0,
 ) -> tuple[list[str], dict]:
     """Per-секционный /markets для нового inline-меню выбора секции.
 
@@ -805,6 +812,14 @@ async def build_markets_section_message(
       • ``etf``     — ETF flows + market breadth
       • ``signals`` — best trade + market signals (как `build_signals_message`)
       • ``all``     — всё разом (как старый /markets)
+
+    page: номер страницы для ``crypto`` (0-based). Остальные секции
+    игнорируют параметр — там пагинация не нужна.
+
+    В ``bundle["pagination"]`` кладём полный набор мета:
+    ``{"page": 0, "pages": 3, "page_size": 5, "assets": ("BTC", "ETH", ...),
+    "section": "crypto"}``. Для не-crypto секций «пустые»: pages=1,
+    page=0, assets=().
     """
     section = section if section in MARKETS_SECTIONS else "summary"
     header = _markets_header(section)
@@ -887,7 +902,29 @@ async def build_markets_section_message(
         body_parts.append(format_prices_section(prices, section="crypto") or "Нет данных")
 
     elif section == "crypto":
-        body_parts.append(format_prices_section(prices, section="crypto") or "Нет данных")
+        # Пагинация: локальный импорт чтобы избежать circular import.
+        from web_search import CRYPTO_KEYS
+
+        total_assets = len(CRYPTO_KEYS)
+        page_size = max(1, MARKETS_CRYPTO_PAGE_SIZE)
+        pages_total = max(1, (total_assets + page_size - 1) // page_size)
+        # Clamp «выход за границы» (бабя юзер прижал кнопку «вперёд»
+        # на последней странице).
+        page_idx = max(0, min(page, pages_total - 1))
+        start = page_idx * page_size
+        end = start + page_size
+        page_assets = CRYPTO_KEYS[start:end]
+        bundle["pagination"] = {
+            "section": "crypto",
+            "page": page_idx,
+            "pages": pages_total,
+            "page_size": page_size,
+            "assets": page_assets,
+        }
+        body_parts.append(
+            format_prices_section(prices, section="crypto", crypto_assets=page_assets)
+            or "Нет данных"
+        )
 
     elif section == "macro":
         body_parts.append(format_prices_section(prices, section="macro") or "Нет данных")
@@ -932,6 +969,17 @@ async def build_markets_section_message(
             body_parts.append("")
         body_parts.append("📡 *Сигналы*")
         body_parts.append(md_bundle.get("signals_message", "Нет данных"))
+
+    if "pagination" not in bundle:
+        # Секция без пагинации — одна «страница» из 0. Квадратный
+        # выход из «key error» в callback-handlerе и markup-builderе.
+        bundle["pagination"] = {
+            "section": section,
+            "page": 0,
+            "pages": 1,
+            "page_size": 0,
+            "assets": (),
+        }
 
     text = header + "\n\n" + "\n".join(p for p in body_parts if p is not None).rstrip()
 

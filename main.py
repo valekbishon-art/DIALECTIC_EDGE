@@ -3948,9 +3948,34 @@ def _section_label(key: str, label: str, current: str) -> str:
 
 
 def _markets_section_keyboard(
-    is_enabled: bool, current: str = "summary", user_id: int | None = None
+    is_enabled: bool,
+    current: str = "summary",
+    user_id: int | None = None,
+    *,
+    page: int = 0,
+    pages_total: int = 1,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    # Самый верх — пагинация (только для crypto с больше одной страницы).
+    # Кладём вверх чтобы юзер видел пагинацию сразу под текстом,
+    # а не под 8 кнопками выбора секции.
+    if current == "crypto" and pages_total > 1:
+        prev_page = (page - 1) % pages_total
+        next_page = (page + 1) % pages_total
+        rows.append([
+            InlineKeyboardButton(
+                text="◀ Назад",
+                callback_data=f"markets:section:crypto:{prev_page}",
+            ),
+            InlineKeyboardButton(
+                text=f"{page + 1} / {pages_total}",
+                callback_data="noop",
+            ),
+            InlineKeyboardButton(
+                text="Вперёд ▶",
+                callback_data=f"markets:section:crypto:{next_page}",
+            ),
+        ])
     # 4 ряда по 2 кнопки — выбор секции.
     pairs = list(zip(_SECTION_BUTTONS[0::2], _SECTION_BUTTONS[1::2]))
     for (k1, l1), (k2, l2) in pairs:
@@ -3965,11 +3990,17 @@ def _markets_section_keyboard(
             ),
         ])
     # Управляющий ряд: лучшая сделка + обновить + сигналы on/off.
+    # Обновить сохраняет текущую страницу — иначе с 5-й страницы
+    # рефреш выкидывал бы на 1-ю.
+    refresh_cb = (
+        f"markets:section:{current}:{page}" if current == "crypto"
+        else f"markets:section:{current}"
+    )
     rows.append([
         InlineKeyboardButton(text="🎯 Лучшая", callback_data="cmd:signal"),
         InlineKeyboardButton(
             text="🔄 Обновить",
-            callback_data=f"markets:section:{current}",
+            callback_data=refresh_cb,
         ),
         InlineKeyboardButton(
             text="🔕" if is_enabled else "🔔",
@@ -4001,6 +4032,7 @@ async def _render_markets_section(
     user_id: int,
     section: str,
     wait_message_id: int | None = None,
+    page: int = 0,
 ) -> None:
     """Рендерит /markets для указанной секции.
 
@@ -4008,11 +4040,19 @@ async def _render_markets_section(
     поверх него (так заменяем «⏳ Загружаю…» или предыдущий экран секции).
     Иначе — все сообщения как `send_message`. Клавиатура + status_text
     цепляются к последнему сообщению.
+
+    ``page`` — индекс страницы для crypto-секции (0-based). Остальные
+    секции игнорируют (всё равно pages=1 из бандла).
     """
     github_repo = os.getenv("GITHUB_REPO", "ANAEHY/dialectic_edge")
     from signals import build_markets_section_message
 
-    messages, _bundle = await build_markets_section_message(github_repo, section=section)
+    messages, bundle = await build_markets_section_message(
+        github_repo, section=section, page=page,
+    )
+    pagination = bundle.get("pagination") or {}
+    pages_total = int(pagination.get("pages", 1) or 1)
+    page_now = int(pagination.get("page", 0) or 0)
     is_enabled = await get_user_signals_status(user_id)
     status_text = (
         "\n\n✅ _Сигналы вкл — пришлю на сильном сигнале_"
@@ -4020,21 +4060,29 @@ async def _render_markets_section(
         else "\n\n🔔 _Нажми колокольчик — буду слать сильные сигналы_"
     )
 
+    def _kb() -> InlineKeyboardMarkup:
+        return _markets_section_keyboard(
+            is_enabled,
+            current=section,
+            user_id=user_id,
+            page=page_now,
+            pages_total=pages_total,
+        )
+
     if not messages:
         text = "❌ Нет данных."
-        kb = _markets_section_keyboard(is_enabled, current=section, user_id=user_id)
         if wait_message_id is not None:
             await bot.edit_message_text(
-                text, chat_id=chat_id, message_id=wait_message_id, reply_markup=kb
+                text, chat_id=chat_id, message_id=wait_message_id, reply_markup=_kb()
             )
         else:
-            await bot.send_message(chat_id, text, reply_markup=kb)
+            await bot.send_message(chat_id, text, reply_markup=_kb())
         return
 
     # Первое сообщение — edit (если есть placeholder), иначе send.
     first = clean_markdown(messages[0])
     is_single = len(messages) == 1
-    first_kb = _markets_section_keyboard(is_enabled, current=section, user_id=user_id) if is_single else None
+    first_kb = _kb() if is_single else None
     first_text = first + (status_text if is_single else "")
     if wait_message_id is not None:
         await bot.edit_message_text(
@@ -4061,9 +4109,7 @@ async def _render_markets_section(
             chat_id,
             body,
             parse_mode="Markdown",
-            reply_markup=_markets_section_keyboard(is_enabled, current=section, user_id=user_id)
-            if is_last
-            else None,
+            reply_markup=_kb() if is_last else None,
         )
 
 
@@ -4882,9 +4928,16 @@ async def cb_markets_signals(callback: CallbackQuery):
     else:
         action = ""
 
-    # markets:section:<key> — выбор секции (новое меню /markets).
+    # markets:section:<key>[:<page>] — выбор секции + (опц) номер страницы.
     if data.startswith("markets:section:"):
-        section = data.split(":", 2)[2] if data.count(":") >= 2 else "summary"
+        parts = data.split(":", 3)  # ["markets", "section", "<key>", "<page>?"]
+        section = parts[2] if len(parts) >= 3 else "summary"
+        page = 0
+        if len(parts) >= 4:
+            try:
+                page = max(0, int(parts[3]))
+            except ValueError:
+                page = 0
         await callback.answer("⏳")
         try:
             await _render_markets_section(
@@ -4892,6 +4945,7 @@ async def cb_markets_signals(callback: CallbackQuery):
                 user_id=user_id,
                 section=section,
                 wait_message_id=callback.message.message_id,
+                page=page,
             )
         except Exception as e:
             await callback.answer(f"Ошибка: {e}", show_alert=True)
@@ -5830,6 +5884,14 @@ async def cb_trackrecord_russia(callback: CallbackQuery):
 async def cb_trackrecord_all(callback: CallbackQuery):
     await callback.answer()
     await _cmd_trackrecord(callback.message, report_type=None, title="АГЕНТОВ (ВСЕ)")
+
+
+@dp.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery):
+    # Indicator-кнопки (например «3 / 4» в пагинации /markets) — клики
+    # должны мгновенно убирать loading-spinner Telegram'а, ничего не
+    # делая. Без явного хэндлера спиннер висит ~10 сек.
+    await callback.answer()
 
 
 # ─── Запуск ───────────────────────────────────────────────────────────────────
