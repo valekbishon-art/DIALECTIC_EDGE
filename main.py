@@ -134,6 +134,9 @@ from refactor.handlers.advisor_handler import register_advisor_handlers
 from refactor.handlers.advisor_portfolio_handler import (
     register_advisor_portfolio_handlers,
 )
+from refactor.handlers.subscription_handler import (
+    register as register_subscription_handlers,
+)
 
 # Phase 4 Provider Imports — AI, Cache, Database, Market Data, News, Storage
 # ВАЖНО: build_short_report, parse_report_parts, extract_signal_pct_and_stars,
@@ -6092,6 +6095,7 @@ async def main():
     register_postmortem_handlers(dp)
     register_retro_handlers(dp)
     register_sniping_handlers(dp)
+    register_subscription_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()
     dp.message.middleware(_rate_limiter)
@@ -6108,6 +6112,14 @@ async def main():
     await init_db()
     from core.ai_metrics import init_ai_metrics_db
     await init_ai_metrics_db()
+    # PostgreSQL for VIP subscriptions + digest cache (optional, no-op without DATABASE_URL).
+    try:
+        from payments.db import init_postgres
+        pg_ok = await init_postgres()
+        if pg_ok:
+            logger.info("💳 PostgreSQL ready (VIP subscriptions + digest cache)")
+    except Exception as e:
+        logger.warning("PostgreSQL init skipped: %s", e)
     await import_forecasts_from_markdown()
     await init_profiles_table()
     setup_admins(ADMIN_IDS)

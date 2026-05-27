@@ -36,6 +36,11 @@ filelock>=3.14
 pandas>=2.0
 streamlit>=1.28
 
+# PostgreSQL async driver (опционально: подписки + кеш дайджестов).
+# Без DATABASE_URL — не импортируется, бот работает как раньше (SQLite).
+asyncpg>=0.29
+sqlalchemy[asyncio]>=2.0
+
 # Опционально — error reporting. Активируется, только если задан SENTRY_DSN.
 # Если ключа нет — модуль не импортируется и зависимость не нужна.
 sentry-sdk>=2.0
