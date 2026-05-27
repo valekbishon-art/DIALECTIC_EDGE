@@ -766,6 +766,42 @@ def _trading_plan_grouped_lines(plans: list[dict] | None, prices: dict | None) -
     return out
 
 
+def _format_debate_summary_block(
+    *,
+    debate_summary: dict | None,
+    verdict_reason: str = "",
+    plain_language: str = "",
+) -> list[str]:
+    """Рендерит блок «🧠 О чём спорил ИИ сегодня» в Telegram-дайджесте.
+
+    Возвращает список строк блока (без ведущего blank-line — caller
+    сам добавит разделитель). Если агентов нет в выжимке и
+    ``verdict_reason``/``plain_language`` тоже пусты — возвращает [].
+    """
+    summary = debate_summary or {}
+    bull = (summary.get("bull") or "").strip()
+    bear = (summary.get("bear") or "").strip()
+    verifier = (summary.get("verifier") or "").strip()
+    reason = (verdict_reason or "").strip()
+    plain = (plain_language or "").strip()
+
+    if not (bull or bear) and not (reason and plain):
+        return []
+
+    lines: list[str] = ["🧠 *О чём спорил ИИ сегодня:*"]
+    if bull:
+        lines.append(f"🐂 *Бык:* {bull}")
+    if bear:
+        lines.append(f"🐻 *Медведь:* {bear}")
+    if verifier:
+        lines.append(f"🔍 *Скептик:* {verifier}")
+    if reason:
+        lines.append(f"⚖️ *Консенсус:* {reason}")
+    if plain:
+        lines.append(f"💬 *Простыми словами:* {plain}")
+    return lines
+
+
 def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack | None = None, prices: dict | None = None) -> list:
     """
     Собирает ОДНО сообщение для пользователя в фиксированном layout'е:
@@ -806,6 +842,7 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
     verdict_label = digest_ctx.get("verdict_label", "Нейтральный")
     verdict_emoji = digest_ctx.get("verdict_emoji", "⚪️")
     verdict_reason = digest_ctx.get("verdict_reason", "")
+    debate_summary = digest_ctx.get("debate_summary") or {}
     plans = digest_ctx.get("plans") or []
     watch_levels = digest_ctx.get("watch_levels") or []
     monitoring_points = digest_ctx.get("monitoring_points") or []
@@ -828,7 +865,14 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
         f"📊 *Сигнал:* {stars} ({pct}%)",
     ])
 
-    if verdict_reason:
+    debate_block = _format_debate_summary_block(
+        debate_summary=debate_summary,
+        verdict_reason=verdict_reason,
+        plain_language=plain_language,
+    )
+    if debate_block:
+        lines.extend(["", *debate_block])
+    elif verdict_reason:
         lines.extend(["", f"🧠 *Почему:* {verdict_reason}"])
 
     # Smart-money card (институциональные сигналы) — pitch differentiator.
@@ -903,7 +947,7 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
         for point in monitoring_points[:4]:
             lines.append(f"• {point}")
 
-    if plain_language:
+    if plain_language and not debate_block:
         lines.extend(["", f"💬 *Простыми словами:* {plain_language}"])
 
     if eli5:
