@@ -23,7 +23,20 @@ jobs:
       AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+      GROQ_API_KEY_3: ${{ secrets.GROQ_API_KEY_3 }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+      OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
+      OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+      OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
+      OPENROUTER_API_KEY_6: ${{ secrets.OPENROUTER_API_KEY_6 }}
+      OPENROUTER_API_KEY_7: ${{ secrets.OPENROUTER_API_KEY_7 }}
+      OPENROUTER_API_KEY_8: ${{ secrets.OPENROUTER_API_KEY_8 }}
+      OPENROUTER_API_KEY_9: ${{ secrets.OPENROUTER_API_KEY_9 }}
+      OPENROUTER_API_KEY_10: ${{ secrets.OPENROUTER_API_KEY_10 }}
+      OPENROUTER_API_KEY_11: ${{ secrets.OPENROUTER_API_KEY_11 }}
+      OPENROUTER_API_KEY_12: ${{ secrets.OPENROUTER_API_KEY_12 }}
       OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
       OPENROUTER_BULL_MODEL: ${{ secrets.OPENROUTER_BULL_MODEL }}
       OPENROUTER_BEAR_MODEL: ${{ secrets.OPENROUTER_BEAR_MODEL }}
@@ -31,7 +44,9 @@ jobs:
       OPENROUTER_SYNTH_MODEL: ${{ secrets.OPENROUTER_SYNTH_MODEL }}
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
+      TOGETHER_API_KEY_2: ${{ secrets.TOGETHER_API_KEY_2 }}
       MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      MISTRAL_API_KEY_2: ${{ secrets.MISTRAL_API_KEY_2 }}
       FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
       ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
