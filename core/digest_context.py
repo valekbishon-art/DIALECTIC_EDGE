@@ -179,7 +179,7 @@ def _is_unactionable_cash_plan(plan: dict) -> tuple[bool, str]:
     Возвращает (is_unactionable, reason)."""
     direction = (plan.get("direction") or "").upper().strip()
     label_upper = str(plan.get("label") or "").upper()
-    
+
     # Defense-in-depth: WATCH или label-CASH/WATCH/ВНЕ РЫНКА → всегда watch.
     if direction in {"WATCH", "WAIT", "FLAT"}:
         return True, "watch direction"
@@ -191,7 +191,7 @@ def _is_unactionable_cash_plan(plan: dict) -> tuple[bool, str]:
             target = plan.get("target")
             if not entry and not stop and not target:
                 return True, "label says CASH but direction got tagged from trigger text"
-    
+
     # LONG/SHORT-план без вход/стоп/цели — мусор от парсера (или AI не дал
     # цифр). Не показываем юзеру «BTC LONG — вход —, стоп —, цель —».
     if direction in {"LONG", "SHORT"}:
@@ -200,7 +200,7 @@ def _is_unactionable_cash_plan(plan: dict) -> tuple[bool, str]:
         target = plan.get("target")
         if not entry and not stop and not target:
             return True, "actionable plan without entry/stop/target"
-    
+
     if direction not in {"CASH", "WAIT", "FLAT"}:
         return False, ""
     trigger = str(plan.get("trigger") or "").strip()
@@ -327,7 +327,7 @@ _TRIGGER_KEYWORDS = (
 
 def _is_valid_watch_level(item: dict) -> bool:
     """Watch-уровень должен содержать тикер + либо цену, либо триггер.
-    
+
     Иначе это мусор: AI-агент в chain-of-thought пишет «Fibermaxxing →
     benefits…», синт случайно копирует булет в блок наблюдения, и юзер
     видит на кнопке «Стратегия» эти заметки вместо реальных уровней.
@@ -337,13 +337,13 @@ def _is_valid_watch_level(item: dict) -> bool:
     level = (item.get("level") or "").strip()
     note = (item.get("note") or "").strip()
     full_text = f"{symbol_upper} {level} {note}".upper()
-    
+
     has_ticker = any(t in symbol_upper for t in _KNOWN_TICKERS) or any(
         re.search(rf"\b{re.escape(t)}\b", full_text) for t in _KNOWN_TICKERS
     )
     has_price = bool(re.search(r"\$\s*\d|\d{2,}\s*(?:USD|usd|долл)", full_text))
     has_trigger = any(t in full_text for t in _TRIGGER_KEYWORDS)
-    
+
     # Sanity: должна быть либо комбинация (тикер + цена/триггер), либо
     # тикер с явным числом. Голые текстовые булеты без чисел и тикеров
     # — отбрасываем.
@@ -406,7 +406,7 @@ def extract_watch_levels(report_text: str) -> list[dict]:
             })
         else:
             items.append({"symbol": "", "level": "", "note": cleaned[:240]})
-    
+
     # Фильтруем мусор от агента который протёк в watch-блок (новостные
     # булеты без цен/тикеров). Без этого юзер видит «Fibermaxxing →
     # benefits» в качестве условия флипа — хуже чем пустой блок.
@@ -946,9 +946,9 @@ def _try_parse_synth_json(report_text: str) -> list[dict]:
     synth_section = _extract_synth_section(report_text)
     if not synth_section:
         return []
-    
+
     import json as _json
-    
+
     # Ищем JSON в секции Synth
     for block in re.findall(r'\{[^{}]*"plans"[^{}]*\}', synth_section, re.DOTALL):
         plans = []
@@ -1013,6 +1013,156 @@ def _extract_invalidation(report_text: str) -> str:
         if match:
             return _clean_line(match.group(1))[:240]
     return ""
+
+
+# ── Debate-summary extraction ────────────────────────────────────────────
+# Парсим блок «🗣 ХОД ДЕБАТОВ» на отдельные реплики Bull/Bear/Verifier,
+# сжимаем каждую до ≤220 символов и возвращаем dict для UI-блока
+# «🧠 О чём спорил ИИ сегодня».
+
+_DEBATE_HEADER_RE = re.compile(r"🗣\s*\*?\s*ХОД\s+ДЕБАТОВ", re.IGNORECASE)
+_DEBATE_ROUND_RE = re.compile(r"──\s*Раунд\s+(\d+)\s*──", re.IGNORECASE)
+_DEBATE_VERDICT_END_RE = re.compile(
+    r"ВЕРДИКТ\s+И\s+ТОРГОВЫЙ\s+ПЛАН|ИТОГОВЫЙ\s+СИНТЕЗ|ВЕРДИКТ\s+СУДЬИ",
+    re.IGNORECASE,
+)
+
+_AGENT_LINE_RES: tuple[tuple[str, re.Pattern], ...] = (
+    ("bull",     re.compile(r"^\s*🐂\s+Bull[^:]*:", re.IGNORECASE)),
+    ("bear",     re.compile(r"^\s*🐻\s+Bear[^:]*:", re.IGNORECASE)),
+    ("verifier", re.compile(r"^\s*🔍\s+Verifier[^:]*:", re.IGNORECASE)),
+)
+
+_AGENT_VERDICT_HINTS: tuple[str, ...] = (
+    "Мой вывод",
+    "Итог:",
+    "Вывод:",
+    "Заключение:",
+    "Резюме:",
+    "Вердикт:",
+    "Достоверных аргументов",
+    "Достоверных bull",
+    "Достоверных bear",
+)
+
+
+def _split_debate_agent_speeches(report_text: str) -> dict[str, list[str]]:
+    """Разбирает блок «🗣 ХОД ДЕБАТОВ» на реплики агентов.
+
+    Возвращает ``{"bull": [round1, …], "bear": […], "verifier": […]}``.
+    """
+    clean = _strip_markup(report_text or "")
+    if not clean:
+        return {"bull": [], "bear": [], "verifier": []}
+
+    header_match = _DEBATE_HEADER_RE.search(clean)
+    if not header_match:
+        return {"bull": [], "bear": [], "verifier": []}
+    start = header_match.end()
+
+    end_match = _DEBATE_VERDICT_END_RE.search(clean, start)
+    end = end_match.start() if end_match else len(clean)
+    debate_block = clean[start:end]
+
+    speeches: dict[str, list[str]] = {"bull": [], "bear": [], "verifier": []}
+    current_key: str | None = None
+    current_lines: list[str] = []
+
+    def _flush() -> None:
+        nonlocal current_lines
+        if current_key and current_lines:
+            text = "\n".join(current_lines).strip()
+            if text:
+                speeches[current_key].append(text)
+        current_lines = []
+
+    for raw_line in debate_block.splitlines():
+        line = raw_line.rstrip()
+        matched_key: str | None = None
+        for key, pat in _AGENT_LINE_RES:
+            if pat.match(line):
+                matched_key = key
+                break
+
+        if matched_key is not None:
+            _flush()
+            current_key = matched_key
+            tail = line.split(":", 1)[1].strip() if ":" in line else ""
+            if tail:
+                current_lines.append(tail)
+            continue
+
+        if _DEBATE_ROUND_RE.search(line):
+            _flush()
+            current_key = None
+            continue
+
+        if current_key is not None:
+            current_lines.append(line)
+
+    _flush()
+    return speeches
+
+
+def _summarize_agent_speech(text: str, *, max_chars: int = 220) -> str:
+    """Сжимает реплику агента до короткого тезиса (≤ *max_chars*)."""
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", _clean_line(text))
+    if not text:
+        return ""
+
+    lower = text.lower()
+    for hint in _AGENT_VERDICT_HINTS:
+        idx = lower.find(hint.lower())
+        if idx == -1:
+            continue
+        chunk = text[idx:].strip()
+        chunk = re.split(r"[\.!\?](?:\s|$)", chunk, maxsplit=1)[0].strip()
+        if len(chunk) >= 20:
+            return _shrink_text(chunk, max_chars)
+
+    paragraphs = [p.strip() for p in re.split(r"(?<=[\.!\?])\s+", text) if p.strip()]
+    for p in paragraphs:
+        bare = p.strip(" •-—–\t*")
+        if len(bare) >= 40 and not bare.lower().startswith(("источник", "хедж", "вероятность")):
+            return _shrink_text(bare, max_chars)
+
+    return _shrink_text(text, max_chars)
+
+
+def _shrink_text(text: str, max_chars: int) -> str:
+    """Обрезка с эллипсисом, по границе слова если возможно."""
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rstrip()
+    last_space = cut.rfind(" ")
+    if last_space > max_chars * 0.6:
+        cut = cut[:last_space]
+    return cut.rstrip(" ,.;:—–-") + "…"
+
+
+def extract_debate_summary(report_text: str) -> dict[str, str]:
+    """Достаёт компактные тезисы Bull/Bear/Verifier из «🗣 ХОД ДЕБАТОВ».
+
+    Возвращает ``{"bull": str, "bear": str, "verifier": str}``.
+    """
+    speeches = _split_debate_agent_speeches(report_text)
+    summary: dict[str, str] = {"bull": "", "bear": "", "verifier": ""}
+    for key in ("bull", "bear", "verifier"):
+        rounds = speeches.get(key) or []
+        if not rounds:
+            continue
+        chosen = ""
+        for speech in rounds:
+            if len(speech.strip()) >= 30:
+                chosen = speech
+                break
+        if not chosen and rounds:
+            chosen = rounds[0]
+        summary[key] = _summarize_agent_speech(chosen)
+    return summary
 
 
 def _aggregate_quant_verdicts(
@@ -1110,6 +1260,7 @@ def build_digest_context(
     plain_language = extract_plain_language(report_text) or _clean_line(source_news)[:320]
     plain_language = _strip_leading_punct(plain_language)
     eli5 = extract_eli5(report_text)
+    debate_summary = extract_debate_summary(report_text)
 
     # ── Квант-фильтр reconcile: LLM-вердикт vs детерминистический ансамбль ──
     # Берёт per-symbol quant verdicts из автотрейдер-каркаса (BB+Donchian+RSI
@@ -1157,6 +1308,7 @@ def build_digest_context(
         "plans": actionable,
         "watch_levels": watch_levels,
         "full_report": report_text or "",
+        "debate_summary": debate_summary,
         # Quant-filter метаданные. Полезно для UI («LLM BUY vs quant SHORT
         # → NEUTRAL»), логирования в DIGEST_CACHE и backtest-сверки.
         "llm_verdict": llm_verdict,
@@ -1203,7 +1355,6 @@ def format_digest_telegram_summary(
     timestamp: str,
     max_plans: int = 4,
 ) -> str:
-    verdict = context.get("verdict", "NEUTRAL")
     verdict_label = context.get("verdict_label", VERDICT_LABELS["NEUTRAL"])
     verdict_emoji = context.get("verdict_emoji", VERDICT_EMOJIS["NEUTRAL"])
 
@@ -1216,14 +1367,33 @@ def format_digest_telegram_summary(
     ]
 
     reason = context.get("verdict_reason")
-    if reason:
+    ds = context.get("debate_summary") or {}
+    bull_s = (ds.get("bull") or "").strip()
+    bear_s = (ds.get("bear") or "").strip()
+    verifier_s = (ds.get("verifier") or "").strip()
+    plain_lang = (context.get("plain_language") or "").strip()
+
+    if bull_s or bear_s:
+        lines.append("")
+        lines.append("🧠 *О чём спорил ИИ сегодня:*")
+        if bull_s:
+            lines.append(f"🐂 *Бык:* {bull_s}")
+        if bear_s:
+            lines.append(f"🐻 *Медведь:* {bear_s}")
+        if verifier_s:
+            lines.append(f"🔍 *Скептик:* {verifier_s}")
+        if reason:
+            lines.append(f"⚖️ *Консенсус:* {reason}")
+        if plain_lang:
+            lines.append(f"💬 *Простыми словами:* {plain_lang[:300]}")
+    elif reason:
         lines.extend(["", f"🧠 *Почему:* {reason}"])
 
     # Торговый план
     plans = context.get("plans") or []
     lines.append("")
     lines.append("📋 *ТОРГОВЫЙ ПЛАН:*")
-    
+
     if plans:
         for plan in plans[:max_plans]:
             lines.append(f"• {_plan_line(plan)}")
@@ -1232,26 +1402,24 @@ def format_digest_telegram_summary(
         key_trigger = context.get("key_trigger")
         monitoring_level = context.get("monitoring_level")
         monitoring_points = context.get("monitoring_points") or []
-        
+
         if key_trigger:
             lines.append(f"⏳ {key_trigger}")
-        
+
         if monitoring_level:
             lines.append(f"👀 Уровень мониторинга: {monitoring_level}")
-        
+
         if monitoring_points:
             lines.append("")
             lines.append("*Точки наблюдения:*")
             for point in monitoring_points[:3]:
                 lines.append(f"• {point}")
-        
+
         if not plans and not key_trigger and not monitoring_level and not monitoring_points:
             lines.append("⏳ Ждём подтверждения по триггерам")
 
-    # Макро данные из plain_language если нет планов
-    plain_language = context.get("plain_language")
-    if plain_language:
-        lines.extend(["", f"💬 *Простыми словами:* {plain_language[:300]}"])
+    if not (bull_s or bear_s) and plain_lang:
+        lines.extend(["", f"💬 *Простыми словами:* {plain_lang[:300]}"])
 
     lines.extend(["", "📎 Полный анализ + дебаты — в файлах ниже."])
     return "\n".join(lines)
