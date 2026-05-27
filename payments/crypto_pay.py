@@ -25,7 +25,7 @@ CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN", "")
 _BASE_URL = "https://pay.crypt.bot/api"
 
 # Subscription price (configurable via env).
-SUB_PRICE_AMOUNT = os.getenv("SUB_PRICE_AMOUNT", "5")  # default $5
+SUB_PRICE_AMOUNT = os.getenv("SUB_PRICE_AMOUNT", "30")  # default $30 / month
 SUB_PRICE_ASSET = os.getenv("SUB_PRICE_ASSET", "USDT")  # USDT / TON / BTC
 SUB_DAYS = int(os.getenv("SUB_DAYS", "30"))
 

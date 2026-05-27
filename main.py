@@ -135,7 +135,9 @@ from refactor.handlers.advisor_portfolio_handler import (
     register_advisor_portfolio_handlers,
 )
 from refactor.handlers.subscription_handler import (
+    cmd_premium,
     register as register_subscription_handlers,
+    require_vip,
 )
 
 # Phase 4 Provider Imports — AI, Cache, Database, Market Data, News, Storage
@@ -2529,6 +2531,7 @@ async def cmd_eval_pipeline(message: Message):
 
 
 @dp.message(Command("screener"))
+@require_vip
 async def cmd_screener(message: Message):
     """Scan market for anomalies: /screener"""
     try:
@@ -2593,6 +2596,9 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🧪 Бэктест", callback_data="cmd:backtest"),
             InlineKeyboardButton(text="🔔 Подписка", callback_data="cmd:subscribe"),
+        ],
+        [
+            InlineKeyboardButton(text="💎 VIP", callback_data="cmd:premium"),
         ],
         [
             InlineKeyboardButton(text="🌍 Global", callback_data="cmd:trackrecordglobal"),
@@ -2974,6 +2980,7 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "trackrecordrussia": lambda m: _cmd_trackrecord(m, report_type="russia", title="РОССИЯ EDGE", filter_type="all"),
         "weeklyreport": cmd_weekly,
         "subscribe": cmd_subscribe,
+        "premium": cmd_premium,
         "help": cmd_help,
         "signal": cmd_signal,
         "funding": handle_funding_command,
@@ -3589,6 +3596,7 @@ async def _run_daily_for_horizon(
 
 
 @dp.message(Command("daily"))
+@require_vip
 async def cmd_daily(message: Message):
     user_id = message.from_user.id
     await upsert_user(user_id, message.from_user.username or "")
@@ -4187,6 +4195,7 @@ async def _render_markets_section(
 
 
 @dp.message(Command("markets"))
+@require_vip
 async def cmd_markets(message: Message):
     user_id = message.from_user.id
     await upsert_user(user_id, message.from_user.username or "")
@@ -4754,6 +4763,7 @@ def _fmt_signal_message(result: dict) -> str:
 
 
 @dp.message(Command("signal"))
+@require_vip
 async def cmd_signal(message: Message):
     """Команда `/signal` — детерминированный auto SL/TP recommender.
 
@@ -5263,6 +5273,7 @@ async def cmd_market(message: Message):
     await handle_market_command(message, message.text or "/market")
 
 
+@require_vip
 async def _cmd_trackrecord(message: Message, report_type: str = None, title: str = "АГЕНТОВ", filter_type: str = "all"):
     await upsert_user(message.from_user.id)
     try:
@@ -5580,6 +5591,7 @@ async def cmd_trackrecord_russia(message: Message):
 # ─── /weeklyreport ────────────────────────────────────────────────────────────
 
 @dp.message(Command("weeklyreport"))
+@require_vip
 async def cmd_weekly(message: Message):
     await upsert_user(message.from_user.id)
     wait_msg = await message.answer("⏳ Формирую отчёт за неделю...")
@@ -6013,6 +6025,7 @@ def _format_pitch_message() -> str:
 
 
 @dp.message(Command("pitch"))
+@require_vip
 async def cmd_pitch(message: Message):
     """Investor pitch — 1-message overview системы."""
     try:
@@ -6334,6 +6347,7 @@ def backtest_keyboard(enabled: bool) -> InlineKeyboardMarkup:
 
 
 @dp.message(Command("backtest"))
+@require_vip
 async def cmd_backtest(message: Message):
     """Show backtest results with nice formatting and keyboard."""
     signals = await get_backtest_signals()
