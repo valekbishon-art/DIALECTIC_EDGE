@@ -1456,12 +1456,21 @@ def _eli5_for_watch_only(watch_levels: list[dict]) -> str:
         # знаком $, чтобы MA200/MA50/MA50W не ловились как цены).
         import re as _re
         price_str = ""
-        price_match = _re.search(r"\$\s*([\d,]+(?:\.\d+)?)\s*[KkКк]?", level)
+        # Match prices like "$80 167", "$1,670", "$2.528", "$106".
+        # Space/thin-space between digit groups is common in Russian formatting.
+        price_match = _re.search(
+            r"\$\s*([\d][\d\s,]*[\d](?:\.\d+)?|\d+(?:\.\d+)?)\s*[KkКк]?",
+            level,
+        )
         if not price_match:
-            price_match = _re.search(r"\$\s*([\d,]+(?:\.\d+)?)\s*[KkКк]?", note)
+            price_match = _re.search(
+                r"\$\s*([\d][\d\s,]*[\d](?:\.\d+)?|\d+(?:\.\d+)?)\s*[KkКк]?",
+                note,
+            )
         if price_match:
             try:
-                p_val = float(price_match.group(1).replace(",", ""))
+                raw_price = price_match.group(1).replace(",", "").replace(" ", "")
+                p_val = float(raw_price)
                 price_str = f" ${p_val:,.0f}" if p_val >= 100 else f" ${p_val:.2f}"
             except (ValueError, TypeError):
                 pass
@@ -4538,7 +4547,7 @@ def _render_setup_block(
     )
     lines.append(f"R/R:     {top.rr_ratio}x")
     lines.append(
-        f"Size:    ${top.size_usd}   ({top.size_usd / capital * 100:.0f}% от ${capital:.0f})"
+        f"Size:    ${top.size_usd}   ({top.size_usd / capital * 100:.0f}% от капитала)"
     )
     lines.append("```")
 
