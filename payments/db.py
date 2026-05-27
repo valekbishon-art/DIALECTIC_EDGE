@@ -30,17 +30,58 @@ def _is_enabled() -> bool:
     return bool(DATABASE_URL)
 
 
+def _normalize_url(url: str) -> tuple[str, dict]:
+    """Convert a libpq-style PostgreSQL URL to one asyncpg/SQLAlchemy accept.
+
+    - Forces the `postgresql+asyncpg://` scheme.
+    - Strips libpq-only query params (`sslmode`, `gssencmode`, `channel_binding`)
+      that asyncpg doesn't understand — `asyncpg.connect()` rejects them with
+      `unexpected keyword argument 'sslmode'`. Neon-style URLs typically carry
+      `?sslmode=require`; we translate that to `connect_args={"ssl": "require"}`.
+
+    Returns the cleaned URL and a `connect_args` dict to pass to
+    `create_async_engine(..., connect_args=...)`.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    parsed = urlparse(url)
+    connect_args: dict = {}
+    kept: list[tuple[str, str]] = []
+    for k, v in parse_qsl(parsed.query, keep_blank_values=True):
+        if k == "sslmode":
+            if v == "disable":
+                connect_args["ssl"] = False
+            elif v in ("require", "verify-ca", "verify-full"):
+                connect_args["ssl"] = v
+            else:
+                connect_args["ssl"] = True
+        elif k in ("gssencmode", "channel_binding"):
+            continue
+        else:
+            kept.append((k, v))
+
+    cleaned = urlunparse(parsed._replace(query=urlencode(kept)))
+    return cleaned, connect_args
+
+
 async def _get_engine():
     global _engine
     if _engine is None:
         from sqlalchemy.ext.asyncio import create_async_engine
 
-        url = DATABASE_URL
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-        elif url.startswith("postgresql://"):
-            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        _engine = create_async_engine(url, echo=False, pool_size=5, max_overflow=2)
+        url, connect_args = _normalize_url(DATABASE_URL)
+        _engine = create_async_engine(
+            url,
+            echo=False,
+            pool_size=5,
+            max_overflow=2,
+            connect_args=connect_args,
+        )
     return _engine
 
 
