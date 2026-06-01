@@ -17,6 +17,7 @@ Capital for position-sizing comes from env var ``ADVISOR_DEFAULT_CAPITAL_USD``
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Iterable
@@ -288,6 +289,15 @@ async def handle_advise_command(message: Message) -> None:
 
     btc_lean, btc_confidence = await _fetch_btc_outlook_snapshot()
 
+    # FUNDING CARRY — единственный +edge в бэктесте. Тянем фандинг раз и
+    # добавляем строку в анализ каждого актива. Non-fatal (геоблок → пропуск).
+    carry_data: dict = {}
+    try:
+        from core.carry_signal import fetch_funding
+        carry_data = await asyncio.to_thread(fetch_funding)
+    except Exception:
+        logger.debug("advisor: carry funding fetch skipped", exc_info=True)
+
     plans_md: dict[str, str] = {}
     saved_plan_ids: dict[str, int] = {}
     # M2: если фичефлаг включён, авто-сохраняем каждый план (is_portfolio=0,
@@ -317,7 +327,19 @@ async def handle_advise_command(message: Message) -> None:
                 capital_usd=capital_usd,
             )
             plan = recommend(inputs)
-            plans_md[asset] = format_advisor_markdown(plan)
+            md = format_advisor_markdown(plan)
+            # строка фандинга/carry по активу (если есть live-данные)
+            if carry_data:
+                try:
+                    from core.carry_signal import (carry_verdict,
+                                                    get_asset_funding_annualized)
+                    ann = get_asset_funding_annualized(asset, data=carry_data)
+                    v = carry_verdict(ann)
+                    if v:
+                        md += f"\n💱 _{v}_"
+                except Exception:
+                    logger.debug("advisor: carry line skipped for %s", asset, exc_info=True)
+            plans_md[asset] = md
             if persist_plans:
                 try:
                     plan_id = await save_plan(

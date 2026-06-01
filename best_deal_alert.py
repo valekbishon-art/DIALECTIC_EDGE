@@ -284,6 +284,32 @@ class BestDealAlertSystem:
         if not tradable:
             return 0
 
+        # edge-леджер: фиксируем выпущенные best-trade сигналы на момент выпуска
+        # (под флагом, non-fatal — логирование не должно ронять рассылку).
+        try:
+            from config import FEATURE_EDGE_LEDGER
+            if FEATURE_EDGE_LEDGER:
+                from core.edge_ledger import record_signal
+                for s in tradable:
+                    if isinstance(s, SignalSetup):
+                        await record_signal(s, "best_trade")
+        except Exception:
+            logger.debug("edge_ledger record (best_trade) skipped", exc_info=True)
+
+        # СТРУКТУРНАЯ СДЕЛКА (funding carry) — единственный +edge в бэктесте.
+        # Считаем раз за цикл, добавляем секцией к directional-сетапам. Non-fatal:
+        # любая ошибка/геоблок → пустой блок, рассылка идёт как раньше.
+        carry_block = ""
+        try:
+            from core.carry_signal import (format_carry_block_md, log_opportunities,
+                                            scan_carry)
+            carry_opps = await asyncio.to_thread(scan_carry)
+            if carry_opps:
+                carry_block = format_carry_block_md(carry_opps)
+                log_opportunities(carry_opps)
+        except Exception:
+            logger.debug("best-deal: carry block skipped", exc_info=True)
+
         top_n_cfg = get_top_n()
         cooldown_h = get_cooldown_hours()
         bump = get_score_bump()
@@ -327,6 +353,8 @@ class BestDealAlertSystem:
                 continue
 
             message = _format_alert(user_setups)
+            if carry_block:
+                message += "\n" + carry_block
             try:
                 await self.bot.send_message(user_id, message, parse_mode="Markdown")
                 sent += 1

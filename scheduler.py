@@ -529,6 +529,26 @@ class Scheduler:
                 )
                 logger.info("📊 P2P self-audit loop включён")
 
+        # edge-леджер: резолвер pending-сигналов (под флагом FEATURE_EDGE_LEDGER)
+        try:
+            from config import FEATURE_EDGE_LEDGER, EDGE_RESOLVE_INTERVAL_SEC
+            if FEATURE_EDGE_LEDGER:
+                tasks.append(self._edge_resolve_loop())
+                logger.info(
+                    "📐 Edge-леджер резолвер включён (interval=%ss)",
+                    EDGE_RESOLVE_INTERVAL_SEC,
+                )
+        except Exception:
+            logger.debug("edge_ledger loop registration skipped", exc_info=True)
+
+        # carry-брифинг: режим + пошаговая carry-сделка + листинги (FEATURE_CARRY_BRIEFING)
+        if os.getenv("FEATURE_CARRY_BRIEFING", "1").strip().lower() in {"1", "true", "yes", "on"}:
+            tasks.append(self._carry_briefing_loop())
+            logger.info(
+                "💱 Carry briefing loop включён (interval=%ss, единственный +edge: carry)",
+                os.getenv("CARRY_BRIEFING_INTERVAL_SEC", str(6 * 3600)),
+            )
+
         await asyncio.gather(*tasks)
 
     async def _cpm_send_telegram(self, text: str) -> bool:
@@ -569,6 +589,42 @@ class Scheduler:
                 )
         return sent_ok
 
+    async def _carry_briefing_loop(self):
+        """Ежедневный carry-брифинг: режим рынка + пошаговая carry-сделка + листинги.
+
+        Шлёт подписчикам (resolver как у alert_engine) понятное HTML-сообщение с
+        ИНСТРУКЦИЯМИ по шагам (купи спот, шорт перп 1x, выход по сигналу) + сигналы
+        ЗАКРЫВАЙ когда фандинг по активу упал. Размер — от CARRY_BRIEFING_CAPITAL
+        (пример-база, юзер масштабирует). Non-fatal: ошибки логируются, луп живёт.
+        """
+        interval = int(os.getenv("CARRY_BRIEFING_INTERVAL_SEC", str(6 * 3600)))
+        capital = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+        await asyncio.sleep(900)  # warm-up 15 мин, не толкаемся на старте
+        while self._running:
+            try:
+                from core.carry_briefing import build_briefing, close_alerts
+                text, cur_open = await asyncio.to_thread(build_briefing, capital)
+                prev_open = getattr(self, "_carry_open", {})
+                closes = close_alerts(prev_open, cur_open)
+                self._carry_open = cur_open
+                try:
+                    chat_ids = (_alert_engine_chat_ids(ADMIN_IDS)
+                                if ALERT_ENGINE_LOADED else list(ADMIN_IDS))
+                except Exception:  # noqa: BLE001
+                    chat_ids = list(ADMIN_IDS)
+                for chat_id in chat_ids:
+                    try:
+                        await self.bot.send_message(
+                            chat_id, text, parse_mode="HTML",
+                            disable_web_page_preview=True)
+                        for cm in closes:
+                            await self.bot.send_message(chat_id, cm, parse_mode="HTML")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("carry briefing send failed chat=%s: %s", chat_id, exc)
+            except Exception as e:  # noqa: BLE001
+                logger.error("carry briefing loop error: %s", e)
+            await asyncio.sleep(interval)
+
     async def _daily_digest_loop(self):
         """Каждую минуту проверяет — не пора ли слать дайджест подписчикам."""
         while self._running:
@@ -598,6 +654,32 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"Prediction checker error: {e}")
             await asyncio.sleep(6 * 3600)
+
+    async def _edge_resolve_loop(self):
+        """Резолвит pending-сигналы edge-леджера по свечам (TP/SL/expired).
+
+        Под флагом FEATURE_EDGE_LEDGER (регистрация в start()). Раз в
+        EDGE_RESOLVE_INTERVAL_SEC проходит по всем pending-сигналам и
+        обновляет статус тех, что уже отыграли.
+        """
+        from config import EDGE_RESOLVE_INTERVAL_SEC
+
+        await asyncio.sleep(300)  # warm-up: не толкаемся с другими loop'ами на старте
+        while self._running:
+            try:
+                from core.edge_ledger import resolve_pending
+
+                summary = await resolve_pending()
+                if summary.get("resolved"):
+                    logger.info(
+                        "📐 edge-леджер: резолвнуто %s (tp=%s sl=%s exp=%s, pending=%s)",
+                        summary["resolved"], summary.get("tp", 0),
+                        summary.get("sl", 0), summary.get("expired", 0),
+                        summary.get("still_pending", 0),
+                    )
+            except Exception as e:
+                logger.error(f"Edge resolve loop error: {e}")
+            await asyncio.sleep(EDGE_RESOLVE_INTERVAL_SEC)
 
     async def _midnight_reset_loop(self):
         """Сбрасывает счётчики запросов в полночь."""
