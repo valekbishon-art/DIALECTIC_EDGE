@@ -110,6 +110,17 @@ def build_briefing(capital: float) -> tuple[str, dict]:
     except Exception:  # noqa: BLE001
         pass
 
+    # CALENDAR BASIS CARRY — второй живой edge (cash-and-carry до экспирации).
+    try:
+        from core.basis_carry import scan as scan_basis
+        bopps = scan_basis()
+        if bopps:
+            b = bopps[0]
+            parts.append(f"\n🗓 <b>Basis carry:</b> {b.asset} ~{b.net_annual_pct:.1f}% годовых нетто "
+                         f"(контракт {b.contract}, до {b.expiry}). Жми /basis — детали по шагам.")
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         lb = listing_block(fetch_new_listings(48))
         if lb:

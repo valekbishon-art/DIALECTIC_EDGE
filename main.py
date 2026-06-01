@@ -3187,6 +3187,37 @@ async def _kb_arb(message: Message):
     await cmd_arb(message)
 
 
+# ─── /basis — calendar basis carry (cash-and-carry, держим до экспирации) ──────
+@dp.message(Command("basis"))
+async def cmd_basis(message: Message):
+    """Basis carry: ЛОНГ спот + ШОРТ квартальный фьюч, держим до экспирации.
+
+    /basis [депозит] — депозит для расчёта ног (по умолчанию из env).
+    """
+    wait = await message.answer("⏳ Считаю calendar basis по квартальным фьючам Binance…")
+    parts = (message.text or "").split()
+    cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+    try:
+        if len(parts) >= 2:
+            cap = float(parts[1].replace("$", "").replace(",", ""))
+    except ValueError:
+        pass
+    try:
+        from core.basis_carry import scan, format_basis_md
+        opps = await asyncio.to_thread(scan)
+        text = format_basis_md(opps, capital=cap)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать basis carry: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
 # ─── /calc — калькулятор дельта-нейтральной позиции ────────────────────────────
 @dp.message(Command("calc"))
 async def cmd_calc(message: Message):
@@ -6232,6 +6263,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="funding", description="💸 Funding top-10 futures"),
         BotCommand(command="carry", description="💱 Carry-сделка по шагам + режим"),
         BotCommand(command="arb", description="🔀 Кросс-биржевой funding-арбитраж"),
+        BotCommand(command="basis", description="🗓 Calendar basis carry (cash-and-carry)"),
         BotCommand(command="calc", description="🧮 Калькулятор позиции под депозит"),
         BotCommand(command="track", description="📊 Track-record найденных окон"),
         BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
