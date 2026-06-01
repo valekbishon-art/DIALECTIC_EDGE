@@ -3187,6 +3187,61 @@ async def _kb_arb(message: Message):
     await cmd_arb(message)
 
 
+# ─── /calc — калькулятор дельта-нейтральной позиции ────────────────────────────
+@dp.message(Command("calc"))
+async def cmd_calc(message: Message):
+    """Калькулятор позиции: /calc <депозит> [ставка%]. Считает ноги + доход.
+
+    Без аргументов — берёт лучший живой фандинг как пример. С двумя — точный расчёт.
+    """
+    parts = (message.text or "").split()
+    capital = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+    rate = None
+    asset = ""
+    try:
+        if len(parts) >= 2:
+            capital = float(parts[1].replace("$", "").replace(",", ""))
+        if len(parts) >= 3:
+            rate = float(parts[2].replace("%", ""))
+    except ValueError:
+        await message.answer("Формат: /calc 5000 25  (депозит $5000, ставка 25% год)")
+        return
+    try:
+        from core.position_calc import calc_position, format_calc_md
+        if rate is None:
+            # подставим лучший живой фандинг как пример
+            from core.carry_signal import fetch_funding, scan_carry, THIN
+            pos = [o for o in scan_carry(threshold=THIN, data=await asyncio.to_thread(fetch_funding)) if o.positive]
+            if pos:
+                rate, asset = pos[0].annual_pct, pos[0].asset
+            else:
+                rate = 20.0
+        plan = calc_position(capital, rate, kind="carry")
+        msg = format_calc_md(plan, kind="carry", asset=asset)
+        msg += "\n\n💡 Точный расчёт: /calc <депозит> <ставка%>. Для арба смотри /arb."
+    except Exception as e:  # noqa: BLE001
+        msg = f"⚠️ Калькулятор недоступен: {e}"
+    try:
+        await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(msg)
+
+
+# ─── /track — track-record найденных carry/арб-окон ────────────────────────────
+@dp.message(Command("track"))
+async def cmd_track(message: Message):
+    """Честная сводка: сколько edge-окон бот поймал, средняя ставка."""
+    try:
+        from core.track_record import summarize, format_track_md
+        msg = format_track_md(await asyncio.to_thread(summarize))
+    except Exception as e:  # noqa: BLE001
+        msg = f"⚠️ Track-record недоступен: {e}"
+    try:
+        await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(msg)
+
+
 # ─── /profile ─────────────────────────────────────────────────────────────────
 
 @dp.message(Command("profile"))
@@ -6177,6 +6232,8 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="funding", description="💸 Funding top-10 futures"),
         BotCommand(command="carry", description="💱 Carry-сделка по шагам + режим"),
         BotCommand(command="arb", description="🔀 Кросс-биржевой funding-арбитраж"),
+        BotCommand(command="calc", description="🧮 Калькулятор позиции под депозит"),
+        BotCommand(command="track", description="📊 Track-record найденных окон"),
         BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
         BotCommand(command="status", description="Краткий статус"),
         BotCommand(command="tt", description="🧪 Тест"),
