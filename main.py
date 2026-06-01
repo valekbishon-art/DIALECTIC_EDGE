@@ -262,24 +262,28 @@ PERSISTENT_BTN_SETTINGS = "⚙️ Настройки"
 PERSISTENT_BTN_SIGNAL   = "🎯 Лучшая сделка"
 PERSISTENT_BTN_SCREENER = "🧪 Скринер"
 PERSISTENT_BTN_P2P      = "🧭 P2P арбитраж"
+PERSISTENT_BTN_CARRY    = "💱 Carry"
+PERSISTENT_BTN_ARB      = "🔀 Кросс-арб"
 PERSISTENT_BTN_HELP     = "❓ Помощь"
 
 
 def persistent_kb() -> ReplyKeyboardMarkup:
-    """Главное меню снизу. Висит постоянно. 3 ряда — выше плотность."""
+    """Главное меню снизу. Висит постоянно. 3 ряда по 3 — без 'Лучшей сделки'
+    (directional-пережиток, доказанно убыточен). Carry/Арб на видном месте."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [
                 KeyboardButton(text=PERSISTENT_BTN_DAILY),
                 KeyboardButton(text=PERSISTENT_BTN_MARKETS),
-                KeyboardButton(text=PERSISTENT_BTN_SIGNAL),
+                KeyboardButton(text=PERSISTENT_BTN_CARRY),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_ARB),
                 KeyboardButton(text=PERSISTENT_BTN_PITCH),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
-                KeyboardButton(text=PERSISTENT_BTN_P2P),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_P2P),
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -985,6 +989,9 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
     lines.extend([
         "",
         "📜 Полный raw-ответ модели и полные дебаты доступны кнопками ниже.",
+        "",
+        "💱 *Что РЕАЛЬНО делать* (проверено бэктестом 2020-26, не угадайка цены): "
+        "жми /carry — режим рынка + carry-сделка по шагам · /arb — кросс-биржевой funding-арбитраж.",
     ])
 
     return ["\n".join(lines)]
@@ -1584,6 +1591,12 @@ def format_money_button_message(report_text: str, macro=None) -> str:
         except Exception:
             pass
     out.append("")
+    # Честная плашка: directional MA-уровни доказанно убыточны на дневках. Реальный
+    # edge (carry/арб) уходит отдельным сообщением ниже из колбэка.
+    out.append("⚠️ _Уровни ниже — для НАБЛЮДЕНИЯ, не сигналы: бэктест 2020-26 показал, "
+               "что MA-пробои на дневках убыточны. Что РЕАЛЬНО делать (carry + кросс-арб) — "
+               "в сообщении ниже 👇_")
+    out.append("")
 
     if actionable:
         out.append("✅ *Конкретная сделка:*")
@@ -1719,6 +1732,18 @@ async def handle_money_button_callback(callback: CallbackQuery):
         clean_markdown(msg),
         parse_mode="Markdown",
     )
+    # РЕАЛЬНЫЙ EDGE — то что доказано работает (режим + carry + кросс-арб), отдельным
+    # HTML-сообщением. Non-fatal: ошибка/геоблок не ломает основную стратегию.
+    try:
+        from core.carry_briefing import build_briefing
+        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+        edge_text, _ = await asyncio.to_thread(build_briefing, cap)
+        await bot.send_message(
+            callback.message.chat.id, edge_text,
+            parse_mode="HTML", disable_web_page_preview=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("real-edge block (money button) skipped: %s", e)
 
 
 def format_signal_trader_status_message(status: dict) -> str:
@@ -3091,11 +3116,6 @@ async def _kb_settings(message: Message):
     await cmd_profile(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_SIGNAL)
-async def _kb_signal(message: Message):
-    await cmd_signal(message)
-
-
 @dp.message(F.text == PERSISTENT_BTN_SCREENER)
 async def _kb_screener(message: Message):
     await cmd_screener(message)
@@ -3109,6 +3129,59 @@ async def _kb_p2p(message: Message):
 @dp.message(F.text == PERSISTENT_BTN_HELP)
 async def _kb_help(message: Message):
     await cmd_help(message)
+
+
+# ─── /carry — единственный +edge: режим + carry-сделка по шагам + листинги ──────
+@dp.message(Command("carry"))
+async def cmd_carry(message: Message):
+    """Carry-брифинг по запросу: режим рынка, пошаговая carry-сделка, листинги."""
+    wait = await message.answer("⏳ Собираю carry-брифинг (режим, фандинг, базис, листинги)…")
+    try:
+        from core.carry_briefing import build_briefing
+        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+        text, _ = await asyncio.to_thread(build_briefing, cap)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать carry-брифинг: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
+@dp.message(F.text == PERSISTENT_BTN_CARRY)
+async def _kb_carry(message: Message):
+    await cmd_carry(message)
+
+
+# ─── /arb — КРОСС-БИРЖЕВОЙ funding-арбитраж (чего нет на одной бирже) ───────────
+@dp.message(Command("arb"))
+async def cmd_arb(message: Message):
+    """Кросс-биржевой funding-арб: лонг перп где фандинг низкий, шорт где высокий."""
+    wait = await message.answer("⏳ Сканирую фандинг по 4 биржам (Binance/Bybit/Gate/Hyperliquid)…")
+    try:
+        from core.cross_exchange import fetch_all, find_spreads, format_arb_md
+        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+        opps = await asyncio.to_thread(lambda: find_spreads(fetch_all()))
+        text = format_arb_md(opps, capital=cap)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать кросс-арб: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
+@dp.message(F.text == PERSISTENT_BTN_ARB)
+async def _kb_arb(message: Message):
+    await cmd_arb(message)
 
 
 # ─── /profile ─────────────────────────────────────────────────────────────────
@@ -6099,6 +6172,8 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="trackrecord", description="📊 Вся статистика"),
         BotCommand(command="markets", description="Рынки + сигналы, подписка"),
         BotCommand(command="funding", description="💸 Funding top-10 futures"),
+        BotCommand(command="carry", description="💱 Carry-сделка по шагам + режим"),
+        BotCommand(command="arb", description="🔀 Кросс-биржевой funding-арбитраж"),
         BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
         BotCommand(command="status", description="Краткий статус"),
         BotCommand(command="tt", description="🧪 Тест"),
