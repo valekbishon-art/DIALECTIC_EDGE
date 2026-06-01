@@ -610,11 +610,21 @@ class Scheduler:
         await asyncio.sleep(900)  # warm-up 15 мин, не толкаемся на старте
         while self._running:
             try:
-                from core.carry_briefing import build_briefing, close_alerts
+                from core.carry_briefing import build_briefing, close_alerts, arb_close_alerts
                 text, cur_open = await asyncio.to_thread(build_briefing, capital)
                 prev_open = getattr(self, "_carry_open", {})
                 closes = close_alerts(prev_open, cur_open)
                 self._carry_open = cur_open
+                # Кросс-арб: отслеживаем спреды, шлём ЗАКРЫВАЙ когда схлопнулись.
+                try:
+                    from core.cross_exchange import fetch_all, find_spreads
+                    arb = await asyncio.to_thread(lambda: find_spreads(fetch_all()))
+                    cur_arb = {o.asset: o.spread for o in arb}
+                    prev_arb = getattr(self, "_arb_open", {})
+                    closes = closes + arb_close_alerts(prev_arb, cur_arb)
+                    self._arb_open = cur_arb
+                except Exception:  # noqa: BLE001
+                    logger.debug("arb close-alert check skipped", exc_info=True)
                 try:
                     chat_ids = (_alert_engine_chat_ids(ADMIN_IDS)
                                 if ALERT_ENGINE_LOADED else list(ADMIN_IDS))

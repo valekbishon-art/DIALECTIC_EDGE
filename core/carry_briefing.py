@@ -136,4 +136,25 @@ def close_alerts(prev_open: dict, cur_open: dict) -> list[str]:
     return msgs
 
 
-__all__ = ["build_briefing", "close_alerts", "funding_trade_steps", "listing_block"]
+def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0) -> list[str]:
+    """Сигналы ЗАКРЫВАЙ для кросс-арба: спред по активу схлопнулся ниже min_keep.
+
+    prev_open/cur_open: {asset: spread_pct}. Если актив был открыт, а спред упал
+    ниже порога (или исчез) → пора закрывать обе ноги (доход больше не покрывает
+    косты двух бирж)."""
+    msgs = []
+    for asset, prev_spread in prev_open.items():
+        cur = cur_open.get(asset)
+        if cur is None or cur < min_keep:
+            now_txt = "исчез" if cur is None else f"упал до {cur:.0f}%"
+            msgs.append(
+                f"🔔 <b>ЗАКРЫВАЙ АРБ {asset}</b>\n"
+                f"Спред фандинга {now_txt} (был {prev_spread:.0f}%) — арб больше не платит.\n"
+                f"1️⃣ Закрой ШОРТ перп {asset} на бирже с высоким фандингом.\n"
+                f"2️⃣ Закрой ЛОНГ перп {asset} на второй бирже.\n"
+                f"Закрывай ОБЕ ноги вместе. Забирай собранный спред. 👍")
+    return msgs
+
+
+__all__ = ["build_briefing", "close_alerts", "arb_close_alerts",
+           "funding_trade_steps", "listing_block"]
