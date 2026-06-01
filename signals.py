@@ -659,7 +659,9 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
         # Раньше показывали только №1, теперь юзер видит несколько
         # подтверждённых сетапов («лучшая сделка обрабатывает больше 1
         # позиции» — запрос юзера).
-        top_signals = pick_top_signals(signals, binance_data, verdict, top_n=3)
+        # «Лучшая сделка/ТОП-N» (directional score-сигналы) УБРАНЫ: бэктест 2020-26
+        # показал, что они робастно убыточны на дневках. Реальный edge — /carry /arb.
+        top_signals: list = []
         best_keys: set[tuple] = set()
         if top_signals:
             best_keys = {
@@ -711,37 +713,14 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
                 lines.append(f"   _Подтверждения: {confirm_str}_")
             lines.append("")
 
-        lines.append("🔔 *СИГНАЛЫ*")
-
-        verdict_value = (verdict or {}).get("verdict") if verdict else None
-        if verdict_value not in ("BULLISH", "BEARISH"):
-            tag = "NEUTRAL" if verdict_value == "NEUTRAL" else "не определён"
-            lines.append("")
-            lines.append(
-                f"⚠️ _Вердикт `/daily` — {tag}. Сигналы ниже — это инфа для "
-                f"наблюдения, не приглашение войти. Решение за тобой._"
-            )
-            lines.append("")
-
-        for s in signals:
-            emoji = "🟢" if s["direction"] == "LONG" else "🔴"
-            conf = s["confidence"]
-            conf_emoji = "✅" if conf >= 70 else "⚠️"
-
-            # Помечаем ★ сигналы, которые R-система отметила как топ-3.
-            # Это даёт юзеру визуальную привязку: «вот эти из списка ниже
-            # — те же что в блоке ТОП-N СДЕЛОК выше».
-            key = (s.get("symbol"), s.get("direction"), s.get("type"))
-            star = " ⭐" if key in best_keys else ""
-
-            lines.append(
-                f"{emoji} {s['symbol']} → {s['direction']} {conf_emoji}{conf}%{star}"
-            )
-            lines.append(f"   {s['reason']}")
-            lines.append("")
+        # Список directional LONG/SHORT-сигналов УБРАН (робастно убыточен по
+        # бэктесту 2020-26). Цены/фандинг выше оставлены — полезно. Реальный edge:
+        lines.append("💱 *Что РЕАЛЬНО делать* (проверено бэктестом, не угадайка цены):")
+        lines.append("• /carry — режим рынка + carry-сделка по шагам")
+        lines.append("• /arb — кросс-биржевой funding-арбитраж")
+        lines.append("_Directional LONG/SHORT-сигналы убраны как убыточные._")
     else:
-        lines.append("⚪️ *СИГНАЛЫ*")
-        lines.append("Ситуация неопределена")
+        lines.append("💱 *Что делать:* /carry · /arb — реальный edge (carry/арбитраж).")
 
     lines.extend([
         "",
