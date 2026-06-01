@@ -775,28 +775,36 @@ class AutoTracker:
         return "\n".join(lines)
     
     async def upload_to_github(self, content: str, filename: str) -> bool:
-        """Загрузить файл на GitHub."""
+        """Загрузить файл на GitHub.
+
+        Пушим в DATA-ветку (GITHUB_DATA_BRANCH, деф data/market-cache), НЕ в master.
+        Иначе каждый апдейт AUTO_TRACK.md триггерит редеплой Railway (он следит за
+        master). Данные-артефакты должны жить в отдельной ветке — Railway её игнорит.
+        """
         if not GITHUB_TOKEN:
             logger.warning("No GITHUB_TOKEN — не могу загрузить на GitHub")
             return False
-        
+
+        data_branch = os.getenv("GITHUB_DATA_BRANCH", "data/market-cache")
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
-        
+
         try:
-            # Get current SHA
-            resp = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"}, timeout=10)
+            # Get current SHA на DATA-ветке (не на master)
+            resp = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"},
+                                params={"ref": data_branch}, timeout=10)
             sha = resp.json().get("sha") if resp.status_code == 200 else None
-            
+
             data = {
                 "message": f"📊 Update {filename} {datetime.now().strftime('%Y-%m-%d %H:%M')} [skip ci]",
                 "content": base64.b64encode(content.encode()).decode(),
+                "branch": data_branch,
             }
             if sha:
                 data["sha"] = sha
-            
+
             resp = requests.put(url, headers={"Authorization": f"token {GITHUB_TOKEN}"}, json=data, timeout=10)
             if resp.status_code in (200, 201):
-                logger.info(f"✅ {filename} обновлён на GitHub")
+                logger.info(f"✅ {filename} обновлён на GitHub (ветка {data_branch})")
                 return True
             else:
                 logger.warning(f"GitHub upload failed: {resp.status_code} {resp.text}")
