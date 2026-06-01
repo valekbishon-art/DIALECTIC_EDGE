@@ -262,6 +262,7 @@ PERSISTENT_BTN_SETTINGS = "⚙️ Настройки"
 PERSISTENT_BTN_SIGNAL   = "🎯 Лучшая сделка"
 PERSISTENT_BTN_SCREENER = "🧪 Скринер"
 PERSISTENT_BTN_P2P      = "🧭 P2P арбитраж"
+PERSISTENT_BTN_CARRY    = "💱 Carry"
 PERSISTENT_BTN_HELP     = "❓ Помощь"
 
 
@@ -280,6 +281,7 @@ def persistent_kb() -> ReplyKeyboardMarkup:
                 KeyboardButton(text=PERSISTENT_BTN_P2P),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_CARRY),
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -3109,6 +3111,32 @@ async def _kb_p2p(message: Message):
 @dp.message(F.text == PERSISTENT_BTN_HELP)
 async def _kb_help(message: Message):
     await cmd_help(message)
+
+
+# ─── /carry — единственный +edge: режим + carry-сделка по шагам + листинги ──────
+@dp.message(Command("carry"))
+async def cmd_carry(message: Message):
+    """Carry-брифинг по запросу: режим рынка, пошаговая carry-сделка, листинги."""
+    wait = await message.answer("⏳ Собираю carry-брифинг (режим, фандинг, базис, листинги)…")
+    try:
+        from core.carry_briefing import build_briefing
+        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+        text, _ = await asyncio.to_thread(build_briefing, cap)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать carry-брифинг: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
+@dp.message(F.text == PERSISTENT_BTN_CARRY)
+async def _kb_carry(message: Message):
+    await cmd_carry(message)
 
 
 # ─── /profile ─────────────────────────────────────────────────────────────────
@@ -6099,6 +6127,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="trackrecord", description="📊 Вся статистика"),
         BotCommand(command="markets", description="Рынки + сигналы, подписка"),
         BotCommand(command="funding", description="💸 Funding top-10 futures"),
+        BotCommand(command="carry", description="💱 Carry-сделка по шагам + режим"),
         BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
         BotCommand(command="status", description="Краткий статус"),
         BotCommand(command="tt", description="🧪 Тест"),
