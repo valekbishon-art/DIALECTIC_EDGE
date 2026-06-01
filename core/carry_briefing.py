@@ -99,6 +99,17 @@ def build_briefing(capital: float) -> tuple[str, dict]:
     except Exception:  # noqa: BLE001
         pass
 
+    # КРОСС-БИРЖЕВОЙ арб — то, чего нет на одной бирже. Топ-спред, детали в /arb.
+    try:
+        from core.cross_exchange import fetch_all, find_spreads
+        arb = find_spreads(fetch_all())
+        if arb:
+            a = arb[0]
+            parts.append(f"\n🔀 <b>Кросс-биржевой арб:</b> {a.asset} спред {a.spread:.0f}% год "
+                         f"(шорт {a.short_venue} / лонг {a.long_venue}). Жми /arb — детали по шагам.")
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         lb = listing_block(fetch_new_listings(48))
         if lb:
