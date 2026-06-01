@@ -991,6 +991,9 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
     lines.extend([
         "",
         "📜 Полный raw-ответ модели и полные дебаты доступны кнопками ниже.",
+        "",
+        "💱 *Что РЕАЛЬНО делать* (проверено бэктестом 2020-26, не угадайка цены): "
+        "жми /carry — режим рынка + carry-сделка по шагам · /arb — кросс-биржевой funding-арбитраж.",
     ])
 
     return ["\n".join(lines)]
@@ -1590,6 +1593,12 @@ def format_money_button_message(report_text: str, macro=None) -> str:
         except Exception:
             pass
     out.append("")
+    # Честная плашка: directional MA-уровни доказанно убыточны на дневках. Реальный
+    # edge (carry/арб) уходит отдельным сообщением ниже из колбэка.
+    out.append("⚠️ _Уровни ниже — для НАБЛЮДЕНИЯ, не сигналы: бэктест 2020-26 показал, "
+               "что MA-пробои на дневках убыточны. Что РЕАЛЬНО делать (carry + кросс-арб) — "
+               "в сообщении ниже 👇_")
+    out.append("")
 
     if actionable:
         out.append("✅ *Конкретная сделка:*")
@@ -1725,6 +1734,18 @@ async def handle_money_button_callback(callback: CallbackQuery):
         clean_markdown(msg),
         parse_mode="Markdown",
     )
+    # РЕАЛЬНЫЙ EDGE — то что доказано работает (режим + carry + кросс-арб), отдельным
+    # HTML-сообщением. Non-fatal: ошибка/геоблок не ломает основную стратегию.
+    try:
+        from core.carry_briefing import build_briefing
+        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+        edge_text, _ = await asyncio.to_thread(build_briefing, cap)
+        await bot.send_message(
+            callback.message.chat.id, edge_text,
+            parse_mode="HTML", disable_web_page_preview=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("real-edge block (money button) skipped: %s", e)
 
 
 def format_signal_trader_status_message(status: dict) -> str:
