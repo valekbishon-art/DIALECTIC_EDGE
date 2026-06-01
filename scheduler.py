@@ -455,12 +455,16 @@ class Scheduler:
                 _p2p_get_alert_interval_sec(),
             )
 
-        if BTC_OUTLOOK_ALERTS_LOADED and _btc_alerts_enabled():
-            tasks.append(self._btc_outlook_alert_loop())
-            logger.info(
-                "🟧 BTC outlook alerts включены (interval=%ss)",
-                _btc_alert_interval_sec(),
-            )
+        # BTC outlook alert ОТКЛЮЧЁН как directional-пережиток: шлёт «BULL/BEAR
+        # confidence X%» — прогноз направления, который бэктест 2020-26 опроверг.
+        # «100%» вводит в заблуждение (это доля слабых сигналов, не вероятность).
+        # Реальный edge — /carry и /arb. Вернуть: раскомментируй + FEATURE_BTC_OUTLOOK_ALERTS=1.
+        # if BTC_OUTLOOK_ALERTS_LOADED and _btc_alerts_enabled():
+        #     tasks.append(self._btc_outlook_alert_loop())
+        #     logger.info(
+        #         "🟧 BTC outlook alerts включены (interval=%ss)",
+        #         _btc_alert_interval_sec(),
+        #     )
 
         if ALERT_ENGINE_LOADED and _alert_engine_enabled():
             tasks.append(self._alert_engine_loop())
