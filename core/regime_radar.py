@@ -16,14 +16,33 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
-SPOT = "https://api.binance.com"
+UA = {"User-Agent": "Mozilla/5.0"}
+
+
+def _try(url: str, parse, timeout: int = 15):
+    req = urllib.request.Request(url, headers=UA)
+    return parse(json.loads(urllib.request.urlopen(req, timeout=timeout).read()))
 
 
 def _daily_closes(symbol: str = "BTCUSDT", limit: int = 400) -> list[float]:
-    url = f"{SPOT}/api/v3/klines?symbol={symbol}&interval=1d&limit={limit}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    data = json.loads(urllib.request.urlopen(req, timeout=15).read())
-    return [float(r[4]) for r in data]
+    """Дневные close BTC. Фолбэк-цепочка: fapi (фьючерсы, работает где спот геоблок)
+    → spot api → Bybit. На Railway спот-Binance часто 451, поэтому fapi первым."""
+    sources = [
+        (f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1d&limit={limit}",
+         lambda d: [float(r[4]) for r in d]),
+        (f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit={limit}",
+         lambda d: [float(r[4]) for r in d]),
+        (f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=D&limit={min(limit,1000)}",
+         lambda d: [float(r[4]) for r in reversed(d.get("result", {}).get("list", []))]),
+    ]
+    for url, parse in sources:
+        try:
+            closes = _try(url, parse)
+            if closes and len(closes) >= 60:
+                return closes
+        except Exception as e:  # noqa: BLE001
+            logger.debug("regime closes source failed (%s): %s", url[:40], e)
+    return []
 
 
 def _rv(rets: list[float], annualize: bool = True) -> float:
