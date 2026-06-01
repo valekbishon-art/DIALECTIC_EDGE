@@ -909,7 +909,10 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
             if chunks:
                 lines.append("• " + " | ".join(chunks))
     else:
-        lines.extend(["", "📋 *Торговый план:*"])
+        lines.extend(["", "📋 *Торговый план:*",
+                      "_⚠️ Уровни ниже — для НАБЛЮДЕНИЯ, не сигналы: бэктест 2020-26 "
+                      "показал, что MA-пробои на дневках убыточны. Что РЕАЛЬНО делать — "
+                      "/carry и /arb (см. низ дайджеста)._"])
         if plans:
             # Per-asset coverage: 5-6 крипто (BTC/ETH/SOL/BNB/XRP) + 6 макро
             # (SPX/NDX/GOLD/OIL/DXY/VIX) → до 11 планов в одном дайджесте.
