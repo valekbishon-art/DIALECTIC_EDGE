@@ -305,18 +305,14 @@ class TestBuildSignalsMessageStar(unittest.TestCase):
             ),
         }
         msg = build_signals_message(signals, data, {"verdict": "BULLISH"})
-        self.assertIn("⭐ *ЛУЧШАЯ СДЕЛКА СЕЙЧАС*", msg)
-        # ★ должна быть рядом с BTC, не с ETH.
-        btc_line = [
-            line for line in msg.splitlines()
-            if "BTCUSDT" in line and "→" in line
-        ][0]
-        eth_line = [
-            line for line in msg.splitlines()
-            if "ETHUSDT" in line and "→" in line
-        ][0]
-        self.assertIn("⭐", btc_line)
-        self.assertNotIn("⭐", eth_line)
+        # Directional-блок 'ЛУЧШАЯ СДЕЛКА' УБРАН (робастно убыточен по бэктесту
+        # 2020-26). Теперь: его нет, есть указатель на реальный edge, данные
+        # рынка (цены/трейдеры) сохранены.
+        self.assertNotIn("ЛУЧШАЯ СДЕЛКА", msg)
+        self.assertNotIn(" → ", msg)          # нет строк-сигналов 'BTC → LONG'
+        self.assertIn("/carry", msg)
+        self.assertIn("/arb", msg)
+        self.assertIn("ТРЕЙДЕРЫ", msg)
 
     def test_no_best_block_when_all_weak(self):
         signals = [{
@@ -354,20 +350,12 @@ class TestBuildSignalsMessageStar(unittest.TestCase):
                                 has_quant=True, quant_verdict="LONG"),
         }
         msg = build_signals_message(signals, data, None)
-        # Header должен быть «ТОП-3 СДЕЛОК» (3 квалифицировались).
-        self.assertIn("⭐ *ТОП-3 СДЕЛОК СЕЙЧАС*", msg)
-        self.assertNotIn("⭐ *ЛУЧШАЯ СДЕЛКА СЕЙЧАС*", msg)
-        # Все 3 sym'а помечены ⭐ в списке СИГНАЛОВ.
-        for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
-            line = next(
-                line for line in msg.splitlines()
-                if sym in line and "→" in line and "⭐" in line
-            )
-            self.assertIn("⭐", line)
-        # Медали присутствуют в блоке топа.
-        self.assertIn("🥇", msg)
-        self.assertIn("🥈", msg)
-        self.assertIn("🥉", msg)
+        # Directional 'ТОП-N СДЕЛОК' УБРАН — ни заголовков, ни медалей, ни сигналов.
+        self.assertNotIn("ТОП-3 СДЕЛОК", msg)
+        self.assertNotIn("ЛУЧШАЯ СДЕЛКА", msg)
+        self.assertNotIn("🥇", msg)
+        self.assertIn("/carry", msg)
+        self.assertIn("/arb", msg)
 
     def test_falls_back_to_singular_header_when_one_qualifies(self):
         # 1 сильный + 1 слабый — заголовок «ЛУЧШАЯ СДЕЛКА» (singular).
@@ -383,8 +371,10 @@ class TestBuildSignalsMessageStar(unittest.TestCase):
             "DOGEUSDT": _binance(price_change=2.5),
         }
         msg = build_signals_message(signals, data, None)
-        self.assertIn("⭐ *ЛУЧШАЯ СДЕЛКА СЕЙЧАС*", msg)
-        self.assertNotIn("⭐ *ТОП-", msg)
+        # Directional-заголовки убраны полностью — только указатель на реальный edge.
+        self.assertNotIn("ЛУЧШАЯ СДЕЛКА", msg)
+        self.assertNotIn("ТОП-", msg)
+        self.assertIn("/carry", msg)
 
 
 if __name__ == "__main__":
