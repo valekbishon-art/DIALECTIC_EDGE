@@ -375,12 +375,16 @@ class Scheduler:
         if SMART_MONEY_ALERT_ENABLED and self._smart_money_alert:
             tasks.append(self._smart_money_alert_loop())
 
-        if (
-            BEST_DEAL_ALERT_ENABLED
-            and best_deal_feature_enabled()
-            and self._best_deal_alert is not None
-        ):
-            tasks.append(self._best_deal_alert_loop())
+        # «Лучшая сделка» (best_deal auto-push) ОТКЛЮЧЕНА как directional-пережиток:
+        # бэктест 2020-26 показал, что её score-сигналы робастно убыточны. Заменена
+        # carry-брифингом (_carry_briefing_loop). Чтобы вернуть — раскомментируй +
+        # FEATURE_BEST_DEAL_AUTO_PUSH=1. Класс/тесты best_deal_alert оставлены.
+        # if (
+        #     BEST_DEAL_ALERT_ENABLED
+        #     and best_deal_feature_enabled()
+        #     and self._best_deal_alert is not None
+        # ):
+        #     tasks.append(self._best_deal_alert_loop())
 
         if POST_MORTEM_ENABLED and FEATURE_POST_MORTEM:
             tasks.append(self._post_mortem_loop())

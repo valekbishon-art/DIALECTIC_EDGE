@@ -268,24 +268,22 @@ PERSISTENT_BTN_HELP     = "❓ Помощь"
 
 
 def persistent_kb() -> ReplyKeyboardMarkup:
-    """Главное меню снизу. Висит постоянно. 4 ряда — выше плотность."""
+    """Главное меню снизу. Висит постоянно. 3 ряда по 3 — без 'Лучшей сделки'
+    (directional-пережиток, доказанно убыточен). Carry/Арб на видном месте."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [
                 KeyboardButton(text=PERSISTENT_BTN_DAILY),
                 KeyboardButton(text=PERSISTENT_BTN_MARKETS),
-                KeyboardButton(text=PERSISTENT_BTN_SIGNAL),
-            ],
-            [
                 KeyboardButton(text=PERSISTENT_BTN_CARRY),
-                KeyboardButton(text=PERSISTENT_BTN_ARB),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_ARB),
                 KeyboardButton(text=PERSISTENT_BTN_PITCH),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
-                KeyboardButton(text=PERSISTENT_BTN_P2P),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_P2P),
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -3116,11 +3114,6 @@ async def _kb_markets(message: Message):
 @dp.message(F.text == PERSISTENT_BTN_SETTINGS)
 async def _kb_settings(message: Message):
     await cmd_profile(message)
-
-
-@dp.message(F.text == PERSISTENT_BTN_SIGNAL)
-async def _kb_signal(message: Message):
-    await cmd_signal(message)
 
 
 @dp.message(F.text == PERSISTENT_BTN_SCREENER)
