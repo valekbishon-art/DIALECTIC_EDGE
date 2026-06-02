@@ -145,8 +145,13 @@ VENUES = {
 }
 
 
-def fetch_all() -> dict:
-    """{ASSET: {venue: annual_pct}} по всем биржам (параллельно)."""
+def fetch_all(*, with_health: bool = False):
+    """{ASSET: {venue: annual_pct}} по всем биржам (параллельно).
+
+    with_health=True → (by_asset, healthy): healthy=True если ≥2 биржи отдали
+    данные (для арба нужно минимум 2). Нужно чтобы отличить «спредов реально нет»
+    от «сеть/биржи упали» — иначе пустой фетч = ложный масс-выход из всех позиций.
+    """
     from concurrent.futures import ThreadPoolExecutor
     res = {}
     with ThreadPoolExecutor(max_workers=len(VENUES)) as ex:
@@ -162,6 +167,9 @@ def fetch_all() -> dict:
             if abs(ann) > SANE_ABS_CAP:
                 continue
             by_asset.setdefault(asset, {})[venue] = ann
+    if with_health:
+        healthy = sum(1 for t in res.values() if t) >= 2
+        return by_asset, healthy
     return by_asset
 
 
@@ -259,17 +267,25 @@ def refine_hl_average(by_asset: dict, opps: list,
     return by_asset
 
 
+def scan_with_health(min_spread: float = MIN_SPREAD_ANNUAL, *, refine: bool = True,
+                     hours: int = HL_AVG_HOURS) -> tuple[list[ArbOpportunity], bool]:
+    """(opps, healthy). healthy=False → данные ненадёжны (биржи упали), не делать
+    выводов о закрытии позиций."""
+    by, healthy = fetch_all(with_health=True)
+    opps = find_spreads(by, min_spread)
+    if refine and opps and healthy:
+        by = refine_hl_average(by, opps, hours)
+        opps = find_spreads(by, min_spread)  # пересчёт hi/lo по сглаженным
+    return opps, healthy
+
+
 def scan(min_spread: float = MIN_SPREAD_ANNUAL, *, refine: bool = True,
          hours: int = HL_AVG_HOURS) -> list[ArbOpportunity]:
     """Полный скан арба. refine=True: для финалистов с Hyperliquid пересчитываем
     спред по СРЕДНЕМУ фандингу HL (а не часовому спайку) → отсекаем фантомы."""
-    by = fetch_all()
-    opps = find_spreads(by, min_spread)
-    if refine and opps:
-        by = refine_hl_average(by, opps, hours)
-        opps = find_spreads(by, min_spread)  # пересчёт hi/lo по сглаженным
-    return opps
+    return scan_with_health(min_spread, refine=refine, hours=hours)[0]
 
 
 __all__ = ["ArbOpportunity", "fetch_all", "find_spreads", "format_arb_md", "scan",
-           "hl_funding_avg", "refine_hl_average", "VENUES", "MIN_SPREAD_ANNUAL"]
+           "scan_with_health", "hl_funding_avg", "refine_hl_average", "VENUES",
+           "MIN_SPREAD_ANNUAL"]

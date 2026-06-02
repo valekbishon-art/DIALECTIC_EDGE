@@ -65,7 +65,8 @@ class ScanPipelineTest(unittest.TestCase):
     def setUp(self):
         self._orig_fetch = ce.fetch_all
         self._orig_avg = ce.hl_funding_avg
-        ce.fetch_all = lambda: {"DOT": {"Gate": 11.0, "Hyperliquid": -43.0}}
+        _by = {"DOT": {"Gate": 11.0, "Hyperliquid": -43.0}}
+        ce.fetch_all = lambda *, with_health=False: (_by, True) if with_health else _by
         ce.hl_funding_avg = lambda coin, hours=24: 5.5
 
     def tearDown(self):

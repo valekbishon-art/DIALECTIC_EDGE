@@ -122,8 +122,8 @@ def regime_now(symbol: str = "BTCUSDT") -> dict:
         action += " ⚠️ Волатильность РАСТЁТ — будь осторожнее обычного."
 
     return {"label": label, "emoji": emoji, "rv30": round(rv30, 1),
-            "pct": round(pct, 2), "rising": rising, "carry_size": size,
-            "action": action}
+            "rv7": round(rv7, 1), "pct": round(pct, 2), "rising": rising,
+            "carry_size": size, "action": action}
 
 
 def format_regime_md(r: dict) -> str:
@@ -131,9 +131,13 @@ def format_regime_md(r: dict) -> str:
     if not r:
         return "📊 <b>Режим рынка:</b> данные недоступны."
     arrow = " ↑растёт" if r["rising"] else ""
+    # Явно указываем ОКНО: 30д — основная метрика режима, 7д — краткосрочная
+    # (часто заметно ниже в штиле). Без окна число вводит в заблуждение.
+    rv7 = r.get("rv7")
+    short = f" · 7д: {rv7}%" if rv7 is not None else ""
     return (f"📊 <b>РЕЖИМ РЫНКА: {r['emoji']} {r['label']}</b>\n"
-            f"Волатильность BTC: {r['rv30']}% годовых "
-            f"(выше {int(r['pct']*100)}% дней истории){arrow}\n"
+            f"Реализ. волатильность BTC (годовых): 30д: {r['rv30']}%{short}\n"
+            f"30д выше {int(r['pct']*100)}% дней истории{arrow}\n"
             f"➡️ {r['action']}")
 
 
