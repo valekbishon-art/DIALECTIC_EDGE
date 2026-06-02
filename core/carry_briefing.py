@@ -40,21 +40,47 @@ def funding_trade_steps(asset: str, ann: float, capital: float, regime_size: flo
     )
 
 
+# Перпы на АКЦИИ / pre-IPO — НЕ крипто-токены. Крипто-статистика «хайп→слив,
+# медиана −10%/нед» к ним НЕ применима (это деривативы на реальные компании с
+# известной оценкой). Помечаем их и не советуем шортить вслепую.
+EQUITY_PERP_HINTS = (
+    "SAMSUNG", "HYUNDAI", "SKHYNIX", "HYNIX", "ANTHROPIC", "OPENAI", "SPACEX",
+    "STRIPE", "NVIDIA", "NVDA", "TSLA", "TESLA", "AAPL", "APPLE", "MSFT",
+    "MSTR", "COIN", "META", "GOOG", "GOOGLE", "AMZN", "AMAZON", "NFLX",
+    "AMD", "TSMC", "ASML", "ASTS", "BABA", "PLTR", "PALANTIR",
+)
+
+
+def _is_equity_perp(symbol: str) -> bool:
+    s = (symbol or "").upper()
+    base = s[:-4] if s.endswith("USDT") else (s[:-3] if s.endswith("USD") else s)
+    return any(h in base for h in EQUITY_PERP_HINTS)
+
+
 def listing_block(listings: list[dict]) -> str:
     if not listings:
         return ""
     lines = ["🆕 <b>НОВЫЕ ЛИСТИНГИ (осторожно!)</b>"]
+    has_equity = False
     for lst in listings[:5]:
-        lines.append(f"• <b>{lst['symbol']}</b> (листинг {lst['age_h']:.0f}ч назад)")
+        eq = _is_equity_perp(lst["symbol"])
+        has_equity = has_equity or eq
+        tag = " 🏦 <i>(акция/pre-IPO)</i>" if eq else ""
+        lines.append(f"• <b>{lst['symbol']}</b> (листинг {lst['age_h']:.0f}ч назад){tag}")
     lines.append(
-        "\n❌ <b>НЕ покупай на хайпе.</b> Статистика 2020-2026: новый листинг чаще "
-        "ПАДАЕТ (медиана −10% за неделю) — толпа закупается, потом слив.\n"
+        "\n❌ <b>НЕ покупай на хайпе.</b> Статистика 2020-2026 <b>по крипто-токенам</b>: "
+        "новый листинг чаще ПАДАЕТ (медиана −10% за неделю) — толпа закупается, потом слив.\n"
         "Хочешь играть (по желанию, рискованно):\n"
         "1️⃣ Фьючерсы USDⓈ-M → пара листинга → плечо 1x.\n"
         "2️⃣ ШОРТ на МАЛЕНЬКУЮ сумму (макс 2% депозита — изредка листинг улетает вверх).\n"
         "3️⃣ Стоп-лосс ОБЯЗАТЕЛЬНО +15% от входа.\n"
         "4️⃣ Цель: закрыть через 5-7 дней или при −10%.\n"
         "Лучше для новичка — <b>просто не трогать</b>.")
+    if has_equity:
+        lines.append(
+            "\n🏦 <b>Внимание:</b> помеченные — перпы на АКЦИИ / pre-IPO (Samsung, "
+            "Anthropic и т.п.), а не крипто-токены. Крипто-статистика «хайп→слив» к ним "
+            "<b>НЕ применима</b> — у них своя оценка/динамика. НЕ шорти их по крипто-логике.")
     return "\n".join(lines)
 
 
@@ -147,23 +173,62 @@ def close_alerts(prev_open: dict, cur_open: dict) -> list[str]:
     return msgs
 
 
-def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0) -> list[str]:
-    """Сигналы ЗАКРЫВАЙ для кросс-арба: спред по активу схлопнулся ниже min_keep.
+def _arb_unpack(v):
+    """Значение состояния арба → (spread, short_venue, long_venue).
 
-    prev_open/cur_open: {asset: spread_pct}. Если актив был открыт, а спред упал
-    ниже порога (или исчез) → пора закрывать обе ноги (доход больше не покрывает
-    косты двух бирж)."""
+    Принимает и tuple (spread, short, long), и голый float (back-compat)."""
+    if isinstance(v, (tuple, list)):
+        spread = float(v[0])
+        short = v[1] if len(v) > 1 else None
+        long = v[2] if len(v) > 2 else None
+        return spread, short, long
+    return float(v), None, None
+
+
+def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
+                     cur_healthy: bool = True) -> list[str]:
+    """Сигналы ЗАКРЫВАЙ для кросс-арба.
+
+    Состояние: {asset: (spread, short_venue, long_venue)} (или голый spread).
+    Закрываем когда:
+      • спред упал ниже min_keep / исчез (арб больше не платит), ИЛИ
+      • сменилось НАПРАВЛЕНИЕ (short/long-биржи поменялись) — старую позицию
+        надо закрыть и переоткрыть в новую сторону.
+
+    cur_healthy=False (биржи не отдали данных) → НЕ закрываем ничего: пустой
+    фетч не значит, что все спреды разом исчезли (иначе ложный масс-выход)."""
+    if not cur_healthy:
+        return []
     msgs = []
-    for asset, prev_spread in prev_open.items():
+    for asset, prev in prev_open.items():
+        prev_spread, prev_short, prev_long = _arb_unpack(prev)
         cur = cur_open.get(asset)
-        if cur is None or cur < min_keep:
-            now_txt = "исчез" if cur is None else f"упал до {cur:.0f}%"
+        if cur is None:
             msgs.append(
                 f"🔔 <b>ЗАКРЫВАЙ АРБ {asset}</b>\n"
-                f"Спред фандинга {now_txt} (был {prev_spread:.0f}%) — арб больше не платит.\n"
+                f"Спред фандинга исчез (был {prev_spread:.0f}%) — арб больше не платит.\n"
                 f"1️⃣ Закрой ШОРТ перп {asset} на бирже с высоким фандингом.\n"
                 f"2️⃣ Закрой ЛОНГ перп {asset} на второй бирже.\n"
                 f"Закрывай ОБЕ ноги вместе. Забирай собранный спред. 👍")
+            continue
+        cur_spread, cur_short, cur_long = _arb_unpack(cur)
+        if cur_spread < min_keep:
+            msgs.append(
+                f"🔔 <b>ЗАКРЫВАЙ АРБ {asset}</b>\n"
+                f"Спред фандинга упал до {cur_spread:.0f}% (был {prev_spread:.0f}%) — "
+                f"арб больше не платит.\n"
+                f"1️⃣ Закрой ШОРТ перп {asset} на бирже с высоким фандингом.\n"
+                f"2️⃣ Закрой ЛОНГ перп {asset} на второй бирже.\n"
+                f"Закрывай ОБЕ ноги вместе. Забирай собранный спред. 👍")
+        elif (prev_short and cur_short and
+              (cur_short != prev_short or cur_long != prev_long)):
+            # Направление перевернулось: ноги надо поменять местами.
+            msgs.append(
+                f"🔄 <b>ПЕРЕВОРОТ АРБ {asset}</b>\n"
+                f"Сменилось направление: было ШОРТ {prev_short}/ЛОНГ {prev_long}, "
+                f"стало ШОРТ {cur_short}/ЛОНГ {cur_long} (спред {cur_spread:.0f}%).\n"
+                f"1️⃣ Закрой СТАРЫЕ ноги (ШОРТ {prev_short} / ЛОНГ {prev_long}).\n"
+                f"2️⃣ Переоткрой по-новому: ШОРТ {cur_short} / ЛОНГ {cur_long}. Жми /arb.")
     return msgs
 
 

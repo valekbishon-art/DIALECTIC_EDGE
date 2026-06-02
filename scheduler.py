@@ -615,14 +615,18 @@ class Scheduler:
                 prev_open = getattr(self, "_carry_open", {})
                 closes = close_alerts(prev_open, cur_open)
                 self._carry_open = cur_open
-                # Кросс-арб: отслеживаем спреды, шлём ЗАКРЫВАЙ когда схлопнулись.
+                # Кросс-арб: отслеживаем спреды+направление, шлём ЗАКРЫВАЙ/ПЕРЕВОРОТ.
                 try:
-                    from core.cross_exchange import scan as scan_arb
-                    arb = await asyncio.to_thread(scan_arb)
-                    cur_arb = {o.asset: o.spread for o in arb}
+                    from core.cross_exchange import scan_with_health
+                    arb, healthy = await asyncio.to_thread(scan_with_health)
+                    # храним и направление, чтобы ловить переворот ног
+                    cur_arb = {o.asset: (o.spread, o.short_venue, o.long_venue) for o in arb}
                     prev_arb = getattr(self, "_arb_open", {})
-                    closes = closes + arb_close_alerts(prev_arb, cur_arb)
-                    self._arb_open = cur_arb
+                    closes = closes + arb_close_alerts(prev_arb, cur_arb, cur_healthy=healthy)
+                    # состояние обновляем ТОЛЬКО при надёжных данных — иначе пустой
+                    # фетч затёр бы открытые позиции и дал ложный масс-выход.
+                    if healthy:
+                        self._arb_open = cur_arb
                 except Exception:  # noqa: BLE001
                     logger.debug("arb close-alert check skipped", exc_info=True)
                 try:
