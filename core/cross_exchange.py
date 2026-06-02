@@ -59,15 +59,52 @@ def _get(url: str, timeout: int = 12, post: dict | None = None):
 
 
 # ───────────────────── фетчеры по биржам → {ASSET: annual_pct} ─────────────────
+# Аннуализация ОБЯЗАНА учитывать реальный интервал фандинга символа. В 2025-26
+# Binance/Bybit держат МНОГО альтов на 4ч (часть на 1ч/2ч), а не 8ч. Хардкод ×3
+# (8ч) занижал их фандинг в 2-8 раз → неверный спред и даже неверная нога арба.
+def _binance_intervals() -> dict:
+    """{symbol: interval_hours} из fundingInfo. Endpoint перечисляет ТОЛЬКО
+    спец-интервалы; кого нет — 8ч по умолчанию. {} при ошибке → дефолт 8ч."""
+    out = {}
+    try:
+        for it in _get("https://fapi.binance.com/fapi/v1/fundingInfo"):
+            try:
+                out[it["symbol"]] = float(it.get("fundingIntervalHours", 8))
+            except (KeyError, ValueError, TypeError):
+                pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("xexch binance fundingInfo: %s", e)
+    return out
+
+
+def _bybit_intervals() -> dict:
+    """{symbol: interval_hours} из instruments-info (fundingInterval в МИНУТАХ)."""
+    out = {}
+    try:
+        d = _get("https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000")
+        for it in d.get("result", {}).get("list", []):
+            mins = it.get("fundingInterval")
+            if mins:
+                try:
+                    out[it["symbol"]] = float(mins) / 60.0
+                except (ValueError, TypeError):
+                    pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("xexch bybit instruments: %s", e)
+    return out
+
+
 def funding_binance() -> dict:
     out = {}
+    intervals = _binance_intervals()
     try:
         for p in _get("https://fapi.binance.com/fapi/v1/premiumIndex"):
             s = p.get("symbol", "")
             if not s.endswith("USDT"):
                 continue
             try:
-                out[s[:-4]] = float(p["lastFundingRate"]) * 3 * 365 * 100  # 8ч
+                iv = intervals.get(s, 8.0) or 8.0
+                out[s[:-4]] = float(p["lastFundingRate"]) * (24.0 / iv) * 365 * 100
             except (KeyError, ValueError, TypeError):
                 pass
     except Exception as e:  # noqa: BLE001
@@ -77,6 +114,7 @@ def funding_binance() -> dict:
 
 def funding_bybit() -> dict:
     out = {}
+    intervals = _bybit_intervals()
     try:
         d = _get("https://api.bybit.com/v5/market/tickers?category=linear")
         for it in d.get("result", {}).get("list", []):
@@ -87,7 +125,8 @@ def funding_bybit() -> dict:
             if fr in (None, ""):
                 continue
             try:
-                out[s[:-4]] = float(fr) * 3 * 365 * 100  # 8ч (деф)
+                iv = intervals.get(s, 8.0) or 8.0
+                out[s[:-4]] = float(fr) * (24.0 / iv) * 365 * 100
             except ValueError:
                 pass
     except Exception as e:  # noqa: BLE001
