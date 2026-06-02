@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 import urllib.request
 from dataclasses import dataclass
 
@@ -206,13 +208,68 @@ def format_arb_md(opps: list[ArbOpportunity], capital: float = 0.0) -> str:
             f"4️⃣ Держи пока спред не схлопнется. Следи за маржой на ОБЕИХ биржах.\n")
     lines.append("⚠️ Нужны аккаунты+депозит на обеих биржах. Закрывай обе ноги вместе. "
                  "Спред может схлопнуться быстро. Косты двух бирж учти.")
+    if any("Hyperliquid" in (o.long_venue, o.short_venue) for o in opps[:4]):
+        lines.append("ℹ️ Фандинг Hyperliquid почасовой — показан СРЕДНИЙ за ~сутки "
+                     "(персистентный rate, не часовой спайк). Перед входом глянь, держится ли.")
     lines.append("\n💡 Фиатный P2P-арбитраж (USDT по странам) — команда /p2p.")
     return "\n".join(lines)
 
 
-def scan(min_spread: float = MIN_SPREAD_ANNUAL) -> list[ArbOpportunity]:
-    return find_spreads(fetch_all(), min_spread)
+# ───────────────────── сглаживание Hyperliquid (1ч фандинг) ───────────────────
+# Фандинг Hyperliquid почасовой. Аннуализация ОДНОГО часового снимка ×8760 даёт
+# дикий шум: часовой спайк -0.005%/ч превращается в -44%/год, хотя за сутки
+# средний может быть +5%. Это рисовало фантомные «54% арбы». Для финалистов
+# (тех, кто прошёл порог) до-тягиваем историю фандинга и берём средний за окно.
+HL_AVG_HOURS = int(os.getenv("CROSS_ARB_HL_AVG_HOURS", "24"))
+
+
+def hl_funding_avg(coin: str, hours: int = HL_AVG_HOURS) -> float | None:
+    """Аннуализированный СРЕДНИЙ фандинг Hyperliquid за последние `hours` часов.
+
+    None если истории нет/ошибка. Персистентный rate, а не часовой спайк.
+    """
+    try:
+        now = int(time.time() * 1000)
+        start = now - (hours + 2) * 3600 * 1000
+        d = _get("https://api.hyperliquid.xyz/info",
+                 post={"type": "fundingHistory", "coin": coin,
+                       "startTime": start, "endTime": now})
+        rates = [float(x["fundingRate"]) for x in d if "fundingRate" in x][-hours:]
+        if not rates:
+            return None
+        return sum(rates) / len(rates) * 24 * 365 * 100  # 1ч → год
+    except Exception as e:  # noqa: BLE001
+        logger.debug("hl funding avg %s: %s", coin, e)
+        return None
+
+
+def refine_hl_average(by_asset: dict, opps: list,
+                      hours: int = HL_AVG_HOURS) -> dict:
+    """Для активов-финалистов с ногой на Hyperliquid заменяем мгновенный 1ч
+    фандинг на средний за окно. Возвращает пропатченный by_asset (для повторного
+    find_spreads). Тянем историю ТОЛЬКО для финалистов — дёшево."""
+    hl_assets = {o.asset for o in opps
+                 if "Hyperliquid" in (o.long_venue, o.short_venue)}
+    for asset in hl_assets:
+        if asset not in by_asset or "Hyperliquid" not in by_asset[asset]:
+            continue
+        avg = hl_funding_avg(asset, hours)
+        if avg is not None:
+            by_asset[asset]["Hyperliquid"] = avg
+    return by_asset
+
+
+def scan(min_spread: float = MIN_SPREAD_ANNUAL, *, refine: bool = True,
+         hours: int = HL_AVG_HOURS) -> list[ArbOpportunity]:
+    """Полный скан арба. refine=True: для финалистов с Hyperliquid пересчитываем
+    спред по СРЕДНЕМУ фандингу HL (а не часовому спайку) → отсекаем фантомы."""
+    by = fetch_all()
+    opps = find_spreads(by, min_spread)
+    if refine and opps:
+        by = refine_hl_average(by, opps, hours)
+        opps = find_spreads(by, min_spread)  # пересчёт hi/lo по сглаженным
+    return opps
 
 
 __all__ = ["ArbOpportunity", "fetch_all", "find_spreads", "format_arb_md", "scan",
-           "VENUES", "MIN_SPREAD_ANNUAL"]
+           "hl_funding_avg", "refine_hl_average", "VENUES", "MIN_SPREAD_ANNUAL"]

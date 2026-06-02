@@ -617,8 +617,8 @@ class Scheduler:
                 self._carry_open = cur_open
                 # Кросс-арб: отслеживаем спреды, шлём ЗАКРЫВАЙ когда схлопнулись.
                 try:
-                    from core.cross_exchange import fetch_all, find_spreads
-                    arb = await asyncio.to_thread(lambda: find_spreads(fetch_all()))
+                    from core.cross_exchange import scan as scan_arb
+                    arb = await asyncio.to_thread(scan_arb)
                     cur_arb = {o.asset: o.spread for o in arb}
                     prev_arb = getattr(self, "_arb_open", {})
                     closes = closes + arb_close_alerts(prev_arb, cur_arb)
