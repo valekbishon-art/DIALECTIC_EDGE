@@ -19,19 +19,41 @@ logger = logging.getLogger(__name__)
 UA = {"User-Agent": "Mozilla/5.0"}
 
 
-def _try(url: str, parse, timeout: int = 15):
-    req = urllib.request.Request(url, headers=UA)
+def _try(url: str, parse, timeout: int = 15, post: dict | None = None):
+    data = json.dumps(post).encode() if post is not None else None
+    hdr = dict(UA)
+    if post is not None:
+        hdr["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=hdr)
     return parse(json.loads(urllib.request.urlopen(req, timeout=timeout).read()))
 
 
+def _hyperliquid_closes(base: str, limit: int) -> list[float]:
+    """Дневные close с Hyperliquid (POST candleSnapshot). Достижим с Railway."""
+    import time
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - (limit + 5) * 86400 * 1000
+    body = {"type": "candleSnapshot",
+            "req": {"coin": base, "interval": "1d", "startTime": start_ms, "endTime": now_ms}}
+    return _try("https://api.hyperliquid.xyz/info",
+                lambda d: [float(c["c"]) for c in d], post=body)
+
+
 def _daily_closes(symbol: str = "BTCUSDT", limit: int = 400) -> list[float]:
-    """Дневные close BTC. Фолбэк-цепочка: fapi (фьючерсы, работает где спот геоблок)
-    → spot api → Bybit. На Railway спот-Binance часто 451, поэтому fapi первым."""
+    """Дневные close BTC. Фолбэк-цепочка по убыванию доступности с Railway, где
+    Binance часто 451 (cloud IP геоблок). Gate/Hyperliquid доказанно достижимы
+    (на них же работает кросс-арб), поэтому они в цепочке — иначе режим «N/A»."""
+    base = symbol.replace("USDT", "").replace("USD", "") or "BTC"
+    gate_pair = f"{base}_USDT"
     sources = [
+        # Binance первым (если регион не геоблокнут — самые точные данные)
         (f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1d&limit={limit}",
          lambda d: [float(r[4]) for r in d]),
         (f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit={limit}",
          lambda d: [float(r[4]) for r in d]),
+        # Gate — реальный фолбэк для Railway (close = индекс 2, порядок по возрастанию)
+        (f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={gate_pair}&interval=1d&limit={min(limit,1000)}",
+         lambda d: [float(r[2]) for r in d]),
         (f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=D&limit={min(limit,1000)}",
          lambda d: [float(r[4]) for r in reversed(d.get("result", {}).get("list", []))]),
     ]
@@ -42,6 +64,13 @@ def _daily_closes(symbol: str = "BTCUSDT", limit: int = 400) -> list[float]:
                 return closes
         except Exception as e:  # noqa: BLE001
             logger.debug("regime closes source failed (%s): %s", url[:40], e)
+    # последний фолбэк — Hyperliquid (POST, тоже достижим с Railway)
+    try:
+        closes = _hyperliquid_closes(base, limit)
+        if closes and len(closes) >= 60:
+            return closes
+    except Exception as e:  # noqa: BLE001
+        logger.debug("regime closes hyperliquid failed: %s", e)
     return []
 
 

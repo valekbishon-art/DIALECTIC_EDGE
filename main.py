@@ -3249,13 +3249,15 @@ async def cmd_calc(message: Message):
                 rate = 20.0
         plan = calc_position(capital, rate, kind="carry")
         msg = format_calc_md(plan, kind="carry", asset=asset)
-        msg += "\n\n💡 Точный расчёт: /calc <депозит> <ставка%>. Для арба смотри /arb."
+        msg += "\n\n💡 Точный расчёт: /calc 5000 25 (депозит и ставка% год). Для арба — /arb."
     except Exception as e:  # noqa: BLE001
         msg = f"⚠️ Калькулятор недоступен: {e}"
     try:
         await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
     except Exception:  # noqa: BLE001
-        await message.answer(msg)
+        # HTML не распарсился — шлём без тегов, а не сырой разметкой
+        import re as _re
+        await message.answer(_re.sub(r"</?[a-zA-Z][^>]*>", "", msg))
 
 
 # ─── /track — track-record найденных carry/арб-окон ────────────────────────────
