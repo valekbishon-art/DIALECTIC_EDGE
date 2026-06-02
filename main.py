@@ -264,6 +264,8 @@ PERSISTENT_BTN_SCREENER = "🧪 Скринер"
 PERSISTENT_BTN_P2P      = "🧭 P2P арбитраж"
 PERSISTENT_BTN_CARRY    = "💱 Carry"
 PERSISTENT_BTN_ARB      = "🔀 Кросс-арб"
+PERSISTENT_BTN_BASIS    = "🗓 Базис"
+PERSISTENT_BTN_CALC     = "🧮 Калькулятор"
 PERSISTENT_BTN_HELP     = "❓ Помощь"
 
 
@@ -283,7 +285,11 @@ def persistent_kb() -> ReplyKeyboardMarkup:
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_BASIS),
+                KeyboardButton(text=PERSISTENT_BTN_CALC),
                 KeyboardButton(text=PERSISTENT_BTN_P2P),
+            ],
+            [
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -3218,6 +3224,11 @@ async def cmd_basis(message: Message):
         await message.answer(text)
 
 
+@dp.message(F.text == PERSISTENT_BTN_BASIS)
+async def _kb_basis(message: Message):
+    await cmd_basis(message)
+
+
 # ─── /calc — калькулятор дельта-нейтральной позиции ────────────────────────────
 @dp.message(Command("calc"))
 async def cmd_calc(message: Message):
@@ -3229,10 +3240,13 @@ async def cmd_calc(message: Message):
     capital = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
     rate = None
     asset = ""
+    # Аргументы парсим ТОЛЬКО если это реально команда /calc. По кнопке текст —
+    # «🧮 Калькулятор», аргументов нет → показываем пример по живому фандингу.
+    is_command = bool(parts) and parts[0].lstrip("/").lower().startswith("calc")
     try:
-        if len(parts) >= 2:
+        if is_command and len(parts) >= 2:
             capital = float(parts[1].replace("$", "").replace(",", ""))
-        if len(parts) >= 3:
+        if is_command and len(parts) >= 3:
             rate = float(parts[2].replace("%", ""))
     except ValueError:
         await message.answer("Формат: /calc 5000 25  (депозит $5000, ставка 25% год)")
@@ -3258,6 +3272,11 @@ async def cmd_calc(message: Message):
         # HTML не распарсился — шлём без тегов, а не сырой разметкой
         import re as _re
         await message.answer(_re.sub(r"</?[a-zA-Z][^>]*>", "", msg))
+
+
+@dp.message(F.text == PERSISTENT_BTN_CALC)
+async def _kb_calc(message: Message):
+    await cmd_calc(message)
 
 
 # ─── /track — track-record найденных carry/арб-окон ────────────────────────────
