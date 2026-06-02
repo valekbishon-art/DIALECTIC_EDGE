@@ -3166,9 +3166,9 @@ async def cmd_arb(message: Message):
     """Кросс-биржевой funding-арб: лонг перп где фандинг низкий, шорт где высокий."""
     wait = await message.answer("⏳ Сканирую фандинг по 4 биржам (Binance/Bybit/Gate/Hyperliquid)…")
     try:
-        from core.cross_exchange import fetch_all, find_spreads, format_arb_md
+        from core.cross_exchange import scan as scan_arb, format_arb_md
         cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-        opps = await asyncio.to_thread(lambda: find_spreads(fetch_all()))
+        opps = await asyncio.to_thread(scan_arb)
         text = format_arb_md(opps, capital=cap)
     except Exception as e:  # noqa: BLE001
         text = f"⚠️ Не получилось собрать кросс-арб: {e}"
