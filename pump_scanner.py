@@ -364,6 +364,22 @@ def _fmt_price(p: Optional[float]) -> str:
     return f"{p:.6f}".rstrip("0").rstrip(".")
 
 
+def _pair_links(sig: PumpSignal) -> str:
+    """Markdown-ссылки на ТОЧНУЮ пару BASE/USDT по каждой бирже.
+
+    Снимает путаницу с тикерами-омонимами (PAI/ANON/FUN и т.п.): клик ведёт
+    ровно на тот контракт, который засёк сканер, а не на одноимённый токен.
+    MEXC показываем первой, если она есть.
+    """
+    ordered = sorted(sig.venues, key=lambda v: (v.upper() != "MEXC", v.upper()))
+    parts = []
+    for v in ordered:
+        url = trade_url(v, sig.asset)
+        if url:
+            parts.append(f"[{v.upper()} {sig.asset}/USDT]({url})")
+    return " · ".join(parts)
+
+
 def format_pump_alert(sig: PumpSignal) -> str:
     """Текст алерта (Markdown) в стиле скрина сканера. Tier-aware."""
     venues = " · ".join(v.upper() for v in sig.venues) if sig.venues else "—"
@@ -385,6 +401,9 @@ def format_pump_alert(sig: PumpSignal) -> str:
     if sig.mcap:
         lines.append(f"💰 MCap: ${sig.mcap/1_000_000:.0f}M")
     lines.append(f"🏦 Биржи: {venues}")
+    pair = _pair_links(sig)
+    if pair:
+        lines.append(f"🔗 Пара: {pair}")
     lines.append("")
     lines.append("⚠️ _Это не сигнал на покупку. Памп — высокий риск, DYOR._")
     return "\n".join(lines)

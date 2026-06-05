@@ -2,7 +2,8 @@
 
 import unittest
 
-from pump_scanner import (
+from pump_scanner import (  # noqa: F401
+    _pair_links,
     PumpConfig,
     PumpSignal,
     classify_signal,
@@ -215,6 +216,24 @@ class TestSignalAndUrls(unittest.TestCase):
         self.assertIn("ABC", text)
         self.assertIn("разогрев", text)
         self.assertIn("66%", text)
+
+    def test_format_alert_has_exact_pair_link(self):
+        # Алерт должен нести ссылку на ТОЧНУЮ пару (анти-омоним тикеров)
+        sig = PumpSignal(
+            asset="PAI", pump_pct=8.8, vol_ratio=340.0, prior_pct=1.0,
+            price_from=0.003365, price_to=0.003653, window_min=30,
+            venues=["MEXC"])
+        text = format_pump_alert(sig)
+        self.assertIn("PAI/USDT", text)
+        self.assertIn("mexc.com/exchange/PAI_USDT", text)
+
+    def test_pair_links_mexc_first(self):
+        sig = PumpSignal(
+            asset="ABC", pump_pct=6.0, vol_ratio=4.0, prior_pct=1.0,
+            price_from=1.0, price_to=1.06, window_min=30,
+            venues=["Bybit", "MEXC"])
+        links = _pair_links(sig)
+        self.assertTrue(links.index("MEXC") < links.index("BYBIT"))
 
     def test_venue_buttons(self):
         sig = PumpSignal(
