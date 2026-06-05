@@ -88,6 +88,8 @@ class DynamicRiskManager:
         self._total_pnl = 0.0
         self._peak_capital = 100.0
         self._current_capital = 100.0
+        # Счётчик ПОДРЯД идущих проигрышей (сбрасывается на каждой победе).
+        self._consecutive_losses = 0
         
         # Пытаемся восстановиться из state-файла. Не падаем если файла нет.
         self.load_state()
@@ -111,10 +113,12 @@ class DynamicRiskManager:
             self._wins += 1
             n = self._wins
             self._avg_win = self._avg_win + (abs(pnl_pct) - self._avg_win) / n
+            self._consecutive_losses = 0
         else:
             self._losses += 1
             n = self._losses
             self._avg_loss = self._avg_loss + (abs(pnl_pct) - self._avg_loss) / n
+            self._consecutive_losses += 1
         self._total_pnl += pnl_pct
         
         if persist:
@@ -165,6 +169,7 @@ class DynamicRiskManager:
             "total_pnl": self._total_pnl,
             "peak_capital": self._peak_capital,
             "current_capital": self._current_capital,
+            "consecutive_losses": self._consecutive_losses,
         }
     
     def state_from_dict(self, data: dict) -> None:
@@ -177,6 +182,7 @@ class DynamicRiskManager:
         self._total_pnl = float(data.get("total_pnl") or 0.0)
         self._peak_capital = float(data.get("peak_capital") or 100.0)
         self._current_capital = float(data.get("current_capital") or 100.0)
+        self._consecutive_losses = int(data.get("consecutive_losses") or 0)
     
     def save_state(self) -> None:
         """Сохранить state на диск (атомарно через .tmp + rename)."""
@@ -258,9 +264,9 @@ class DynamicRiskManager:
             if drawdown >= self.max_drawdown_pct:
                 return True, f"Max drawdown reached: {drawdown*100:.1f}%"
 
-        # Losing streak check
-        if self._losses > 0 and self._wins == 0 and self._losses >= 5:
-            return True, f"5 consecutive losses"
+        # Losing streak check — по ПОДРЯД идущим проигрышам, а не «никогда не было побед»
+        if self._consecutive_losses >= 5:
+            return True, f"{self._consecutive_losses} consecutive losses"
 
         return False, ""
 
@@ -329,6 +335,22 @@ class DynamicRiskManager:
         # Берём min(kelly, 2x base) чтобы не превысить здравый смысл, но
         # также не падать ниже base если Kelly даёт меньше (база — пол).
         if kelly_used:
+            # Нет положительного края (Kelly <= 0) → не торгуем вообще.
+            if kelly_pct <= 0:
+                return {
+                    "quantity": 0.0,
+                    "position_value": 0.0,
+                    "risk_amount": 0.0,
+                    "risk_pct": 0.0,
+                    "stop_price": round(final_stop, 4),
+                    "take_profit": round(take_profit, 4),
+                    "kelly_pct": round(kelly_pct * 100, 2),
+                    "regime_multiplier": 0.0,
+                    "vol_multiplier": 0.0,
+                    "kelly_used": True,
+                    "skipped": True,
+                    "skip_reason": "non_positive_kelly_edge",
+                }
             risk_pct = min(kelly_pct, self.base_risk_pct * 2)
             risk_pct = max(risk_pct, self.base_risk_pct * 0.5)
         else:
