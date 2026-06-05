@@ -42,7 +42,7 @@ def _build_keyboard(sig):
 
 
 async def _send_signal(message: Message, sig) -> None:
-    from pump_scanner import format_pump_alert
+    from core.pump_scanner import format_pump_alert
     text = format_pump_alert(sig)
     kb = _build_keyboard(sig)
     png = None
@@ -68,12 +68,10 @@ async def _send_signal(message: Message, sig) -> None:
 
 
 async def handle_pump_command(message: Message) -> None:
-    if not _feature_enabled():
-        await message.answer(
-            "🚧 Фича ПАМП пока выключена. Включи FEATURE_PUMP_SCANNER=1.")
-        return
+    # Ручная команда /pump работает всегда (явное действие пользователя).
+    # Фоновая авто-рассылка остаётся под флагом (см. pump_alert.feature_enabled).
     try:
-        from pump_scanner import PumpConfig, scan_pumps
+        from core.pump_scanner import PumpConfig, scan_pumps
     except Exception as e:
         logger.warning("pump: import failed: %s", e)
         await message.answer("⚠️ Памп-сканер недоступен.")
