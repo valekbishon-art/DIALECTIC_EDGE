@@ -84,8 +84,12 @@ def listing_block(listings: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_briefing(capital: float) -> tuple[str, dict]:
-    """(текст брифинга HTML, состояние открытых carry {asset: ann%})."""
+def build_briefing(capital: float, *, arb_opps: list | None = None) -> tuple[str, dict]:
+    """(текст брифинга HTML, состояние открытых carry {asset: ann%}).
+
+    arb_opps: если передан — используем ГОТОВЫЙ скан арба (чтобы строка в брифинге
+    и стейт/алерты шли от ОДНОГО скана — иначе баг TRX: два скана дают разные
+    биржи в одной позиции). None → сканируем сами (CLI / ручной вызов)."""
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
     parts = [f"🤖 <b>ДНЕВНОЙ БРИФИНГ</b> · {now}\n"]
 
@@ -113,8 +117,9 @@ def build_briefing(capital: float) -> tuple[str, dict]:
         except Exception:  # noqa: BLE001
             pass
     else:
-        parts.append("💤 <b>Сегодня carry-сделок нет</b> — фандинг мал по всем активам. "
-                     "Норма в тихом рынке. Сиди в USDT, жди сигнала.")
+        parts.append("💤 <b>Carry-сделок нет</b> — фандинг на ОДНОЙ бирже мал по всем активам "
+                     "(это про carry: спот+шорт на одной бирже). По carry — сиди в USDT, жди сигнала. "
+                     "Но смотри блок ниже — кросс-биржевой арб это ДРУГАЯ стратегия и может быть активна.")
 
     try:
         bpos = [b for b in fetch_basis() if b.annual_pct >= 5]
@@ -125,13 +130,17 @@ def build_briefing(capital: float) -> tuple[str, dict]:
     except Exception:  # noqa: BLE001
         pass
 
-    # КРОСС-БИРЖЕВОЙ арб — то, чего нет на одной бирже. Топ-спред, детали в /arb.
+    # КРОСС-БИРЖЕВОЙ арб — ДРУГАЯ стратегия (между биржами), не carry.
+    # Берём ГОТОВЫЙ скан если передан (единый источник с алертами, баг TRX).
     try:
-        from core.cross_exchange import scan as scan_arb
-        arb = scan_arb()
-        if arb:
-            a = arb[0]
-            parts.append(f"\n🔀 <b>Кросс-биржевой арб:</b> {a.asset} спред {a.spread:.0f}% год "
+        if arb_opps is None:
+            from core.cross_exchange import scan as scan_arb
+            arb_opps = scan_arb()
+        if arb_opps:
+            a = arb_opps[0]
+            parts.append(f"\n🔀 <b>Кросс-биржевой арб — ДРУГАЯ стратегия</b> "
+                         f"(market-neutral МЕЖДУ биржами, не путать с carry): "
+                         f"{a.asset} спред {a.spread:.0f}% год "
                          f"(шорт {a.short_venue} / лонг {a.long_venue}). Жми /arb — детали по шагам.")
     except Exception:  # noqa: BLE001
         pass
@@ -174,26 +183,42 @@ def close_alerts(prev_open: dict, cur_open: dict) -> list[str]:
 
 
 def _arb_unpack(v):
-    """Значение состояния арба → (spread, short_venue, long_venue).
+    """Значение состояния арба → (spread, short_venue, long_venue, short_ann, long_ann).
 
-    Принимает и tuple (spread, short, long), и голый float (back-compat)."""
+    Принимает tuple (spread, short, long[, short_ann, long_ann]) и голый float
+    (back-compat). Отсутствующие поля → None."""
     if isinstance(v, (tuple, list)):
         spread = float(v[0])
         short = v[1] if len(v) > 1 else None
         long = v[2] if len(v) > 2 else None
-        return spread, short, long
-    return float(v), None, None
+        short_ann = v[3] if len(v) > 3 else None
+        long_ann = v[4] if len(v) > 4 else None
+        return spread, short, long, short_ann, long_ann
+    return float(v), None, None, None, None
+
+
+def _sign_flipped(a, b, min_abs: float = 10.0) -> bool:
+    """True если фандинг ноги сменил знак и хотя бы одна из сторон
+    материальна (|x| >= min_abs). None-безопасно (back-compat без фандинга ног)."""
+    if a is None or b is None:
+        return False
+    if abs(a) < min_abs and abs(b) < min_abs:
+        return False
+    return (a > 0) != (b > 0)
 
 
 def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
                      cur_healthy: bool = True) -> list[str]:
     """Сигналы ЗАКРЫВАЙ для кросс-арба.
 
-    Состояние: {asset: (spread, short_venue, long_venue)} (или голый spread).
+    Состояние: {asset: (spread, short_venue, long_venue[, short_ann, long_ann])}
+    (или голый spread для back-compat).
     Закрываем когда:
       • спред упал ниже min_keep / исчез (арб больше не платит), ИЛИ
       • сменилось НАПРАВЛЕНИЕ (short/long-биржи поменялись) — старую позицию
-        надо закрыть и переоткрыть в новую сторону.
+        надо закрыть и переоткрыть в новую сторону, ИЛИ
+      • фандинг ноги сменил знак при том же направлении (баг DOT: HL +11→-25) —
+        экономика позиции изменилась, сначала закрытие, потом переоткрытие.
 
     cur_healthy=False (биржи не отдали данных) → НЕ закрываем ничего: пустой
     фетч не значит, что все спреды разом исчезли (иначе ложный масс-выход)."""
@@ -201,7 +226,7 @@ def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
         return []
     msgs = []
     for asset, prev in prev_open.items():
-        prev_spread, prev_short, prev_long = _arb_unpack(prev)
+        prev_spread, prev_short, prev_long, prev_short_ann, prev_long_ann = _arb_unpack(prev)
         cur = cur_open.get(asset)
         if cur is None:
             msgs.append(
@@ -211,7 +236,7 @@ def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
                 f"2️⃣ Закрой ЛОНГ перп {asset} на второй бирже.\n"
                 f"Закрывай ОБЕ ноги вместе. Забирай собранный спред. 👍")
             continue
-        cur_spread, cur_short, cur_long = _arb_unpack(cur)
+        cur_spread, cur_short, cur_long, cur_short_ann, cur_long_ann = _arb_unpack(cur)
         if cur_spread < min_keep:
             msgs.append(
                 f"🔔 <b>ЗАКРЫВАЙ АРБ {asset}</b>\n"
@@ -229,8 +254,16 @@ def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
                 f"стало ШОРТ {cur_short}/ЛОНГ {cur_long} (спред {cur_spread:.0f}%).\n"
                 f"1️⃣ Закрой СТАРЫЕ ноги (ШОРТ {prev_short} / ЛОНГ {prev_long}).\n"
                 f"2️⃣ Переоткрой по-новому: ШОРТ {cur_short} / ЛОНГ {cur_long}. Жми /arb.")
-    return msgs
-
-
-__all__ = ["build_briefing", "close_alerts", "arb_close_alerts",
-           "funding_trade_steps", "listing_block"]
+        elif (prev_short_ann is not None and cur_short_ann is not None and
+              (_sign_flipped(prev_short_ann, cur_short_ann) or
+               _sign_flipped(prev_long_ann, cur_long_ann))):
+            # Направление то же, НО фандинг ноги сменил знак (баг DOT:
+            # Hyperliquid +11% → -25%). Экономика позиции изменилась — сначала
+            # закрытие, потом переоткрытие по свежим данным.
+            msgs.append(
+                f"🔄 <b>ОБНОВИ АРБ {asset}</b>\n"
+                f"Фандинг ноги сменил знак: {prev_short} был {prev_short_ann:+.0f}% → "
+                f"стал {cur_short_ann:+.0f}%. Позиция уже не та, что открывал — сначала ЗАКРОЙ, "
+                f"потом переоткрой по свежему /arb.\n"
+                f"1️⃣ Закрой ОБЕ ноги старой позиции {asset} (ШОРТ {prev_short} / ЛОНГ {prev_long}).\n"
+                f"2️⃣ Пер

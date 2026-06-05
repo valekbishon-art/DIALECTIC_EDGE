@@ -195,7 +195,8 @@ def fetch_all(*, with_health: bool = False):
     res = {}
     with ThreadPoolExecutor(max_workers=len(VENUES)) as ex:
         fut = {ex.submit(fn): name for name, fn in VENUES.items()}
-        for f, name in [(f, fut[f]) for f in fut]:
+        for f in fut:
+            name = fut[f]
             try:
                 res[name] = f.result()
             except Exception:  # noqa: BLE001
@@ -290,19 +291,76 @@ def hl_funding_avg(coin: str, hours: int = HL_AVG_HOURS) -> float | None:
         return None
 
 
+def hl_funding_windows(coin: str, full_hours: int = HL_AVG_HOURS,
+                       recent_hours: int = 4) -> tuple[float | None, float | None]:
+    """(avg_full, avg_recent) — аннуализированный фандинг Hyperliquid за полное
+    окно и за последние `recent_hours` часов, ОДНИМ запросом истории.
+
+    Нужно чтобы поймать СВЕЖИЙ разворот знака, который 24ч-среднее ещё маскирует
+    (баг SEI: 24ч avg = +4%, а последние часы уже -67% → бот советовал вход не в
+    ту сторону). None для элемента, если истории не хватило.
+    """
+    try:
+        now = int(time.time() * 1000)
+        start = now - (full_hours + 2) * 3600 * 1000
+        d = _get("https://api.hyperliquid.xyz/info",
+                 post={"type": "fundingHistory", "coin": coin,
+                       "startTime": start, "endTime": now})
+        rates = [float(x["fundingRate"]) for x in d if "fundingRate" in x]
+        if not rates:
+            return None, None
+        full = rates[-full_hours:]
+        recent = rates[-recent_hours:] if recent_hours > 0 else rates
+
+        def _ann(xs):
+            return sum(xs) / len(xs) * 24 * 365 * 100 if xs else None
+
+        return _ann(full), _ann(recent)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("hl funding windows %s: %s", coin, e)
+        return None, None
+
+
+def _is_fresh_flip(avg_full: float | None, avg_recent: float | None,
+                   min_abs: float = 10.0) -> bool:
+    """True если за последние часы фандинг HL развернулся в ДРУГОЙ знак
+    относительно полного окна и стал материальным (|recent| >= min_abs).
+
+    Это значит, что 24ч-среднее устарело: направление арба по этому активу
+    ненадёжно, входить по сглаженному знаку нельзя.
+    """
+    if avg_full is None or avg_recent is None:
+        return False
+    if abs(avg_recent) < min_abs:
+        return False
+    return (avg_full > 0) != (avg_recent > 0)
+
+
 def refine_hl_average(by_asset: dict, opps: list,
                       hours: int = HL_AVG_HOURS) -> dict:
     """Для активов-финалистов с ногой на Hyperliquid заменяем мгновенный 1ч
     фандинг на средний за окно. Возвращает пропатченный by_asset (для повторного
-    find_spreads). Тянем историю ТОЛЬКО для финалистов — дёшево."""
+    find_spreads). Тянем историю ТОЛЬКО для финалистов — дёшево.
+
+    Если ловим СВЕЖИЙ разворот знака (последние часы против 24ч-среднего) —
+    убираем ногу Hyperliquid: направление ненадёжно, лучше НЕ советовать вход не
+    в ту сторону (баг SEI). Если позиция была открыта — актив «исчезнет» из
+    скана и close-alert пришлёт ЗАКРЫВАЙ.
+    """
     hl_assets = {o.asset for o in opps
                  if "Hyperliquid" in (o.long_venue, o.short_venue)}
     for asset in hl_assets:
         if asset not in by_asset or "Hyperliquid" not in by_asset[asset]:
             continue
-        avg = hl_funding_avg(asset, hours)
-        if avg is not None:
-            by_asset[asset]["Hyperliquid"] = avg
+        avg_full, avg_recent = hl_funding_windows(asset, hours)
+        if avg_full is None:
+            continue
+        if _is_fresh_flip(avg_full, avg_recent):
+            logger.info("xexch HL fresh flip %s: full=%.1f recent=%.1f → drop HL leg",
+                        asset, avg_full, avg_recent)
+            by_asset[asset].pop("Hyperliquid", None)
+            continue
+        by_asset[asset]["Hyperliquid"] = avg_full
     return by_asset
 
 
@@ -326,5 +384,5 @@ def scan(min_spread: float = MIN_SPREAD_ANNUAL, *, refine: bool = True,
 
 
 __all__ = ["ArbOpportunity", "fetch_all", "find_spreads", "format_arb_md", "scan",
-           "scan_with_health", "hl_funding_avg", "refine_hl_average", "VENUES",
-           "MIN_SPREAD_ANNUAL"]
+           "scan_with_health", "hl_funding_avg", "hl_funding_windows",
+           "refine_hl_average", "VENUES", "MIN_SPREAD_ANNUAL"]
