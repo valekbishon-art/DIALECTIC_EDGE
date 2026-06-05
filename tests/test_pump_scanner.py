@@ -2,7 +2,9 @@
 
 import unittest
 
-from pump_scanner import (
+from pump_scanner import (  # noqa: F401
+    _pair_links,
+    _build_mcap_map,
     PumpConfig,
     PumpSignal,
     classify_signal,
@@ -216,6 +218,24 @@ class TestSignalAndUrls(unittest.TestCase):
         self.assertIn("разогрев", text)
         self.assertIn("66%", text)
 
+    def test_format_alert_has_exact_pair_link(self):
+        # Алерт должен нести ссылку на ТОЧНУЮ пару (анти-омоним тикеров)
+        sig = PumpSignal(
+            asset="PAI", pump_pct=8.8, vol_ratio=340.0, prior_pct=1.0,
+            price_from=0.003365, price_to=0.003653, window_min=30,
+            venues=["MEXC"])
+        text = format_pump_alert(sig)
+        self.assertIn("PAI/USDT", text)
+        self.assertIn("mexc.com/exchange/PAI_USDT", text)
+
+    def test_pair_links_mexc_first(self):
+        sig = PumpSignal(
+            asset="ABC", pump_pct=6.0, vol_ratio=4.0, prior_pct=1.0,
+            price_from=1.0, price_to=1.06, window_min=30,
+            venues=["Bybit", "MEXC"])
+        links = _pair_links(sig)
+        self.assertTrue(links.index("MEXC") < links.index("BYBIT"))
+
     def test_venue_buttons(self):
         sig = PumpSignal(
             asset="0PN", pump_pct=7.6, vol_ratio=3.2, prior_pct=2.0,
@@ -238,6 +258,46 @@ class TestMergeUniverses(unittest.TestCase):
         self.assertEqual(merged["AAA"].quote_vol_24h, 5000.0)
         self.assertEqual(merged["AAA"].price, 1.1)
         self.assertIn("BBB", merged)
+
+
+class TestMcapMap(unittest.TestCase):
+    def test_unique_ticker_kept(self):
+        rows = [{"id": "bitcoin", "symbol": "btc", "market_cap": 1.2e12}]
+        out = _build_mcap_map(rows)
+        self.assertEqual(out.get("BTC"), 1.2e12)
+
+    def test_ambiguous_ticker_dropped(self):
+        # две разные монеты с тикером PAI -> mcap неизвестен
+        rows = [
+            {"id": "parallel-ai", "symbol": "pai", "market_cap": 9.0e6},
+            {"id": "project-pai", "symbol": "pai", "market_cap": 3.0e6},
+        ]
+        out = _build_mcap_map(rows)
+        self.assertNotIn("PAI", out)
+
+    def test_zero_and_missing_skipped(self):
+        rows = [
+            {"id": "x", "symbol": "x", "market_cap": 0},
+            {"id": "y", "symbol": "y"},
+            {"id": "z", "symbol": "z", "market_cap": 5.0e7},
+        ]
+        out = _build_mcap_map(rows)
+        self.assertNotIn("X", out)
+        self.assertNotIn("Y", out)
+        self.assertEqual(out.get("Z"), 5.0e7)
+
+
+class TestCoinGeckoLink(unittest.TestCase):
+    def test_alert_has_coingecko_search_link(self):
+        sig = PumpSignal(
+            asset="PAI", pump_pct=8.8, vol_ratio=340.0, prior_pct=0.0,
+            price_from=0.003365, price_to=0.003653, window_min=30,
+            venues=["MEXC"])
+        txt = format_pump_alert(sig)
+        self.assertIn(
+            "https://www.coingecko.com/en/search?query=PAI", txt)
+        # ссылка не должна быть обёрнута в литеральные фигурные скобки
+        self.assertNotIn("(" + chr(123) + "https", txt)
 
 
 if __name__ == "__main__":
