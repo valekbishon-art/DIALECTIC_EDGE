@@ -163,3 +163,17 @@ FEATURE_POST_MORTEM = os.getenv("FEATURE_POST_MORTEM", "1").strip().lower() in (
 # UTC-время дневного запуска post-mortem.  По дефолту 23:50 — за 10 минут до
 # нового дайджеста, когда вчерашний имеет реальный 24h-горизонт.
 POST_MORTEM_RUN_TIME_UTC = os.getenv("POST_MORTEM_RUN_TIME_UTC", "23:50").strip()
+
+# ─── EDGE-ЛЕДЖЕР (измерение edge живых сигналов) ───────────────────────
+# ВОССТАНОВЛЕНО при дебаге: эти символы импортировались в best_deal_alert.py
+# и scheduler.py, но отсутствовали в config.py — из-за чего фича никогда не
+# могла включиться (ImportError молча гасился guarded try/except).
+# По умолчанию ВЫКЛ: live-запись edge-леджера сейчас реализована заглушками
+# в core/edge_ledger.py (record_signal/resolve_pending). Включай после того, как
+# заполнишь их реальной персистентностью. На backtest_engine не влияет
+# (тот использует только resolve_against_candles, без этих флагов).
+FEATURE_EDGE_LEDGER = os.getenv("FEATURE_EDGE_LEDGER", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+# Интервал (сек) фонового резолвера pending-сигналов edge-леджера.
+EDGE_RESOLVE_INTERVAL_SEC = int(os.getenv("EDGE_RESOLVE_INTERVAL_SEC", "3600"))
