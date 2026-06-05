@@ -12,17 +12,18 @@ import core.cross_exchange as ce
 
 class RefineHlAverageTest(unittest.TestCase):
     def setUp(self):
-        self._orig_avg = ce.hl_funding_avg
+        self._orig_windows = ce.hl_funding_windows
         self._calls = []
 
-        def fake_avg(coin, hours=24):
+        def fake_windows(coin, full_hours=24, recent_hours=4):
             self._calls.append(coin)
-            return {"DOT": 5.5, "ATOM": -40.0}.get(coin)  # DOT схлопнулся, ATOM держится
+            val = {"DOT": 5.5, "ATOM": -40.0}.get(coin)  # DOT схлопнулся, ATOM держится
+            return val, val  # full == recent → знак не менялся, ногу HL не выкидываем
 
-        ce.hl_funding_avg = fake_avg
+        ce.hl_funding_windows = fake_windows
 
     def tearDown(self):
-        ce.hl_funding_avg = self._orig_avg
+        ce.hl_funding_windows = self._orig_windows
 
     def test_patches_only_hl_finalists(self):
         by = {
@@ -60,18 +61,29 @@ class RefineHlAverageTest(unittest.TestCase):
         self.assertAlmostEqual(opps2[0].spread, 44.0)
         self.assertEqual(opps2[0].long_venue, "Hyperliquid")  # лонг там где низкий
 
+    def test_fresh_flip_drops_hl_leg(self):
+        # Баг SEI: суточное среднее +5.5%, но последние часы уже -30%
+        # (свежий разворот знака). Ногу Hyperliquid выкидываем — направление
+        # арба по сглаженному знаку ненадёжно (вход был бы не в ту сторону).
+        ce.hl_funding_windows = lambda coin, full_hours=24, recent_hours=4: (5.5, -30.0)
+        by = {"DOT": {"Gate": 11.0, "Hyperliquid": -43.0}}
+        opps = ce.find_spreads(by)
+        by2 = ce.refine_hl_average(by, opps)
+        self.assertNotIn("Hyperliquid", by2["DOT"])
+        self.assertEqual(ce.find_spreads(by2), [])  # осталась одна нога → арба нет
+
 
 class ScanPipelineTest(unittest.TestCase):
     def setUp(self):
         self._orig_fetch = ce.fetch_all
-        self._orig_avg = ce.hl_funding_avg
+        self._orig_windows = ce.hl_funding_windows
         _by = {"DOT": {"Gate": 11.0, "Hyperliquid": -43.0}}
         ce.fetch_all = lambda *, with_health=False: (_by, True) if with_health else _by
-        ce.hl_funding_avg = lambda coin, hours=24: 5.5
+        ce.hl_funding_windows = lambda coin, full_hours=24, recent_hours=4: (5.5, 5.5)
 
     def tearDown(self):
         ce.fetch_all = self._orig_fetch
-        ce.hl_funding_avg = self._orig_avg
+        ce.hl_funding_windows = self._orig_windows
 
     def test_scan_refine_drops_phantom(self):
         self.assertEqual(ce.scan(refine=True), [])
