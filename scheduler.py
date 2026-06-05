@@ -611,24 +611,30 @@ class Scheduler:
         while self._running:
             try:
                 from core.carry_briefing import build_briefing, close_alerts, arb_close_alerts
-                text, cur_open = await asyncio.to_thread(build_briefing, capital)
-                prev_open = getattr(self, "_carry_open", {})
-                closes = close_alerts(prev_open, cur_open)
-                self._carry_open = cur_open
-                # Кросс-арб: отслеживаем спреды+направление, шлём ЗАКРЫВАЙ/ПЕРЕВОРОТ.
+                # Сканируем кросс-арб ОДИН раз и отдаём тот же результат и в строку
+                # брифинга, и в стейт/алерты — иначе два скана дают разные биржи в
+                # одной позиции (баг TRX: briefing HL/Binance, сигнал HL/Gate).
+                arb, healthy = [], True
                 try:
                     from core.cross_exchange import scan_with_health
                     arb, healthy = await asyncio.to_thread(scan_with_health)
-                    # храним и направление, чтобы ловить переворот ног
-                    cur_arb = {o.asset: (o.spread, o.short_venue, o.long_venue) for o in arb}
-                    prev_arb = getattr(self, "_arb_open", {})
-                    closes = closes + arb_close_alerts(prev_arb, cur_arb, cur_healthy=healthy)
-                    # состояние обновляем ТОЛЬКО при надёжных данных — иначе пустой
-                    # фетч затёр бы открытые позиции и дал ложный масс-выход.
-                    if healthy:
-                        self._arb_open = cur_arb
                 except Exception:  # noqa: BLE001
-                    logger.debug("arb close-alert check skipped", exc_info=True)
+                    logger.debug("arb scan skipped", exc_info=True)
+                text, cur_open = await asyncio.to_thread(
+                    build_briefing, capital, arb_opps=arb)
+                prev_open = getattr(self, "_carry_open", {})
+                closes = close_alerts(prev_open, cur_open)
+                self._carry_open = cur_open
+                # Кросс-арб: храним спред+направление+фандинг ног (чтобы ловить и
+                # переворот ног, И смену знака фандинга на ноге — баг DOT).
+                cur_arb = {o.asset: (o.spread, o.short_venue, o.long_venue,
+                                     o.short_ann, o.long_ann) for o in arb}
+                prev_arb = getattr(self, "_arb_open", {})
+                closes = closes + arb_close_alerts(prev_arb, cur_arb, cur_healthy=healthy)
+                # состояние обновляем ТОЛЬКО при надёжных данных — иначе пустой
+                # фетч затёр бы открытые позиции и дал ложный масс-выход.
+                if healthy:
+                    self._arb_open = cur_arb
                 try:
                     chat_ids = (_alert_engine_chat_ids(ADMIN_IDS)
                                 if ALERT_ENGINE_LOADED else list(ADMIN_IDS))
@@ -636,11 +642,13 @@ class Scheduler:
                     chat_ids = list(ADMIN_IDS)
                 for chat_id in chat_ids:
                     try:
+                        # СНАЧАЛА сигналы закрытия/переворота, ПОТОМ брифинг (где
+                        # может быть новое открытие) — чтобы старую позицию закрыли до новой.
+                        for cm in closes:
+                            await self.bot.send_message(chat_id, cm, parse_mode="HTML")
                         await self.bot.send_message(
                             chat_id, text, parse_mode="HTML",
                             disable_web_page_preview=True)
-                        for cm in closes:
-                            await self.bot.send_message(chat_id, cm, parse_mode="HTML")
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("carry briefing send failed chat=%s: %s", chat_id, exc)
             except Exception as e:  # noqa: BLE001
