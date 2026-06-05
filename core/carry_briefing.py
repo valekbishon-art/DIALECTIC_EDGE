@@ -266,4 +266,9 @@ def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
                 f"стал {cur_short_ann:+.0f}%. Позиция уже не та, что открывал — сначала ЗАКРОЙ, "
                 f"потом переоткрой по свежему /arb.\n"
                 f"1️⃣ Закрой ОБЕ ноги старой позиции {asset} (ШОРТ {prev_short} / ЛОНГ {prev_long}).\n"
-                f"2️⃣ Пер
+                f"2️⃣ Переоткрой только по актуальному /arb (направление могло смениться).")
+    return msgs
+
+
+__all__ = ["build_briefing", "close_alerts", "arb_close_alerts",
+           "funding_trade_steps", "listing_block"]
