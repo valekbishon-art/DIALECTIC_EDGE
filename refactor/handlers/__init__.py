@@ -41,27 +41,27 @@ Handler Architecture:
 
     Each handler manages a specific domain:
 
-    ┌─────────────────────────────────────────────┐
+    ┌───────────────────────────────────────────┐
     │          Telegram Bot (main.py)             │
-    └─────────────────────────────────────────────┘
+    └───────────────────────────────────────────┘
                         ↓
-    ┌────────────────────────────────────────────────────────┐
+    ┌───────────────────────────────────────────────────┐
     │                    Handlers                            │
     ├──────────────┬──────────────┬────────────┬─────────────┤
     │   Market     │   Debate     │  Profile   │    Admin    │
     │  Handler     │  Handler     │  Handler   │  Handler    │
     └──────────────┴──────────────┴────────────┴─────────────┘
                         ↓
-    ┌────────────────────────────────────────────────────────┐
+    ┌───────────────────────────────────────────────────┐
     │            Handler Utils (shared functions)            │
     │  - split_message, clean_markdown, parse_report_parts,  │
     │    debates_keyboard, main_report_keyboard, etc.        │
-    └────────────────────────────────────────────────────────┘
+    └─────────────────────────────────────────────────┘
                         ↓
-    ┌────────────────────────────────────────────────────────┐
+    ┌───────────────────────────────────────────────────┐
     │            Refactor Models & Utils                     │
     │  - FinalReport, UserProfile, AnalysisContext, etc.     │
-    └────────────────────────────────────────────────────────┘
+    └─────────────────────────────────────────────────┘
 
 Module Index:
 
@@ -236,7 +236,7 @@ from .sniping_handler import (
     handle_sniping_callback,
     handle_sniping_command,
     parse_sniping_callback_data,
-    register_sniping_handlers,
+    register_sniping_handlers as _register_sniping_handlers_base,
     sniping_callback_data,
 )
 
@@ -258,6 +258,10 @@ from .retro_handler import (
     register_retro_handlers,
 )
 
+# PUMP scanner /pump command. Composed into register_sniping_handlers below
+# (see wrapper) so the ~6.7k-line main.py entrypoint needs no edits.
+from .pump_handler import register_pump_handlers
+
 # Utilities
 from .utils import (
     split_message,
@@ -270,6 +274,31 @@ from .utils import (
     build_short_report,
     find_debate_start_index,
 )
+
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
+
+
+def register_sniping_handlers(dp) -> None:
+    """Register the `/sniping` handlers and the PUMP scanner `/pump` command.
+
+    ``main.py`` (~6.7k LOC) imports ``register_sniping_handlers`` from this
+    package and calls it once at startup. We compose the pump-scanner
+    registration here, at the handlers-package aggregation point, so the
+    entrypoint needs no edits and ``sniping_handler`` / ``pump_handler`` each
+    stay single-responsibility.
+
+    Best-effort: a failure to wire the pump scanner never blocks the sniping
+    handlers. The ``/pump`` command itself is gated behind
+    ``FEATURE_PUMP_SCANNER`` at runtime.
+    """
+    _register_sniping_handlers_base(dp)
+    try:
+        register_pump_handlers(dp)
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("PUMP scanner /pump registration skipped: %s", exc)
+
 
 __all__ = [
     # Debate Handler
@@ -312,6 +341,9 @@ __all__ = [
     "handle_logs_command",
     "handle_sysinfo_command",
     "setup_admins",
+
+    # PUMP scanner
+    "register_pump_handlers",
 
     # Utilities
     "split_message",

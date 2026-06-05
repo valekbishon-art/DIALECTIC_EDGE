@@ -805,3 +805,53 @@ def generate_trading_plan_png(prices: dict | None, plans: list[dict] | None = No
 
 def is_available() -> bool:
     return MATPLOTLIB_OK
+
+
+# ─────────────────────────── ПАМП-график (фича PUMP) ─────────────────────
+def generate_pump_chart(asset, closes, *, price_from=None, price_to=None,
+                        pump_pct=None, window_min=30):
+    """Мини-график цены для памп-алерта (стиль сканера).
+
+    Чёрная линия цены + пунктирные референсные уровни. Возвращает BytesIO (PNG)
+    или None если matplotlib недоступен / данных нет. Non-fatal.
+    """
+    if not MATPLOTLIB_OK:
+        return None
+    pts = [float(c) for c in (closes or []) if c is not None]
+    if len(pts) < 2:
+        return None
+    try:
+        _setup_dark_style()
+        fig, ax = plt.subplots(figsize=(8, 4))
+        xs = list(range(len(pts)))
+        up = (pts[-1] >= pts[0])
+        line_color = COLORS["bull"] if up else COLORS["bear"]
+        ax.plot(xs, pts, color=line_color, linewidth=2.0, zorder=3)
+        ax.fill_between(xs, pts, min(pts), color=line_color, alpha=0.08, zorder=1)
+        # якорь и текущая точка
+        ax.scatter([xs[-1]], [pts[-1]], color=line_color, s=40, zorder=4)
+        # референсные уровни (min / max / from)
+        for lvl in (min(pts), max(pts)):
+            ax.axhline(lvl, color=COLORS["border"], linestyle="--",
+                       linewidth=0.8, alpha=0.7, zorder=2)
+        if price_from is not None:
+            ax.axhline(float(price_from), color=COLORS["blue"], linestyle=":",
+                       linewidth=1.0, alpha=0.8, zorder=2)
+        title = str(asset)
+        if pump_pct is not None:
+            title += f"   +{float(pump_pct):.2f}%  /  {int(window_min)}мин"
+        ax.set_title(title, color=COLORS["text"], fontsize=13, fontweight="bold",
+                     loc="left")
+        if price_from is not None and price_to is not None:
+            ax.set_xlabel(f"{price_from:.6g}  →  {price_to:.6g}",
+                          color=COLORS["subtext"], fontsize=10)
+        ax.set_xticks([])
+        ax.margins(x=0.01)
+        return _to_bytes(fig)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("generate_pump_chart failed: %s", e)
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return None

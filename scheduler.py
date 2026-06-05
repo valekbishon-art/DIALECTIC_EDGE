@@ -56,6 +56,18 @@ try:
 except ImportError:
     BEST_DEAL_ALERT_ENABLED = False
 
+# Фича ПАМП: кросс-биржевой сканер пампов. Импорт через try/except,
+# чтобы старый код без pump_alert.py продолжал стартовать.
+try:
+    from pump_alert import (
+        PumpAlertSystem,
+        feature_enabled as pump_feature_enabled,
+        get_interval_sec as pump_interval_sec,
+    )
+    PUMP_ALERT_ENABLED = True
+except ImportError:
+    PUMP_ALERT_ENABLED = False
+
 # Post-mortem loop (24h-later анализ дайджеста).  Импорт через try/except,
 # чтобы старый код, без `core/post_mortem.py`, продолжал стартовать.
 try:
@@ -352,6 +364,15 @@ class Scheduler:
             except Exception as e:
                 logger.warning(f"Best-deal alert init error: {e}")
 
+        # Фича ПАМП: кросс-биржевой авто-сканер пампов. По умолчанию ВЫКЛ.
+        self._pump_alert = None
+        if PUMP_ALERT_ENABLED and pump_feature_enabled():
+            try:
+                self._pump_alert = PumpAlertSystem(self.bot)
+                logger.info("✅ Памп-сканер (PUMP) инициализирован")
+            except Exception as e:
+                logger.warning(f"Pump alert init error: {e}")
+
     async def start(self):
         self._running = True
         logger.info("⏰ Scheduler запущен")
@@ -368,6 +389,10 @@ class Scheduler:
 
         if SIGNALS_SYSTEM_ENABLED and self._signals_system:
             tasks.append(self._signals_checker_loop())
+
+        # Фича ПАМП: фоновый авто-цикл (только если FEATURE_PUMP_SCANNER=1).
+        if PUMP_ALERT_ENABLED and self._pump_alert is not None:
+            tasks.append(self._pump_scanner_loop())
 
         if AUTO_TRACKER_ENABLED and self._auto_tracker:
             tasks.append(self._auto_tracker_loop())
@@ -827,6 +852,31 @@ class Scheduler:
                 logger.error(f"Best-deal alert loop error: {e}")
 
             await asyncio.sleep(best_deal_interval_sec())
+
+    async def _pump_scanner_loop(self):
+        """Фоновый памп-сканер (фича ПАМП).
+
+        Каждые PUMP_SCAN_INTERVAL_SEC секунд сканируем весь спот-рынок
+        (Bybit + MEXC + Binance) и рассылаем пампы подписчикам «Сигналов».
+        Анти-спам и фильтры — внутри PumpAlertSystem / core.pump_scanner.
+        """
+        await asyncio.sleep(300)  # 5 мин при старте — пусть бот прогреется
+
+        while self._running:
+            try:
+                if self._pump_alert is None:
+                    await asyncio.sleep(3600)
+                    continue
+
+                subscribers = await get_signals_subscribers()
+                if subscribers:
+                    sent = await self._pump_alert.check_and_alert(subscribers)
+                    if sent > 0:
+                        logger.info(f"🚀 Памп-алерты отправлены: {sent}")
+            except Exception as e:
+                logger.error(f"Pump scanner loop error: {e}")
+
+            await asyncio.sleep(pump_interval_sec())
 
     async def _smart_money_alert_loop(self):
         """Проверяет smart-money convergence каждый час.

@@ -177,3 +177,17 @@ FEATURE_EDGE_LEDGER = os.getenv("FEATURE_EDGE_LEDGER", "0").strip().lower() in (
 )
 # Интервал (сек) фонового резолвера pending-сигналов edge-леджера.
 EDGE_RESOLVE_INTERVAL_SEC = int(os.getenv("EDGE_RESOLVE_INTERVAL_SEC", "3600"))
+
+# ── Фича ПАМП: кросс-биржевой сканер резких ростов на повышенном объёме ──
+# Детект + фильтры живут в core/pump_scanner.py, рассылка — pump_alert.py,
+# команда /pump — refactor/handlers/pump_handler.py. По умолчанию ВЫКЛ, чтобы
+# не менять поведение прод-бота до явного включения (FEATURE_PUMP_SCANNER=1).
+FEATURE_PUMP_SCANNER = os.getenv("FEATURE_PUMP_SCANNER", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+# Интервал (сек) фонового памп-цикла. 180с — компромисс свежесть/нагрузка.
+PUMP_SCAN_INTERVAL_SEC = int(os.getenv("PUMP_SCAN_INTERVAL_SEC", "180"))
+# Анти-спам: одну и ту же монету не чаще раза в N минут.
+PUMP_COOLDOWN_MIN = int(os.getenv("PUMP_COOLDOWN_MIN", "60"))
+# Лимит монет на on-demand /pump (0 в фоне = все). Топ N по обороту.
+PUMP_ONDEMAND_MAX_SYMBOLS = int(os.getenv("PUMP_ONDEMAND_MAX_SYMBOLS", "400"))
