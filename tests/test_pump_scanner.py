@@ -2,7 +2,7 @@
 
 import unittest
 
-from core.pump_scanner import (
+from pump_scanner import (
     PumpConfig,
     PumpSignal,
     evaluate_pump,
@@ -16,7 +16,7 @@ from core.pump_scanner import (
     window_anchor_price,
     window_pump_pct,
 )
-from core.pump_scanner import _Ticker  # noqa: E402  (внутренний для теста merge)
+from pump_scanner import _Ticker  # noqa: E402  (внутренний для теста merge)
 
 
 class TestMath(unittest.TestCase):

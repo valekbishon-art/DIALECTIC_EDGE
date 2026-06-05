@@ -1,7 +1,7 @@
 """
 pump_alert.py — push-рассылка памп-алертов (фича ПАМП).
 
-Раз в PUMP_SCAN_INTERVAL_SEC гоним core.pump_scanner.scan_pumps() по всему спот-
+Раз в PUMP_SCAN_INTERVAL_SEC гоним pump_scanner.scan_pumps() по всему спот-
 рынку (Bybit + MEXC + Binance) и рассылаем подписчикам найденные пампы
 с графиком и кнопками на биржи («Биржа MEXC» / «Биржа BYBIT» — как на скрине).
 
@@ -105,7 +105,7 @@ class PumpAlertSystem:
 
     async def _send_one(self, chat_id: int, sig) -> bool:
         """Отправляет один алерт (фото+капшн либо текст). True при успехе."""
-        from core.pump_scanner import format_pump_alert
+        from pump_scanner import format_pump_alert
         text = format_pump_alert(sig)
         kb = _build_keyboard(sig)
         png = _render_chart(sig)
@@ -129,7 +129,7 @@ class PumpAlertSystem:
         if not subscribers or not feature_enabled():
             return 0
         try:
-            from core.pump_scanner import PumpConfig, scan_pumps
+            from pump_scanner import PumpConfig, scan_pumps
         except Exception as e:  # pragma: no cover
             logger.warning("pump: import scan failed: %s", e)
             return 0
