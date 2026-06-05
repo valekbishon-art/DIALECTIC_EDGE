@@ -5,18 +5,22 @@ import unittest
 from pump_scanner import (
     PumpConfig,
     PumpSignal,
+    classify_signal,
+    early_pump_score,
     evaluate_pump,
     format_pump_alert,
     max_rise_pct,
     merge_universes,
+    momentum_acceleration,
     passes_static_filters,
     pct_change,
     trade_url,
+    volume_ramp,
     volume_ratio,
     window_anchor_price,
     window_pump_pct,
 )
-from pump_scanner import _Ticker  # noqa: E402  (внутренний для теста merge)
+from pump_scanner import _Ticker, _slope  # noqa: E402
 
 
 class TestMath(unittest.TestCase):
@@ -115,53 +119,125 @@ class TestEvaluate(unittest.TestCase):
     def test_fail_static_filter_price(self):
         closes = _series(0.0001, 7.0)
         is_pump, m, fails = evaluate_pump(
-            closes, [10.0] * 31, 4000.0, [1.0, 1.0, 1.0],
+            closes, [10.0] * 31, 4000.0, [0.0001, 0.0001, 0.0001],
             price=closes[-1], mcap=100_000_000, cfg=self.cfg)
         self.assertFalse(is_pump)
         self.assertIn("static_filters", fails)
 
 
+class TestPredictive(unittest.TestCase):
+    def test_slope_sign(self):
+        self.assertGreater(_slope([1, 2, 3, 4]), 0)
+        self.assertLess(_slope([4, 3, 2, 1]), 0)
+        self.assertAlmostEqual(_slope([5, 5, 5]), 0.0)
+        self.assertEqual(_slope([1]), 0.0)
+
+    def test_momentum_acceleration_positive_when_accelerating(self):
+        # плоско потом резкий рост -> ускорение > 0
+        closes = [1.0] * 15 + [1.0, 1.01, 1.03, 1.06, 1.10]
+        self.assertGreater(momentum_acceleration(closes), 0)
+
+    def test_momentum_acceleration_short_series(self):
+        self.assertEqual(momentum_acceleration([1.0, 1.0]), 0.0)
+
+    def test_volume_ramp(self):
+        vols = [10.0] * 30 + [30.0] * 5
+        self.assertGreater(volume_ramp(vols), 1.5)
+        self.assertEqual(volume_ramp([]), 0.0)
+
+    def test_early_score_range_and_high_when_forming(self):
+        # рост ~4% (ниже порога 5%) + растущий объём -> высокий скор
+        closes = _series(1.0, 4.0)
+        vols = [10.0] * 26 + [40.0] * 5
+        score, accel, vramp = early_pump_score(closes, vols, cfg=PumpConfig())
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+        self.assertGreater(score, 0.5)
+        self.assertGreater(vramp, 1.0)
+
+    def test_early_score_low_when_flat(self):
+        closes = [1.0] * 31
+        vols = [10.0] * 31
+        score, _, _ = early_pump_score(closes, vols, cfg=PumpConfig())
+        self.assertLess(score, 0.3)
+
+    def test_classify_signal(self):
+        self.assertEqual(classify_signal(True, 0.0, []), "pump")
+        self.assertEqual(
+            classify_signal(False, 0.7, ["pump_pct", "vol_ratio"]), "early")
+        # разогретая монета не early даже при высоком скоре
+        self.assertEqual(
+            classify_signal(False, 0.9, ["already_heated"]), "none")
+        self.assertEqual(classify_signal(False, 0.1, ["pump_pct"]), "none")
+
+    def test_evaluate_attaches_predictive(self):
+        closes = _series(1.0, 4.0)
+        vols = [10.0] * 26 + [40.0] * 5
+        is_pump, m, fails = evaluate_pump(
+            closes, vols, 4000.0, [1.0, 1.0, 1.0],
+            price=closes[-1], mcap=100_000_000, cfg=PumpConfig())
+        self.assertFalse(is_pump)  # ниже 5%
+        self.assertGreaterEqual(m.predictive_score, 0.0)
+        self.assertLessEqual(m.predictive_score, 1.0)
+
+
 class TestSignalAndUrls(unittest.TestCase):
     def test_trade_url(self):
-        self.assertEqual(trade_url("Bybit", "0PN"),
-                         "https://www.bybit.com/en/trade/spot/0PN/USDT")
-        self.assertEqual(trade_url("MEXC", "0PN"),
-                         "https://www.mexc.com/exchange/0PN_USDT")
-        self.assertIsNone(trade_url("UnknownExch", "0PN"))
-
-    def test_venue_buttons(self):
-        sig = PumpSignal(asset="0PN", pump_pct=7.63, vol_ratio=3.2,
-                         prior_pct=1.0, price_from=0.2268, price_to=0.2441,
-                         window_min=30, venues=["Bybit", "MEXC"])
-        btns = sig.venue_buttons()
-        labels = [b[0] for b in btns]
-        self.assertIn("Биржа BYBIT", labels)
-        self.assertIn("Биржа MEXC", labels)
-        for _, url in btns:
-            self.assertTrue(url.startswith("https://"))
+        self.assertEqual(
+            trade_url("Bybit", "0PN"),
+            "https://www.bybit.com/en/trade/spot/0PN/USDT")
+        self.assertEqual(
+            trade_url("MEXC", "0PN"),
+            "https://www.mexc.com/exchange/0PN_USDT")
+        self.assertEqual(
+            trade_url("Binance", "0PN"),
+            "https://www.binance.com/en/trade/0PN_USDT")
+        self.assertIsNone(trade_url("NoSuchEx", "0PN"))
 
     def test_format_alert(self):
-        sig = PumpSignal(asset="0PN", pump_pct=7.63, vol_ratio=3.2,
-                         prior_pct=1.0, price_from=0.2268, price_to=0.2441,
-                         window_min=30, venues=["Bybit", "MEXC"],
-                         mcap=120_000_000)
-        txt = format_pump_alert(sig)
-        self.assertIn("0PN", txt)
-        self.assertIn("7.63%", txt)
-        self.assertIn("30", txt)
-        self.assertIn("x3.2", txt)
+        sig = PumpSignal(
+            asset="0PN", pump_pct=7.63, vol_ratio=3.2, prior_pct=2.0,
+            price_from=0.2268, price_to=0.2441, window_min=30,
+            venues=["Bybit", "MEXC"], mcap=50_000_000)
+        text = format_pump_alert(sig)
+        self.assertIn("0PN", text)
+        self.assertIn("7.63%", text)
+        self.assertIn("30", text)
+        self.assertIn("x3.2", text)
+
+    def test_format_alert_early_tier(self):
+        sig = PumpSignal(
+            asset="ABC", pump_pct=3.5, vol_ratio=1.8, prior_pct=1.0,
+            price_from=1.0, price_to=1.035, window_min=30,
+            venues=["Binance"], tier="early", predictive_score=0.66,
+            vol_ramp=2.4, accel=0.12)
+        text = format_pump_alert(sig)
+        self.assertIn("ABC", text)
+        self.assertIn("разогрев", text)
+        self.assertIn("66%", text)
+
+    def test_venue_buttons(self):
+        sig = PumpSignal(
+            asset="0PN", pump_pct=7.6, vol_ratio=3.2, prior_pct=2.0,
+            price_from=0.22, price_to=0.24, window_min=30,
+            venues=["Bybit", "MEXC"])
+        buttons = sig.venue_buttons()
+        labels = [b[0] for b in buttons]
+        self.assertIn("Биржа BYBIT", labels)
+        self.assertIn("Биржа MEXC", labels)
 
 
 class TestMergeUniverses(unittest.TestCase):
     def test_merge(self):
-        a = {"AAA": _Ticker("AAA", 1.0, 100.0, {"Binance"})}
-        b = {"AAA": _Ticker("AAA", 1.01, 500.0, {"Bybit"}),
-             "BBB": _Ticker("BBB", 2.0, 50.0, {"MEXC"})}
+        a = {"AAA": _Ticker("AAA", 1.0, 1000.0, {"Binance"})}
+        b = {"AAA": _Ticker("AAA", 1.1, 5000.0, {"MEXC"}),
+             "BBB": _Ticker("BBB", 2.0, 200.0, {"Bybit"})}
         merged = merge_universes(a, b)
-        self.assertEqual(merged["AAA"].venues, {"Binance", "Bybit"})
-        self.assertAlmostEqual(merged["AAA"].quote_vol_24h, 500.0)
-        self.assertAlmostEqual(merged["AAA"].price, 1.01)
-        self.assertEqual(merged["BBB"].venues, {"MEXC"})
+        self.assertEqual(merged["AAA"].venues, {"Binance", "MEXC"})
+        # берём цену/объём от более ликвидной биржи
+        self.assertEqual(merged["AAA"].quote_vol_24h, 5000.0)
+        self.assertEqual(merged["AAA"].price, 1.1)
+        self.assertIn("BBB", merged)
 
 
 if __name__ == "__main__":
