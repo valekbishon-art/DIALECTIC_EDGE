@@ -364,6 +364,22 @@ def _fmt_price(p: Optional[float]) -> str:
     return f"{p:.6f}".rstrip("0").rstrip(".")
 
 
+def _pair_links(sig: PumpSignal) -> str:
+    """Markdown-ссылки на ТОЧНУЮ пару BASE/USDT по каждой бирже.
+
+    Снимает путаницу с тикерами-омонимами (PAI/ANON/FUN и т.п.): клик ведёт
+    ровно на тот контракт, который засёк сканер, а не на одноимённый токен.
+    MEXC показываем первой, если она есть.
+    """
+    ordered = sorted(sig.venues, key=lambda v: (v.upper() != "MEXC", v.upper()))
+    parts = []
+    for v in ordered:
+        url = trade_url(v, sig.asset)
+        if url:
+            parts.append(f"[{v.upper()} {sig.asset}/USDT]({url})")
+    return " · ".join(parts)
+
+
 def format_pump_alert(sig: PumpSignal) -> str:
     """Текст алерта (Markdown) в стиле скрина сканера. Tier-aware."""
     venues = " · ".join(v.upper() for v in sig.venues) if sig.venues else "—"
@@ -385,6 +401,12 @@ def format_pump_alert(sig: PumpSignal) -> str:
     if sig.mcap:
         lines.append(f"💰 MCap: ${sig.mcap/1_000_000:.0f}M")
     lines.append(f"🏦 Биржи: {venues}")
+    pair = _pair_links(sig)
+    if pair:
+        lines.append(f"🔗 Пара: {pair}")
+    lines.append(
+        "🔍 Тикер: [проверить на CoinGecko]"
+        "(https://www.coingecko.com/en/search?query=" + sig.asset + ")")
     lines.append("")
     lines.append("⚠️ _Это не сигнал на покупку. Памп — высокий риск, DYOR._")
     return "\n".join(lines)
@@ -501,9 +523,37 @@ def merge_universes(*universes) -> dict:
     return merged
 
 
-async def _fetch_mcap_map(session, pages: int = 2) -> dict:
-    """CoinGecko {SYMBOL_UPPER: market_cap}. Best-effort, без ключа."""
+def _build_mcap_map(coin_rows: list) -> dict:
+    """{SYMBOL_UPPER: market_cap} ТОЛЬКО для тикеров без омонимов.
+
+    CoinGecko возвращает много монет с одинаковым тикером (PAI, ANON, FUN...).
+    Сопоставление mcap по тикеру для таких монет даёт mcap ЧУЖОЙ (известной)
+    монеты — ровно та омоним-ловушка. Поэтому неоднозначные тикеры
+    исключаем: их market cap считаем неизвестным (надёжнее, чем показать /
+    фильтровать по неверному значению).
+    """
+    by_symbol: dict = {}
+    for c in coin_rows:
+        try:
+            sym = str(c.get("symbol", "")).upper()
+            cid = str(c.get("id", "")) or sym
+            mc = c.get("market_cap")
+            if not sym or not mc:
+                continue
+            by_symbol.setdefault(sym, {})[cid] = float(mc)
+        except (ValueError, TypeError, AttributeError):
+            continue
     out: dict = {}
+    for sym, coins in by_symbol.items():
+        if len(coins) == 1:                 # тикер уникален -> доверяем mcap
+            out[sym] = next(iter(coins.values()))
+        # иначе омоним -> mcap неизвестен (пропускаем)
+    return out
+
+
+async def _fetch_mcap_map(session, pages: int = 2) -> dict:
+    """CoinGecko {SYMBOL_UPPER: market_cap} для тикеров без омонимов. Best-effort."""
+    rows: list = []
     for page in range(1, max(1, pages) + 1):
         try:
             data = await _fetch_json(
@@ -517,15 +567,8 @@ async def _fetch_mcap_map(session, pages: int = 2) -> dict:
             break
         if not isinstance(data, list) or not data:
             break
-        for c in data:
-            try:
-                sym = str(c.get("symbol", "")).upper()
-                mc = c.get("market_cap")
-                if sym and mc:
-                    out[sym] = float(mc)
-            except (ValueError, TypeError):
-                continue
-    return out
+        rows.extend(data)
+    return _build_mcap_map(rows)
 
 
 async def _fetch_klines(session, venue: str, base: str, interval: str,
