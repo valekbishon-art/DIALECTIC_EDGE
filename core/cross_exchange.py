@@ -26,6 +26,14 @@ UA = {"User-Agent": "Mozilla/5.0"}
 MIN_SPREAD_ANNUAL = 12.0   # % годовых — ниже косты двух ног съедят
 SANE_ABS_CAP = 200.0       # |ann| выше на ноге — выброс/стейл, отсекаем
 
+# Косты round-trip кросс-биржевого арба: открыть 2 ноги + закрыть 2 ноги = 4 тейкер-
+# филла на ДВУХ биржах (~0.05-0.06% за филл) → ~0.24% за круг. Это разовый кост,
+# аннуализируется на срок удержания → НЕТТО спред = gross − amortized_cost. Считаем
+# и показываем нетто (честно), но порог/ранжирование оставляем на gross-спреде, т.к.
+# срок удержания арба заранее не известен (держим пока спред не схлопнется).
+ARB_ROUNDTRIP_COST_PCT = float(os.getenv("CROSS_ARB_ROUNDTRIP_PCT", "0.24"))
+ARB_HOLD_DAYS = float(os.getenv("CROSS_ARB_HOLD_DAYS", "14"))
+
 # Ликвидный юниверс — топ перпов, торгуемые на нескольких биржах.
 LIQUID_ASSETS = {
     "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
@@ -47,6 +55,12 @@ class ArbOpportunity:
     @property
     def spread(self) -> float:
         return self.short_ann - self.long_ann
+
+    def net_spread(self, *, cost_pct: float = ARB_ROUNDTRIP_COST_PCT,
+                   hold_days: float = ARB_HOLD_DAYS) -> float:
+        """Нетто годовой спред после round-trip костов 2 бирж, аннуализированных
+        на срок удержания. Честная оценка реально собираемого carry."""
+        return self.spread - cost_pct * 365.0 / max(hold_days, 1.0)
 
 
 def _get(url: str, timeout: int = 12, post: dict | None = None):
@@ -204,7 +218,12 @@ def fetch_all(*, with_health: bool = False):
     by_asset: dict[str, dict] = {}
     for venue, table in res.items():
         for asset, ann in table.items():
-            if abs(ann) > SANE_ABS_CAP:
+            # Hyperliquid фандинг ПОЧАСОВОЙ: один 1ч-снимок аннуализируется в дикий
+            # шум (спайк -0.005%/ч → -44%/год), который легко перебивает sane-cap и
+            # роняет ЖИВУЮ ногу ещё ДО сглаживания (если у актива только HL + 1 биржа,
+            # вся возможность исчезает). HL пропускаем сырым — refine_hl_average()
+            # пересчитает по среднему за окно и применит cap уже к СГЛАЖЕННОМУ значению.
+            if venue != "Hyperliquid" and abs(ann) > SANE_ABS_CAP:
                 continue
             by_asset.setdefault(asset, {})[venue] = ann
     if with_health:
@@ -246,7 +265,8 @@ def format_arb_md(opps: list[ArbOpportunity], capital: float = 0.0) -> str:
     lines = ["🔀 <b>КРОСС-БИРЖЕВОЙ FUNDING-АРБ</b> (market-neutral, чего нет на одной бирже)\n"]
     for o in opps[:4]:
         lines.append(
-            f"💠 <b>{o.asset}: спред {o.spread:.0f}% годовых</b>\n"
+            f"💠 <b>{o.asset}: спред {o.spread:.0f}% годовых</b> "
+            f"(нетто ~{o.net_spread():.0f}% после костов 2 бирж, удержание ~{ARB_HOLD_DAYS:.0f}дн)\n"
             f"Фандинг: {o.short_venue} {o.short_ann:+.0f}% / {o.long_venue} {o.long_ann:+.0f}%\n"
             f"1️⃣ <b>{o.short_venue}</b> (высокий фандинг): ШОРТ перп {o.asset}, плечо 1x"
             + (f", на ${capital/2:,.0f}" if capital else "") + "\n"
@@ -353,7 +373,13 @@ def refine_hl_average(by_asset: dict, opps: list,
         if asset not in by_asset or "Hyperliquid" not in by_asset[asset]:
             continue
         avg_full, avg_recent = hl_funding_windows(asset, hours)
-        if avg_full is None:
+        if avg_full is None or abs(avg_full) > SANE_ABS_CAP:
+            # Истории нет / даже сглаженное среднее невменяемое (стейл-мем) →
+            # УБИРАЕМ ногу HL, а не оставляем сырой 1ч-снимок. Консервативно:
+            # пропущенный арб дешевле, чем вход по фантомному/стейл-фандингу.
+            logger.info("xexch HL %s: avg_full=%s → drop HL leg (no history / over cap)",
+                        asset, None if avg_full is None else round(avg_full, 1))
+            by_asset[asset].pop("Hyperliquid", None)
             continue
         if _is_fresh_flip(avg_full, avg_recent):
             logger.info("xexch HL fresh flip %s: full=%.1f recent=%.1f → drop HL leg",
