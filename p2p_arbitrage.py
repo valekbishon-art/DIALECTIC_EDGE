@@ -171,6 +171,30 @@ DEFAULT_MAX_SPREAD_PCT = 8.0
 DEFAULT_DEDUP_PRICE_BUCKET_PCT = 0.5
 DEFAULT_OUTLIER_MIN_SAMPLES = 3
 
+# ── Premium fiats: forex spot — НЕПРАВИЛЬНЫЙ якорь ────────────────────────────
+# Для валют под контролем капитала / санкциями USDT торгуется со структурной
+# ПРЕМИЕЙ к forex-курсу: достать доллар «по официальному курсу» физически
+# нельзя, поэтому P2P-цена = forex + премия (capital-flight / sanctions premium).
+#
+# Замер на живом Bybit P2P (USDT/RUB): forex=72.40, P2P-медиана=78.86 → +8.9%.
+# Если в `compute_market_anchor` якорить outlier-фильтр на forex (72.40) и
+# применить ±7% band [67.3, 77.5], то вся легитимная премиальная SELL-сторона
+# (медиана 83.34) вылетает как «outlier» → 0 сделок, а дешёвый скам-BUY (71 от
+# «СХЕМАBEZКАРТ») наоборот ВЫЖИВАЕТ (он внутри band). Это инвертированная логика.
+#
+# Решение: для premium-фиатов якорь = P2P combined median (реальный рынок), а
+# не forex spot. Тогда band центрируется на настоящем рынке: премиальные SELL'ы
+# остаются, дешёвый скам-BUY (на -10% от медианы) корректно режется. MAX_SPREAD
+# cap (8%) по-прежнему страхует от слишком-хороших-чтобы-быть-правдой спредов.
+#
+# Override через `P2P_PREMIUM_FIATS=RUB,ARS,...` (полная замена списка).
+DEFAULT_PREMIUM_FIATS: tuple[str, ...] = (
+    "RUB",   # РФ: санкции + контроль капитала (главный кейс юзера)
+    "ARS",   # Аргентина: инфляция 100%+, «dólar blue» премия
+    "VES",   # Венесуэла: гиперинфляция
+    "NGN",   # Нигерия: CBN-ограничения, naira-премия
+)
+
 PAYMENT_METHOD_ALIASES = {
     "tinkoffnew": "tinkoff",
     "tinkoff": "tinkoff",
@@ -759,6 +783,27 @@ def get_max_spread_pct() -> float:
         min_val=0.0,
         max_val=1000.0,
     )
+
+
+def get_premium_fiats() -> tuple[str, ...]:
+    """Фиаты, где forex spot — неправильный outlier-якорь (см. DEFAULT_PREMIUM_FIATS).
+
+    Для них USDT торгуется со структурной премией к forex (контроль капитала /
+    санкции), поэтому ``compute_market_anchor`` якорит на P2P-медиану, а не forex.
+    Override: ``P2P_PREMIUM_FIATS=RUB,ARS,...`` (полная замена списка). Пустая
+    строка (``P2P_PREMIUM_FIATS=``) → отключить premium-логику совсем (всё на forex).
+    """
+    raw = os.getenv("P2P_PREMIUM_FIATS")
+    if raw is not None and raw.strip() == "":
+        return ()
+    return _env_csv("P2P_PREMIUM_FIATS", DEFAULT_PREMIUM_FIATS)
+
+
+def is_premium_fiat(fiat: str) -> bool:
+    """True если для ``fiat`` outlier-якорь должен быть P2P-медианой, не forex."""
+    if not fiat:
+        return False
+    return fiat.strip().upper() in {f.upper() for f in get_premium_fiats()}
 
 
 def get_dedup_price_bucket_pct() -> float:
@@ -1504,16 +1549,31 @@ def compute_market_anchor(
 
     Приоритет:
       1. ``anchor_override`` — для DI / тестов (явное значение).
-      2. External FX spot rate из ``market_indicators.fiat_fx`` (USD-stable
-         assets only). Это **правильный** якорь — настоящий forex-курс,
-         независимый от P2P-distortions с обеих сторон.
-      3. Combined median (BUY+SELL вместе) — fallback когда spot недоступен и
+      2. *Premium-фиаты* (RUB/ARS/VES/NGN, см. ``is_premium_fiat``): forex spot —
+         НЕПРАВИЛЬНЫЙ якорь, т.к. USDT торгуется со структурной премией к forex
+         (контроль капитала/санкции). Для них СРАЗУ берём P2P combined median —
+         реальный рынок. Иначе band центрируется ~9% ниже рынка и вырезает всю
+         легитимную премиальную сторону стакана (замер RUB: forex 72.40 vs
+         P2P-медиана 78.86, +8.9%). См. DEFAULT_PREMIUM_FIATS.
+      3. External FX spot rate из ``market_indicators.fiat_fx`` (USD-stable
+         assets only). Правильный якорь для НЕ-premium фиатов (USD/EUR/...) —
+         настоящий forex-курс, независимый от P2P-distortions с обеих сторон.
+      4. Combined median (BUY+SELL вместе) — fallback когда spot недоступен и
          в пуле минимум 3 ad'а (как degraded хеджирование от полной потери
          outlier-защиты). Не идеален, но лучше чем ничего.
-      4. None — fallback'и не сработали, фильтр пропускается для этой пары.
+      5. None — fallback'и не сработали, фильтр пропускается для этой пары.
     """
     if anchor_override is not None and anchor_override > 0:
         return float(anchor_override)
+
+    prices = [float(ad.price) for ad in all_ads if ad.price and ad.price > 0]
+
+    # Premium-фиаты: forex spot врёт (структурная премия) → якорь на P2P-медиану.
+    if is_premium_fiat(fiat):
+        median = _median_price(prices)
+        if median is not None and median > 0:
+            return median
+        # P2P-медианы нет (мало ads) → последний шанс через forex spot ниже.
 
     try:
         from market_indicators.fiat_fx import market_anchor_for_pair  # noqa: PLC0415
@@ -1523,7 +1583,6 @@ def compute_market_anchor(
     except Exception as exc:
         _logger().warning("p2p outlier: fiat_fx anchor lookup failed: %s", exc)
 
-    prices = [float(ad.price) for ad in all_ads if ad.price and ad.price > 0]
     return _median_price(prices)
 
 

@@ -17,6 +17,8 @@ from p2p_arbitrage import (
     bybit_enabled,
     canonical_payment_method,
     compute_market_anchor,
+    get_premium_fiats,
+    is_premium_fiat,
     feature_enabled,
     filter_outliers,
     find_p2p_opportunities,
@@ -1476,6 +1478,129 @@ class TestSpotAnchorOutlierFilter(unittest.TestCase):
         ]
         anchor = compute_market_anchor("USDC", "SAR", ads, anchor_override=42.0)
         self.assertAlmostEqual(anchor, 42.0)
+
+
+class TestPremiumFiatAnchor(unittest.TestCase):
+    """RUB и др. capital-controlled фиаты: forex spot — НЕПРАВИЛЬНЫЙ якорь.
+
+    USDT торгуется со структурной премией к forex (контроль капитала/санкции),
+    поэтому для них якорь = P2P-медиана, а не forex. Замер на живом Bybit P2P:
+    forex USDT/RUB = 72.40, P2P-медиана = 78.86 (+8.9%). Forex-якорь центрирует
+    band ~9% ниже рынка и вырезает всю легитимную премиальную SELL-сторону.
+    """
+
+    def _ad(self, side: str, price: float, *, adv: str,
+            asset: str = "USDT", fiat: str = "RUB") -> P2PAdvert:
+        return P2PAdvert(
+            venue="Bybit P2P",
+            trade_type=side,
+            asset=asset,
+            fiat=fiat,
+            price=price,
+            min_amount_fiat=1000,
+            max_amount_fiat=100000,
+            payment_methods=("sbp",),
+            advertiser=adv,
+            completed_orders=500,
+            completion_rate_pct=99.0,
+            is_merchant=True,
+            fetched_at=time.time(),
+        )
+
+    def test_is_premium_fiat_defaults(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(is_premium_fiat("RUB"))
+            self.assertTrue(is_premium_fiat("rub"))   # case-insensitive
+            self.assertTrue(is_premium_fiat(" ARS "))  # trimmed
+            self.assertFalse(is_premium_fiat("USD"))
+            self.assertFalse(is_premium_fiat("EUR"))
+            self.assertFalse(is_premium_fiat(""))
+
+    def test_get_premium_fiats_env_override(self):
+        with patch.dict(os.environ, {"P2P_PREMIUM_FIATS": "KZT,UAH"}, clear=True):
+            self.assertEqual(set(get_premium_fiats()), {"KZT", "UAH"})
+            self.assertTrue(is_premium_fiat("KZT"))
+            self.assertFalse(is_premium_fiat("RUB"))  # больше не в списке
+
+    def test_get_premium_fiats_empty_disables(self):
+        # Пустая строка → premium-логика выключена (всё на forex).
+        with patch.dict(os.environ, {"P2P_PREMIUM_FIATS": ""}, clear=True):
+            self.assertEqual(get_premium_fiats(), ())
+            self.assertFalse(is_premium_fiat("RUB"))
+
+    def test_rub_anchor_uses_p2p_median_not_forex(self):
+        # 5 RUB ads вокруг 80 (медиана 80). Premium-путь → anchor=80, БЕЗ
+        # обращения к forex (~72.4). Детерминированно, без сети.
+        ads = [
+            self._ad("BUY", 78.0, adv="b1"),
+            self._ad("BUY", 79.0, adv="b2"),
+            self._ad("SELL", 80.0, adv="s1"),
+            self._ad("SELL", 82.0, adv="s2"),
+            self._ad("SELL", 83.0, adv="s3"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            anchor = compute_market_anchor("USDT", "RUB", ads)
+        self.assertAlmostEqual(anchor, 80.0, places=2)  # median, не forex 72.4
+
+    def test_rub_premium_sell_side_survives_outlier_filter(self):
+        # Премиальная SELL-сторона (~79) НЕ должна вылетать как outlier при
+        # P2P-median якоре. Buy ~76-77, sell ~78-79 → реальный спред ~1-2%
+        # проходит. С forex-якорем (72.4, band [67.3,77.5]) все sells>77.5
+        # вылетели бы → 0 opps. Здесь должна быть >=1 opp.
+        buy_ads = [
+            self._ad("BUY", 76.0, adv="b1"),
+            self._ad("BUY", 76.5, adv="b2"),
+            self._ad("BUY", 77.0, adv="b3"),
+        ]
+        sell_ads = [
+            self._ad("SELL", 78.0, adv="s1"),
+            self._ad("SELL", 78.5, adv="s2"),
+            self._ad("SELL", 79.0, adv="s3"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            opps = find_p2p_opportunities(
+                buy_ads, sell_ads,
+                min_spread_pct=0.1,
+                settlement_buffer_pct=0.0,
+                max_results=20,
+            )
+        self.assertGreaterEqual(len(opps), 1)
+        # И сама премиальная sell-сторона (≥78) реально участвует в сделке.
+        self.assertTrue(any(o.sell_ad.price >= 78.0 for o in opps))
+
+    def test_rub_cheap_scam_buy_dropped_by_median_anchor(self):
+        # «СХЕМАBEZКАРТ»-паттерн: дешёвый buy 71 при рынке ~80 = -11% от
+        # медианы → outlier → режется. (С forex-якорем 72.4 этот 71 был бы
+        # ВНУТРИ band и проходил — инвертированная логика, которую мы чиним.)
+        ads = [
+            self._ad("BUY", 71.0, adv="СХЕМА"),    # scam, -11% от медианы
+            self._ad("BUY", 79.0, adv="b2"),
+            self._ad("BUY", 80.0, adv="b3"),
+            self._ad("SELL", 80.5, adv="s1"),
+            self._ad("SELL", 81.0, adv="s2"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            filtered, _ = filter_outliers(ads, band_pct=7.0)
+        prices = [round(a.price, 2) for a in filtered]
+        self.assertNotIn(71.0, prices)
+        self.assertIn(79.0, prices)
+
+    def test_usd_still_uses_forex_not_median(self):
+        # Контроль: USD НЕ premium → median не подменяет forex-путь.
+        # USDC/USD: spot=1.0, ads все 0.97 → anchor должен быть ~1.0 (forex),
+        # а не 0.97 (median).
+        ads = [
+            self._ad("BUY", 0.97, adv=f"b{i}", asset="USDC", fiat="USD")
+            for i in range(5)
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            anchor = compute_market_anchor("USDC", "USD", ads)
+        self.assertAlmostEqual(anchor, 1.0, places=2)
+
+    def test_premium_override_still_wins(self):
+        ads = [self._ad("BUY", 80.0, adv="b1")]
+        anchor = compute_market_anchor("USDT", "RUB", ads, anchor_override=99.0)
+        self.assertAlmostEqual(anchor, 99.0)
 
 
 class TestM9FTightBand(unittest.TestCase):
