@@ -119,6 +119,7 @@ from refactor.handlers import (
     handle_health_command,
     handle_logs_command,
     handle_sysinfo_command,
+    handle_edge_command,
     handle_btc_command,
     handle_funding_command,
     handle_p2p_command,
@@ -6241,6 +6242,11 @@ async def cmd_logs(message: Message):
 @dp.message(Command("sysinfo"))
 async def cmd_sysinfo(message: Message):
     await handle_sysinfo_command(message)
+
+
+@dp.message(Command("edge"))
+async def cmd_edge(message: Message):
+    await handle_edge_command(message)
 
 
 @dp.callback_query(F.data.startswith("fb:"))

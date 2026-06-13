@@ -7,6 +7,7 @@ database.py — SQLite база данных.
 """
 
 import aiosqlite
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -147,6 +148,37 @@ async def init_db():
         await db.execute("""
             INSERT OR IGNORE INTO backtest_config (id, capital, enabled) VALUES (1, 100.0, 1)
         """)
+
+        # Edge-леджер: live-сигналы + формальный сертификат (#2/#5 roadmap).
+        # record_signal() пишет pending-строку, фоновый резолвер обновляет исход,
+        # condition-win-rate считается по полю certificate (JSON).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS edge_signals (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at    TEXT DEFAULT (datetime('now')),
+                source        TEXT,                 -- best_trade, signal, ...
+                asset         TEXT NOT NULL,
+                direction     TEXT NOT NULL,        -- LONG / SHORT
+                entry         REAL NOT NULL,
+                target        REAL,
+                stop          REAL,
+                horizon_hours REAL,
+                emitted_at    TEXT NOT NULL,        -- ISO naive-UTC момент эмиссии
+                score         INTEGER,
+                rr_ratio      REAL,
+                certificate   TEXT,                 -- JSON {condition: bool} (#2 сертификат)
+                reasons       TEXT,                 -- JSON list[str]
+                status        TEXT DEFAULT 'pending',  -- pending/tp/sl/expired
+                exit_price    REAL,
+                pnl_pct       REAL,
+                exit_at       TEXT,
+                resolved_at   TEXT
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edge_signals_status "
+            "ON edge_signals(status)"
+        )
 
         # Daily context table - stores verdict and price levels for signal trading
         await db.execute("""
@@ -2294,3 +2326,150 @@ async def get_predictions_summary(days: int = 5) -> str:
     lines.append("=========================")
 
     return "\n".join(lines)
+
+
+# ──────────────────────────── Edge-леджер (live edge) ───────────────────────
+# record_signal/resolve_pending живут в core/edge_ledger.py и зовут эти CRUD.
+
+async def edge_insert_signal(
+    *,
+    source: str,
+    asset: str,
+    direction: str,
+    entry: float,
+    target: Optional[float],
+    stop: Optional[float],
+    horizon_hours: float,
+    emitted_at: str,
+    score: Optional[int],
+    rr_ratio: Optional[float],
+    certificate: Optional[dict],
+    reasons: Optional[list],
+) -> int:
+    """Записать pending live-сигнал. Возвращает row id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO edge_signals
+                (source, asset, direction, entry, target, stop, horizon_hours,
+                 emitted_at, score, rr_ratio, certificate, reasons, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                source, asset, (direction or "").upper(), float(entry),
+                float(target) if target is not None else None,
+                float(stop) if stop is not None else None,
+                float(horizon_hours), emitted_at,
+                int(score) if score is not None else None,
+                float(rr_ratio) if rr_ratio is not None else None,
+                json.dumps(certificate or {}),
+                json.dumps(reasons or []),
+            ),
+        )
+        await db.commit()
+        return int(cur.lastrowid)
+
+
+async def edge_get_pending() -> list[dict]:
+    """Все pending live-сигналы (для резолвера)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM edge_signals WHERE status = 'pending' ORDER BY emitted_at"
+        )
+        rows = await cur.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+async def edge_mark_resolved(
+    signal_id: int,
+    status: str,
+    exit_price: Optional[float],
+    pnl_pct: Optional[float],
+    exit_at: Optional[str],
+) -> None:
+    """Обновить исход сигнала после резолва."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE edge_signals
+               SET status = ?, exit_price = ?, pnl_pct = ?, exit_at = ?,
+                   resolved_at = datetime('now')
+             WHERE id = ?
+            """,
+            (status, exit_price, pnl_pct, exit_at, int(signal_id)),
+        )
+        await db.commit()
+
+
+async def edge_overall_stats() -> dict:
+    """Сводка по резолвнутым сигналам: n, win-rate, avg pnl, total pnl."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT
+                COUNT(*)                                          AS resolved,
+                SUM(CASE WHEN status='tp' THEN 1 ELSE 0 END)      AS tp,
+                SUM(CASE WHEN status='sl' THEN 1 ELSE 0 END)      AS sl,
+                SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END) AS expired,
+                AVG(pnl_pct)                                      AS avg_pnl,
+                SUM(pnl_pct)                                      AS total_pnl
+            FROM edge_signals
+            WHERE status IN ('tp','sl','expired')
+            """
+        )
+        row = await cur.fetchone()
+        d = _row_to_dict(row) if row else {}
+        cur2 = await db.execute(
+            "SELECT COUNT(*) AS pending FROM edge_signals WHERE status='pending'"
+        )
+        p = await cur2.fetchone()
+        d["pending"] = (_row_to_dict(p) or {}).get("pending", 0)
+        return d
+
+
+async def edge_condition_stats(min_n: int = 1) -> list[dict]:
+    """Win-rate ПО КАЖДОМУ условию сертификата (#2/#5).
+
+    Win = исход с положительным pnl_pct (tp, либо expired в плюс).
+    Для каждого булева условия из certificate считаем выборку резолвнутых
+    сигналов, где условие True, и долю выигрышей + средний pnl.
+    Возвращает список dict, отсортированный по edge (win_rate) убыванию.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT certificate, pnl_pct, status FROM edge_signals
+            WHERE status IN ('tp','sl','expired') AND certificate IS NOT NULL
+            """
+        )
+        rows = await cur.fetchall()
+
+    agg: dict[str, dict] = {}
+    for r in rows:
+        rd = _row_to_dict(r)
+        try:
+            cert = json.loads(rd.get("certificate") or "{}")
+        except Exception:
+            continue
+        pnl = rd.get("pnl_pct")
+        win = 1 if (pnl is not None and pnl > 0) else 0
+        for cond, held in cert.items():
+            if not held:
+                continue
+            a = agg.setdefault(cond, {"condition": cond, "n": 0, "wins": 0, "pnl_sum": 0.0})
+            a["n"] += 1
+            a["wins"] += win
+            a["pnl_sum"] += float(pnl or 0.0)
+
+    out = []
+    for a in agg.values():
+        if a["n"] < min_n:
+            continue
+        a["win_rate"] = (a["wins"] / a["n"] * 100.0) if a["n"] else 0.0
+        a["avg_pnl"] = (a["pnl_sum"] / a["n"]) if a["n"] else 0.0
+        out.append(a)
+    out.sort(key=lambda x: x["win_rate"], reverse=True)
+    return out

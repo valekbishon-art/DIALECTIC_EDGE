@@ -177,6 +177,9 @@ FEATURE_EDGE_LEDGER = os.getenv("FEATURE_EDGE_LEDGER", "0").strip().lower() in (
 )
 # Интервал (сек) фонового резолвера pending-сигналов edge-леджера.
 EDGE_RESOLVE_INTERVAL_SEC = int(os.getenv("EDGE_RESOLVE_INTERVAL_SEC", "3600"))
+# Горизонт (часы) по которому резолвится исход live-сигнала (TP/SL/expired).
+# 336ч = 14 дней — тот же дефолт, что в core/backtest_engine.py (Фаза 1).
+EDGE_DEFAULT_HORIZON_HOURS = int(os.getenv("EDGE_DEFAULT_HORIZON_HOURS", "336"))
 
 # ── Фича ПАМП: кросс-биржевой сканер резких ростов на повышенном объёме ──
 # Детект + фильтры живут в core/pump_scanner.py, рассылка — pump_alert.py,

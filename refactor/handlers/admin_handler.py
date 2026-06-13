@@ -155,6 +155,63 @@ async def handle_sysinfo_command(message: Message) -> None:
     await message.answer(get_admin_handler().format_system_info(), parse_mode="HTML")
 
 
+async def format_edge_stats() -> str:
+    """Edge-леджер: общий win-rate live-сигналов + win-rate по каждому условию
+    формального сертификата (#2/#5). Показывает, какие условия реально несут edge.
+    """
+    from database import edge_overall_stats, edge_condition_stats
+
+    overall = await edge_overall_stats()
+    resolved = overall.get("resolved") or 0
+    pending = overall.get("pending") or 0
+    if not resolved:
+        return (
+            "<b>📐 Edge-леджер</b>\n\n"
+            f"Резолвнутых сигналов пока нет (pending: {pending}).\n"
+            "Включи <code>FEATURE_EDGE_LEDGER=1</code> и подожди, пока сигналы "
+            "отыграют горизонт — тогда появится win-rate по условиям."
+        )
+    tp = overall.get("tp") or 0
+    sl = overall.get("sl") or 0
+    expired = overall.get("expired") or 0
+    avg_pnl = overall.get("avg_pnl") or 0.0
+    total_pnl = overall.get("total_pnl") or 0.0
+    win_rate = (tp / resolved * 100.0) if resolved else 0.0
+
+    lines = [
+        "<b>📐 Edge-леджер (live)</b>\n",
+        f"Резолвнуто: <b>{resolved}</b> | pending: {pending}",
+        f"TP: {tp} | SL: {sl} | expired: {expired}",
+        f"Win-rate (TP): <b>{win_rate:.0f}%</b>",
+        f"Avg PnL: {avg_pnl:+.2f}% | Total: {total_pnl:+.2f}%\n",
+        "<b>Win-rate по условиям сертификата:</b>",
+    ]
+    conds = await edge_condition_stats(min_n=1)
+    if not conds:
+        lines.append("  (нет данных по условиям)")
+    else:
+        for c in conds:
+            lines.append(
+                f"  • <code>{c['condition']}</code>: "
+                f"{c['win_rate']:.0f}% (n={c['n']}, avg {c['avg_pnl']:+.2f}%)"
+            )
+        lines.append(
+            "\n<i>Условия вверху списка несут больше edge; "
+            "внизу — кандидаты на ужесточение/выпил.</i>"
+        )
+    return "\n".join(lines)
+
+
+async def handle_edge_command(message: Message) -> None:
+    if not await check_admin(message):
+        return
+    try:
+        await message.answer(await format_edge_stats(), parse_mode="HTML")
+    except Exception as e:
+        logger.exception("edge stats error")
+        await message.answer(f"Ошибка edge-статистики: {e}")
+
+
 def setup_admins(admin_list: List[int]) -> None:
     for admin_id in admin_list:
         register_admin(admin_id)
