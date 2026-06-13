@@ -6332,11 +6332,15 @@ async def main():
     register_subscription_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()
+    # Register on BOTH messages and inline callbacks so the global flood cap
+    # can't be bypassed by mashing inline buttons.
     dp.message.middleware(_rate_limiter)
+    dp.callback_query.middleware(_rate_limiter)
     if _rate_limiter.enabled:
         logger.info(
-            "⏱ RateLimitMiddleware on: window=%ds, commands=%s",
+            "⏱ RateLimitMiddleware on: cmd-window=%ds (%s), flood-cap=%d/%ds",
             _rate_limiter.window_sec, ",".join(_rate_limiter.heavy_commands),
+            _rate_limiter.max_per_window, _rate_limiter.flood_window_sec,
         )
     else:
         logger.info("⏱ RateLimitMiddleware off (FEATURE_RATE_LIMITER=0)")

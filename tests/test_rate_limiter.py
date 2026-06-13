@@ -32,9 +32,10 @@ except Exception:
     HAS_AIOGRAM = False
 
 if HAS_AIOGRAM:
-    from aiogram.types import Message
+    from aiogram.types import CallbackQuery, Message
 
     from refactor.middleware.rate_limiter import (
+        BUTTON_COMMANDS,
         DEFAULT_HEAVY_COMMANDS,
         RateLimitMiddleware,
         _extract_bare_command,
@@ -267,6 +268,156 @@ class RateLimitDefaultsTestCase(unittest.TestCase):
         # If this changes, update AUTONOMY_ROADMAP and PR description.
         expected = {"daily", "markets", "analyze", "research", "audit", "why", "starttrade", "stop"}
         self.assertEqual(set(DEFAULT_HEAVY_COMMANDS), expected)
+
+
+def _make_callback(data: str, user_id: int = 100) -> MagicMock:
+    """Stub aiogram CallbackQuery with .data, .from_user.id, .answer."""
+    cb = MagicMock(spec=CallbackQuery)
+    cb.data = data
+    cb.from_user = MagicMock(spec=["id"])
+    cb.from_user.id = user_id
+    cb.answer = AsyncMock()
+    return cb
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
+class ButtonResolutionTestCase(unittest.IsolatedAsyncioTestCase):
+    """Persistent reply-keyboard buttons must hit the same per-command cooldown
+    as the equivalent slash command (closes the button-bypass hole)."""
+
+    def setUp(self) -> None:
+        self.now = [1000.0]
+        self.mw = RateLimitMiddleware(
+            window_sec=30,
+            heavy_commands=("daily", "markets"),
+            max_per_window=999,  # disable flood cap for these focused tests
+            enabled=True,
+            clock=lambda: self.now[0],
+        )
+        self.handler = AsyncMock(return_value="ok")
+
+    async def test_button_tap_resolves_to_command(self) -> None:
+        # "📊 Прогноз" → daily ; second tap inside the window is blocked.
+        btn1 = _make_message("📊 Прогноз")
+        btn2 = _make_message("📊 Прогноз")
+        await self.mw(self.handler, btn1, {})
+        self.now[0] += 5
+        result = await self.mw(self.handler, btn2, {})
+        self.assertEqual(self.handler.await_count, 1)
+        btn2.reply.assert_awaited_once()
+        self.assertIsNone(result)
+
+    async def test_button_and_slash_share_cooldown(self) -> None:
+        # Tapping the 🏛 Рынки button then sending /markets must collide.
+        btn = _make_message("🏛 Рынки")
+        slash = _make_message("/markets")
+        await self.mw(self.handler, btn, {})
+        self.now[0] += 1
+        await self.mw(self.handler, slash, {})
+        self.assertEqual(self.handler.await_count, 1)
+        slash.reply.assert_awaited_once()
+
+    async def test_unmapped_button_not_cooled_down(self) -> None:
+        # A non-heavy button label is not a heavy command → passes (flood cap
+        # is the net for those).
+        btn = _make_message("⚙️ Настройки")
+        await self.mw(self.handler, btn, {})
+        await self.mw(self.handler, btn, {})
+        self.assertEqual(self.handler.await_count, 2)
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
+class GlobalFloodCapTestCase(unittest.IsolatedAsyncioTestCase):
+    """Per-user global flood cap over a rolling window — the real anti-spam net."""
+
+    def setUp(self) -> None:
+        self.now = [1000.0]
+        self.mw = RateLimitMiddleware(
+            window_sec=0,            # no per-command cooldown interference
+            heavy_commands=(),
+            max_per_window=5,
+            flood_window_sec=60,
+            enabled=True,
+            clock=lambda: self.now[0],
+        )
+        self.handler = AsyncMock(return_value="ok")
+
+    async def test_under_cap_passes(self) -> None:
+        for _ in range(5):
+            self.now[0] += 1
+            await self.mw(self.handler, _make_message("hi"), {})
+        self.assertEqual(self.handler.await_count, 5)
+
+    async def test_over_cap_blocked(self) -> None:
+        for _ in range(5):
+            await self.mw(self.handler, _make_message("hi"), {})
+        # 6th event within the window is flood-capped.
+        blocked = _make_message("hi")
+        result = await self.mw(self.handler, blocked, {})
+        self.assertEqual(self.handler.await_count, 5)
+        blocked.reply.assert_awaited_once()
+        self.assertIn("Слишком много", blocked.reply.call_args.args[0])
+        self.assertIsNone(result)
+
+    async def test_buttons_count_toward_flood(self) -> None:
+        # Mixing plain text + button taps still trips the cap (button-spam).
+        for label in ("hi", "📊 Прогноз", "🏛 Рынки", "x", "y"):
+            await self.mw(self.handler, _make_message(label), {})
+        blocked = _make_message("z")
+        await self.mw(self.handler, blocked, {})
+        self.assertEqual(self.handler.await_count, 5)
+        blocked.reply.assert_awaited_once()
+
+    async def test_inline_callbacks_count_toward_flood(self) -> None:
+        for _ in range(5):
+            await self.mw(self.handler, _make_callback("cmd:markets"), {})
+        blocked = _make_callback("cmd:markets")
+        await self.mw(self.handler, blocked, {})
+        self.assertEqual(self.handler.await_count, 5)
+        blocked.answer.assert_awaited_once()  # callbacks notified via .answer
+
+    async def test_different_users_have_independent_caps(self) -> None:
+        for _ in range(5):
+            await self.mw(self.handler, _make_message("hi", user_id=1), {})
+        # User 2 is unaffected.
+        await self.mw(self.handler, _make_message("hi", user_id=2), {})
+        self.assertEqual(self.handler.await_count, 6)
+
+    async def test_cap_recovers_after_window(self) -> None:
+        for _ in range(5):
+            await self.mw(self.handler, _make_message("hi"), {})
+        # Jump past the flood window — the bucket ages out, user can act again.
+        self.now[0] += 61
+        await self.mw(self.handler, _make_message("hi"), {})
+        self.assertEqual(self.handler.await_count, 6)
+
+    async def test_blocked_user_not_pushed_further_back(self) -> None:
+        # Five events at t=1000. Cap hit. A blocked attempt at t=1030 must not
+        # extend the window: at t=1061 (61s after the originals) it's allowed.
+        for _ in range(5):
+            await self.mw(self.handler, _make_message("hi"), {})
+        self.now[0] += 30
+        await self.mw(self.handler, _make_message("hi"), {})   # blocked, not recorded
+        self.assertEqual(self.handler.await_count, 5)
+        self.now[0] += 31  # now t=1061, originals (t=1000) aged out
+        await self.mw(self.handler, _make_message("hi"), {})
+        self.assertEqual(self.handler.await_count, 6)
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
+class CeilSecondsTestCase(unittest.TestCase):
+    def test_ceil_seconds(self) -> None:
+        from refactor.middleware.rate_limiter import _ceil_seconds
+        self.assertEqual(_ceil_seconds(0.1), 1)
+        self.assertEqual(_ceil_seconds(1.0), 1)
+        self.assertEqual(_ceil_seconds(1.2), 2)
+        self.assertEqual(_ceil_seconds(29.9), 30)
+
+    def test_button_map_targets_are_heavy_by_default(self) -> None:
+        # Every mapped button must point at a documented heavy command,
+        # otherwise the mapping silently does nothing.
+        for label, cmd in BUTTON_COMMANDS.items():
+            self.assertIn(cmd, DEFAULT_HEAVY_COMMANDS, f"{label}->{cmd} not heavy")
 
 
 if __name__ == "__main__":  # pragma: no cover
