@@ -75,6 +75,19 @@ async def cmd_premium(message: Message) -> None:
             f"Спасибо за поддержку!",
             parse_mode="Markdown",
         )
+    elif info.get("trial_active"):
+        from payments.crypto_pay import SUB_PRICE_AMOUNT, SUB_PRICE_ASSET, SUB_DAYS
+
+        t_end = info.get("trial_end")
+        t_str = t_end.strftime("%d.%m.%Y") if t_end else ""
+        await message.answer(
+            f"🎁 *Бесплатный пробный период активен*\n"
+            f"Действует до: {t_str}\n\n"
+            f"После окончания — подписка *{SUB_PRICE_AMOUNT} {SUB_PRICE_ASSET}* / {SUB_DAYS} дней.\n"
+            f"Можешь оформить заранее кнопкой ниже:",
+            parse_mode="Markdown",
+            reply_markup=_status_keyboard(),
+        )
     else:
         from payments.crypto_pay import SUB_PRICE_AMOUNT, SUB_PRICE_ASSET, SUB_DAYS
 

@@ -6335,6 +6335,17 @@ async def main():
     else:
         logger.info("⏱ RateLimitMiddleware off (FEATURE_RATE_LIMITER=0)")
 
+    # Bot-wide paywall + free trial (closes every handler, not just @require_vip).
+    from refactor.middleware.subscription_guard import SubscriptionMiddleware
+    _paywall = SubscriptionMiddleware()
+    dp.message.middleware(_paywall)
+    dp.callback_query.middleware(_paywall)
+    logger.info(
+        "🔒 SubscriptionMiddleware %s (trial_days=%s)",
+        "ON" if _paywall.enabled else "OFF (FEATURE_PAYWALL=0)",
+        os.getenv("TRIAL_DAYS", "3"),
+    )
+
     await set_bot_commands(bot)
 
     await init_db()

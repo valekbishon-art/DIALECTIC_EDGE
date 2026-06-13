@@ -124,9 +124,26 @@ CREATE TABLE IF NOT EXISTS vip_users (
     username            TEXT DEFAULT '',
     is_vip              BOOLEAN DEFAULT FALSE,
     subscription_end    TIMESTAMPTZ,
+    trial_started_at    TIMESTAMPTZ,
+    trial_end           TIMESTAMPTZ,
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 """
+
+# Backward-compat: add trial columns to a pre-existing vip_users table.
+_MIGRATE_TRIAL_COLUMNS = (
+    "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ;",
+    "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ;",
+)
+
+
+def _trial_days() -> int:
+    """Free-trial length for new users (env ``TRIAL_DAYS``, default 3, 0 disables)."""
+    raw = os.getenv("TRIAL_DAYS", "3")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 3
 
 _CREATE_DAILY_DIGESTS = """
 CREATE TABLE IF NOT EXISTS daily_digests (
@@ -151,8 +168,10 @@ async def init_postgres() -> bool:
 
         async with engine.begin() as conn:
             await conn.execute(text(_CREATE_VIP_USERS))
+            for stmt in _MIGRATE_TRIAL_COLUMNS:
+                await conn.execute(text(stmt))
             await conn.execute(text(_CREATE_DAILY_DIGESTS))
-        logger.info("PostgreSQL tables ready (vip_users, daily_digests)")
+        logger.info("PostgreSQL tables ready (vip_users + trial cols, daily_digests)")
         return True
     except Exception as e:
         logger.error("PostgreSQL init failed: %s", e)
@@ -258,6 +277,83 @@ async def check_vip(user_id: int) -> bool:
         return True  # Fail-open: don't block users on DB errors
 
 
+async def ensure_access(user_id: int, username: str = "") -> dict:
+    """Register the user, start a free trial on FIRST contact, and report access.
+
+    This is the single entry point used by the subscription middleware. It is
+    idempotent: the free trial is created exactly once (on the user's very first
+    message). Returns a dict::
+
+        {
+          "access": bool,          # may use the bot right now?
+          "reason": str,           # admin | vip | trial | expired | no_db | error
+          "is_vip": bool,          # paid subscription active
+          "trial_active": bool,    # within free-trial window
+          "subscription_end": datetime | None,
+          "trial_end": datetime | None,
+          "trial_started": bool,   # True ONLY on the call that created the trial
+          "pg_enabled": bool,
+        }
+    """
+    if _is_admin(user_id):
+        return {"access": True, "reason": "admin", "is_vip": True,
+                "trial_active": False, "subscription_end": None,
+                "trial_end": None, "trial_started": False, "pg_enabled": _is_enabled()}
+    if not _is_enabled():
+        # No paywall when Postgres is off (graceful degradation).
+        return {"access": True, "reason": "no_db", "is_vip": True,
+                "trial_active": False, "subscription_end": None,
+                "trial_end": None, "trial_started": False, "pg_enabled": False}
+    try:
+        from sqlalchemy import text
+
+        now = datetime.now(timezone.utc)
+        days = _trial_days()
+        trial_end = now + timedelta(days=days) if days > 0 else None
+        async with await _get_session() as session:
+            created_row = await session.execute(
+                text("""
+                    INSERT INTO vip_users
+                        (user_id, username, trial_started_at, trial_end)
+                    VALUES (:uid, :uname, :ts, :tend)
+                    ON CONFLICT (user_id) DO NOTHING
+                    RETURNING user_id
+                """),
+                {"uid": user_id, "uname": username or "",
+                 "ts": now if trial_end else None, "tend": trial_end},
+            )
+            trial_started = created_row.scalar_one_or_none() is not None
+
+            row = await session.execute(
+                text("""
+                    SELECT is_vip, subscription_end, trial_end
+                    FROM vip_users WHERE user_id = :uid
+                """),
+                {"uid": user_id},
+            )
+            result = row.one_or_none()
+            await session.commit()
+
+        if not result:
+            return {"access": False, "reason": "expired", "is_vip": False,
+                    "trial_active": False, "subscription_end": None,
+                    "trial_end": None, "trial_started": False, "pg_enabled": True}
+
+        is_vip_flag, sub_end, t_end = result
+        vip_active = bool(is_vip_flag) and (sub_end is None or sub_end > now)
+        trial_active = t_end is not None and t_end > now
+        access = vip_active or trial_active
+        reason = "vip" if vip_active else "trial" if trial_active else "expired"
+        return {"access": access, "reason": reason, "is_vip": vip_active,
+                "trial_active": trial_active, "subscription_end": sub_end,
+                "trial_end": t_end, "trial_started": trial_started, "pg_enabled": True}
+    except Exception as e:
+        logger.warning("ensure_access(%s) failed: %s — fail-open", user_id, e)
+        return {"access": True, "reason": "error", "is_vip": False,
+                "trial_active": False, "subscription_end": None,
+                "trial_end": None, "trial_started": False, "pg_enabled": True}
+
+
 async def get_vip_info(user_id: int) -> dict:
     """Get VIP status details for display.
 
@@ -277,17 +373,21 @@ async def get_vip_info(user_id: int) -> dict:
 
         async with await _get_session() as session:
             row = await session.execute(
-                text("SELECT is_vip, subscription_end FROM vip_users WHERE user_id = :uid"),
+                text("SELECT is_vip, subscription_end, trial_end "
+                     "FROM vip_users WHERE user_id = :uid"),
                 {"uid": user_id},
             )
             result = row.one_or_none()
             if not result:
-                return {"is_vip": False, "subscription_end": None, "pg_enabled": True}
+                return {"is_vip": False, "subscription_end": None,
+                        "trial_active": False, "trial_end": None, "pg_enabled": True}
+            now = datetime.now(timezone.utc)
+            t_end = result[2]
             return {
-                "is_vip": result[0] and (
-                    result[1] is None or result[1] > datetime.now(timezone.utc)
-                ),
+                "is_vip": result[0] and (result[1] is None or result[1] > now),
                 "subscription_end": result[1],
+                "trial_active": t_end is not None and t_end > now,
+                "trial_end": t_end,
                 "pg_enabled": True,
             }
     except Exception as e:
