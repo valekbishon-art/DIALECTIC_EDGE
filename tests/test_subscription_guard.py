@@ -8,13 +8,20 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from aiogram.types import CallbackQuery, Message, User
+try:
+    import aiogram  # noqa: F401
+    HAS_AIOGRAM = True
+except ImportError:  # unit-fast CI job installs minimal deps without aiogram
+    HAS_AIOGRAM = False
 
-from refactor.middleware.subscription_guard import (
-    SubscriptionMiddleware,
-    _bare_command,
-    _is_truthy,
-)
+if HAS_AIOGRAM:
+    from aiogram.types import CallbackQuery, Message, User
+
+    from refactor.middleware.subscription_guard import (
+        SubscriptionMiddleware,
+        _bare_command,
+        _is_truthy,
+    )
 
 
 def _msg(text: str | None, uid: int = 1, username: str = "u") -> Message:
@@ -28,6 +35,7 @@ def _cb(data: str, uid: int = 1) -> CallbackQuery:
         data=data, from_user=User.model_construct(id=uid, username="u"), message=None)
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class TestHelpers(unittest.TestCase):
     def test_bare_command(self):
         self.assertEqual(_bare_command("/premium"), "premium")
@@ -43,6 +51,7 @@ class TestHelpers(unittest.TestCase):
             self.assertFalse(_is_truthy(v))
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class TestWhitelist(unittest.TestCase):
     def setUp(self):
         self.mw = SubscriptionMiddleware(enabled=True)
@@ -61,6 +70,7 @@ class TestWhitelist(unittest.TestCase):
         self.assertFalse(self.mw._is_whitelisted(_cb("pump:more")))
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class TestGating(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.mw = SubscriptionMiddleware(enabled=True)
@@ -120,6 +130,7 @@ class TestGating(unittest.IsolatedAsyncioTestCase):
         self.mw._send_paywall.assert_awaited_once()
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class TestEnsureAccessLogic(unittest.IsolatedAsyncioTestCase):
     async def test_admin_always_access(self):
         import payments.db as db
