@@ -115,6 +115,7 @@ from refactor.handlers import (
     cmd_add_portfolio as add_portfolio_command,
     cmd_remove_portfolio as remove_portfolio_command,
     setup_admins,
+    is_admin,
     handle_stats_command,
     handle_health_command,
     handle_logs_command,
@@ -3632,6 +3633,17 @@ def _parse_daily_args(text: str) -> tuple[str | None, bool]:
     return horizon_key, force_fresh
 
 
+def _resolve_force_fresh(user_id: int, requested: bool) -> bool:
+    """Force-fresh (пере-генерация дайджеста) — ТОЛЬКО админ.
+
+    Дайджест генерится 1 раз в день (cron_digest.py утром) и кэшируется в PG.
+    Обычные юзеры всегда получают этот дневной кэш — `force` для них недоступен
+    (дорогие LLM-вызовы → защита от abuse и расхода токенов). Админ может
+    форснуть свежую генерацию через `/daily [horizon] force`.
+    """
+    return bool(requested) and is_admin(user_id)
+
+
 def _horizon_picker_keyboard(force_fresh: bool = False) -> InlineKeyboardMarkup:
     """3 кнопки выбора горизонта. `force` зашиваем в callback_data, чтобы
     обработчик не зависел от внешнего состояния."""
@@ -3648,15 +3660,20 @@ def _horizon_picker_keyboard(force_fresh: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _send_horizon_picker(message: Message, force_fresh: bool = False) -> None:
+async def _send_horizon_picker(
+    message: Message, force_fresh: bool = False, *, allow_force: bool = True,
+) -> None:
     note = "" if not force_fresh else " (без кэша)"
+    # Подсказку про `force` показываем только тем, кому она доступна (админу) —
+    # обычным юзерам она вводит в заблуждение (дайджест 1×/день из кэша).
+    force_hint = "\n`/daily force` — сбросить кэш (только админ)." if allow_force else ""
     await message.answer(
         "🎯 *Выбери горизонт планирования* ⤵️" + note + "\n\n"
         "⚡️ *1–3 дня* — стопы плотные, R/R от 1:1.5, доля депо мелкая.\n"
         "📈 *7–14 дней* — свинг, стандартный режим (по умолчанию).\n"
         "🏔 *30+ дней* — макро-позиция, R/R от 1:3, входим осторожнее.\n\n"
-        "Можно сразу командой: `/daily intraday`, `/daily swing`, `/daily position`. "
-        "`/daily force` — сбросить кэш.",
+        "Можно сразу командой: `/daily intraday`, `/daily swing`, `/daily position`."
+        + force_hint,
         parse_mode="Markdown",
         reply_markup=_horizon_picker_keyboard(force_fresh=force_fresh),
     )
@@ -3795,11 +3812,20 @@ async def cmd_daily(message: Message):
         )
         return
 
-    horizon_key, force_fresh = _parse_daily_args(message.text or "")
+    horizon_key, requested_force = _parse_daily_args(message.text or "")
+    admin = is_admin(user_id)
+    force_fresh = _resolve_force_fresh(user_id, requested_force)
+    if requested_force and not force_fresh:
+        # Юзер попросил force, но он не админ — отдаём дневной кэш и поясняем.
+        await message.answer(
+            "🔒 Принудительное обновление (`force`) доступно только админу.\n"
+            "Дайджест генерится 1×/день — отдаю свежий из дневного кэша.",
+            parse_mode="Markdown",
+        )
 
     if horizon_key is None:
         # Без аргументов — показываем пикер. force, если был, не теряется.
-        await _send_horizon_picker(message, force_fresh=force_fresh)
+        await _send_horizon_picker(message, force_fresh=force_fresh, allow_force=admin)
         return
 
     await _run_daily_for_horizon(
@@ -3819,11 +3845,14 @@ async def handle_daily_horizon_pick(callback: CallbackQuery):
     if len(parts) < 2:
         return
     horizon_key = parts[1]
-    force_fresh = (len(parts) >= 3 and parts[2] == "f")
+    requested_force = (len(parts) >= 3 and parts[2] == "f")
     if horizon_key not in HORIZON_PACKS:
         return
 
     user_id = callback.from_user.id
+    # force — только админ (см. _resolve_force_fresh). Колбэк-кнопки с :f
+    # генерятся лишь когда force_fresh уже True, но гейтим defensively.
+    force_fresh = _resolve_force_fresh(user_id, requested_force)
     await upsert_user(user_id, callback.from_user.username or "")
 
     if not await check_limit(user_id):
