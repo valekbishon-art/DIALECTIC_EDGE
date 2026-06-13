@@ -191,3 +191,7 @@ PUMP_SCAN_INTERVAL_SEC = int(os.getenv("PUMP_SCAN_INTERVAL_SEC", "180"))
 PUMP_COOLDOWN_MIN = int(os.getenv("PUMP_COOLDOWN_MIN", "60"))
 # Лимит монет на on-demand /pump (0 в фоне = все). Топ N по обороту.
 PUMP_ONDEMAND_MAX_SYMBOLS = int(os.getenv("PUMP_ONDEMAND_MAX_SYMBOLS", "400"))
+# Порог ликвидности: мин. 24h оборот пары в USDT. Отсекает полумёртвые пары,
+# где +5% делается одной сделкой (главный источник ложных пампов). Применяется
+# в core/pump_scanner.py до фетча свечей.
+PUMP_MIN_QUOTE_VOL_24H = float(os.getenv("PUMP_MIN_QUOTE_VOL_24H", "300000"))

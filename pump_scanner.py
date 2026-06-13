@@ -78,6 +78,7 @@ class PumpConfig:
     max_prior_pct: float = 10.0    # не пампила >10% за 3 дня
     prior_days: int = 3
     price_floor: float = 0.001     # цена > 0.001
+    min_quote_vol_24h: float = 300_000.0  # мин. 24h оборот пары в USDT
     mcap_min: float = 10_000_000.0
     mcap_max: float = 500_000_000.0
     early_threshold: float = 0.5   # скор >= этого => early/'разогрев'
@@ -98,6 +99,8 @@ class PumpConfig:
             prior_days=_env_int("PUMP_PRIOR_DAYS", 3, min_val=1, max_val=30),
             price_floor=_env_float("PUMP_PRICE_FLOOR", 0.001, min_val=0.0,
                                    max_val=1e9),
+            min_quote_vol_24h=_env_float("PUMP_MIN_QUOTE_VOL_24H", 300_000.0,
+                                         min_val=0.0, max_val=1e15),
             mcap_min=_env_float("PUMP_MCAP_MIN", 10_000_000.0, min_val=0.0),
             mcap_max=_env_float("PUMP_MCAP_MAX", 500_000_000.0, min_val=0.0,
                                 max_val=1e15),
@@ -584,7 +587,10 @@ async def _fetch_klines(session, venue: str, base: str, interval: str,
             rows = (data or {}).get("result", {}).get("list", [])
             rows = list(reversed(rows))
             closes = [float(r[4]) for r in rows]
-            vols = [float(r[5]) for r in rows]
+            # Bybit v5 kline: [start,open,high,low,close,volume(base),turnover(quote)].
+            # Берём turnover (quote/USDT), чтобы единицы совпадали с quote_vol_24h.
+            vols = [float(r[6]) if len(r) > 6 else float(r[5]) * float(r[4])
+                    for r in rows]
             return closes, vols
         url = _MEXC_KLINE if venue == "MEXC" else _BINANCE_KLINE
         data = await _fetch_json(session, url, params={
@@ -592,7 +598,12 @@ async def _fetch_klines(session, venue: str, base: str, interval: str,
         if not isinstance(data, list):
             return [], []
         closes = [float(k[4]) for k in data]
-        vols = [float(k[5]) for k in data]
+        # Binance/MEXC kline индекс [7] = quoteAssetVolume (USDT). Берём его,
+        # чтобы window-объём был в тех же единицах, что и quote_vol_24h из тикера.
+        # Без этого base-объём дешёвых монет раздувает vol_ratio и фильтр x3
+        # проходит почти всегда (ложные пампы).
+        vols = [float(k[7]) if len(k) > 7 else float(k[5]) * float(k[4])
+                for k in data]
         return closes, vols
     except Exception as e:  # noqa: BLE001
         logger.debug("pump: klines %s %s failed: %s", venue, base, e)
@@ -628,7 +639,11 @@ async def scan_pumps(*, cfg: Optional[PumpConfig] = None,
         universe = merge_universes(uni_b, uni_m, uni_by)
         mcap_map = await _fetch_mcap_map(session)
 
-        candidates = [tk for tk in universe.values() if tk.price >= cfg.price_floor]
+        # Порог ликвидности: отсекаем полумёртвые пары (где +5% делается одной
+        # сделкой) ДО фетча свечей — это режет основную долю шума и нагрузку.
+        candidates = [tk for tk in universe.values()
+                      if tk.price >= cfg.price_floor
+                      and tk.quote_vol_24h >= cfg.min_quote_vol_24h]
         candidates.sort(key=lambda t: t.quote_vol_24h, reverse=True)
         if max_symbols and max_symbols > 0:
             candidates = candidates[:max_symbols]

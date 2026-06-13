@@ -300,5 +300,20 @@ class TestCoinGeckoLink(unittest.TestCase):
         self.assertNotIn("(" + chr(123) + "https", txt)
 
 
+class TestLiquidityFloorConfig(unittest.TestCase):
+    def test_default_min_quote_vol(self):
+        cfg = PumpConfig()
+        self.assertEqual(cfg.min_quote_vol_24h, 300_000.0)
+
+    def test_env_override(self):
+        import os
+        os.environ["PUMP_MIN_QUOTE_VOL_24H"] = "1000000"
+        try:
+            cfg = PumpConfig.from_env()
+            self.assertEqual(cfg.min_quote_vol_24h, 1_000_000.0)
+        finally:
+            os.environ.pop("PUMP_MIN_QUOTE_VOL_24H", None)
+
+
 if __name__ == "__main__":
     unittest.main()
