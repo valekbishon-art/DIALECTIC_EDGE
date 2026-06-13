@@ -347,6 +347,7 @@ class PumpSignal:
     predictive_score: float = 0.0
     accel: float = 0.0
     vol_ramp: float = 0.0
+    fade: object = None              # Optional[FadePlay] — структурный fade-эдж
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def venue_buttons(self) -> list:
@@ -357,6 +358,24 @@ class PumpSignal:
             if url:
                 out.append(("Биржа " + v.upper(), url))
         return out
+
+
+def attach_fade_to_signal(sig: "PumpSignal", *, cfg=None) -> "PumpSignal":
+    """Навешивает структурный FADE-план на сигнал, если ран-ап достаточно велик
+    (истощённый памп). Памп САМ ПО СЕБЕ не эдж — но рынок систематически
+    откатывает резкие выбросы (бэктест-edge, см. core/pump_fade). Берём
+    максимум из (pump_pct окна, prior_pct за 3 дня) как меру ран-апа. Мутирует
+    и возвращает sig. Любой сбой проглатывается — алерт не падает."""
+    try:
+        from core.pump_fade import FadeConfig, build_fade_play
+        fcfg = cfg or FadeConfig.from_env()
+        runup = max(float(sig.pump_pct or 0.0), float(sig.prior_pct or 0.0))
+        sig.fade = build_fade_play(
+            sig.asset, sig.price_to, runup,
+            vol_ratio=sig.vol_ratio, mcap=sig.mcap, venues=sig.venues, cfg=fcfg)
+    except Exception:  # noqa: BLE001
+        logger.debug("attach_fade_to_signal failed", exc_info=True)
+    return sig
 
 
 def _fmt_price(p: Optional[float]) -> str:
@@ -412,6 +431,14 @@ def format_pump_alert(sig: PumpSignal) -> str:
         "(https://www.coingecko.com/en/search?query=" + sig.asset + ")")
     lines.append("")
     lines.append("⚠️ _Это не сигнал на покупку. Памп — высокий риск, DYOR._")
+    if getattr(sig, "fade", None) is not None:
+        try:
+            from core.pump_fade import format_fade_play
+            lines.append("")
+            lines.append("─────────")
+            lines.append(format_fade_play(sig.fade))
+        except Exception:  # noqa: BLE001
+            logger.debug("format_fade_play failed", exc_info=True)
     return "\n".join(lines)
 
 
@@ -681,7 +708,7 @@ async def scan_pumps(*, cfg: Optional[PumpConfig] = None,
             *[_probe(tk) for tk in candidates], return_exceptions=True)
         for r in results:
             if isinstance(r, PumpSignal):
-                signals.append(r)
+                signals.append(attach_fade_to_signal(r))
             elif isinstance(r, Exception):
                 logger.debug("pump: probe error: %s", r)
 
@@ -696,5 +723,6 @@ __all__ = [
     "_slope", "momentum_acceleration", "volume_ramp", "early_pump_score",
     "classify_signal",
     "evaluate_pump", "format_pump_alert", "merge_universes", "trade_url",
+    "attach_fade_to_signal",
     "scan_pumps", "EXCHANGE_TRADE_URL",
 ]
