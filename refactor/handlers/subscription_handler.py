@@ -180,7 +180,14 @@ async def cb_check_payment(callback: CallbackQuery) -> None:
 
 
 def require_vip(handler: Callable) -> Callable:
-    """Decorator: blocks non-VIP users with a paywall message.
+    """Decorator: blocks users without access with a paywall message.
+
+    Access = active paid VIP **or** active free trial **or** admin. We delegate
+    to :func:`payments.db.has_access` (the single source of truth shared with
+    the global ``SubscriptionMiddleware``) rather than the trial-blind
+    ``check_vip`` — otherwise trial users pass the global paywall yet get
+    blocked on every ``@require_vip`` handler, which is exactly the
+    inconsistency this fixes.
 
     Usage:
         @require_vip
@@ -189,10 +196,10 @@ def require_vip(handler: Callable) -> Callable:
     """
     @functools.wraps(handler)
     async def wrapper(message: Message, *args, **kwargs):
-        from payments.db import check_vip
+        from payments.db import has_access
 
         user_id = message.from_user.id
-        if await check_vip(user_id):
+        if await has_access(user_id):
             return await handler(message, *args, **kwargs)
 
         from payments.crypto_pay import SUB_PRICE_AMOUNT, SUB_PRICE_ASSET
