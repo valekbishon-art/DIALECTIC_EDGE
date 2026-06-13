@@ -177,6 +177,23 @@ FEATURE_EDGE_LEDGER = os.getenv("FEATURE_EDGE_LEDGER", "0").strip().lower() in (
 )
 # Интервал (сек) фонового резолвера pending-сигналов edge-леджера.
 EDGE_RESOLVE_INTERVAL_SEC = int(os.getenv("EDGE_RESOLVE_INTERVAL_SEC", "3600"))
+# Горизонт (часы) по которому резолвится исход live-сигнала (TP/SL/expired).
+# 336ч = 14 дней — тот же дефолт, что в core/backtest_engine.py (Фаза 1).
+EDGE_DEFAULT_HORIZON_HOURS = int(os.getenv("EDGE_DEFAULT_HORIZON_HOURS", "336"))
+
+# ── Carry-оптимизатор (#4): risk-aware аллокация капитала по funding-carry ──
+# По умолчанию ВЫКЛ — текущая выдача «равный объём» не меняется без явного
+# включения. При 1: secция carry в Лучшей сделке показывает оптимизированную
+# аллокацию (net-доходность, лимит концентрации, косты) на CARRY_CAPITAL_USD.
+FEATURE_CARRY_OPTIMIZER = os.getenv("FEATURE_CARRY_OPTIMIZER", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+CARRY_CAPITAL_USD = float(os.getenv("CARRY_CAPITAL_USD", "1000"))
+# Лимит доли капитала на одну carry-сделку (контроль концентрации). При 0.25 и
+# ≥4 возможностях лимит связывает всё → yield-взвешивание не даёт прироста (вся
+# ценность в отсечении под-костовых ног). Подними к ~0.35-0.40, чтобы включить
+# yield-взвешивание (~+6% медиана, до ~12% при разбросе) ценой концентрации.
+CARRY_MAX_WEIGHT = float(os.getenv("CARRY_MAX_WEIGHT", "0.25"))
 
 # ── Фича ПАМП: кросс-биржевой сканер резких ростов на повышенном объёме ──
 # Детект + фильтры живут в core/pump_scanner.py, рассылка — pump_alert.py,
@@ -191,3 +208,7 @@ PUMP_SCAN_INTERVAL_SEC = int(os.getenv("PUMP_SCAN_INTERVAL_SEC", "180"))
 PUMP_COOLDOWN_MIN = int(os.getenv("PUMP_COOLDOWN_MIN", "60"))
 # Лимит монет на on-demand /pump (0 в фоне = все). Топ N по обороту.
 PUMP_ONDEMAND_MAX_SYMBOLS = int(os.getenv("PUMP_ONDEMAND_MAX_SYMBOLS", "400"))
+# Порог ликвидности: мин. 24h оборот пары в USDT. Отсекает полумёртвые пары,
+# где +5% делается одной сделкой (главный источник ложных пампов). Применяется
+# в core/pump_scanner.py до фетча свечей.
+PUMP_MIN_QUOTE_VOL_24H = float(os.getenv("PUMP_MIN_QUOTE_VOL_24H", "300000"))

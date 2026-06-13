@@ -208,6 +208,7 @@ from .admin_handler import (
     handle_health_command,
     handle_logs_command,
     handle_sysinfo_command,
+    handle_edge_command,
     setup_admins,
 )
 
@@ -340,6 +341,7 @@ __all__ = [
     "handle_health_command",
     "handle_logs_command",
     "handle_sysinfo_command",
+    "handle_edge_command",
     "setup_admins",
 
     # PUMP scanner

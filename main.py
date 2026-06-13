@@ -119,6 +119,7 @@ from refactor.handlers import (
     handle_health_command,
     handle_logs_command,
     handle_sysinfo_command,
+    handle_edge_command,
     handle_btc_command,
     handle_funding_command,
     handle_p2p_command,
@@ -6243,6 +6244,11 @@ async def cmd_sysinfo(message: Message):
     await handle_sysinfo_command(message)
 
 
+@dp.message(Command("edge"))
+async def cmd_edge(message: Message):
+    await handle_edge_command(message)
+
+
 @dp.callback_query(F.data.startswith("fb:"))
 async def handle_feedback(callback: CallbackQuery):
     _, rating_str, report_type = callback.data.split(":")
@@ -6334,6 +6340,17 @@ async def main():
         )
     else:
         logger.info("⏱ RateLimitMiddleware off (FEATURE_RATE_LIMITER=0)")
+
+    # Bot-wide paywall + free trial (closes every handler, not just @require_vip).
+    from refactor.middleware.subscription_guard import SubscriptionMiddleware
+    _paywall = SubscriptionMiddleware()
+    dp.message.middleware(_paywall)
+    dp.callback_query.middleware(_paywall)
+    logger.info(
+        "🔒 SubscriptionMiddleware %s (trial_days=%s)",
+        "ON" if _paywall.enabled else "OFF (FEATURE_PAYWALL=0)",
+        os.getenv("TRIAL_DAYS", "3"),
+    )
 
     await set_bot_commands(bot)
 

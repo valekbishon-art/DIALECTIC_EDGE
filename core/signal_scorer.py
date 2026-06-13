@@ -172,6 +172,7 @@ class SignalSetup:
     size_usd: float            # рекомендованный размер позиции в USD
     score: int                 # 0..100
     reasons: list[str]         # обоснование (human-readable)
+    certificate: dict = field(default_factory=dict)  # формальный сертификат (см. ниже)
 
 
 def _direction_from_trend(p: dict) -> str:
@@ -313,6 +314,31 @@ def _round_to_tick(price: float, tick: float) -> float:
     return round(round(price / tick) * tick, 8)
 
 
+def build_certificate(score: "AssetScore", rr_ratio: float) -> dict:
+    """Формальный сертификат сигнала (#2 roadmap) — бинарный чек-лист.
+
+    Каждое условие — это конкретный, проверяемый по данным факт, который держал
+    в момент эмиссии. Леджер логирует его вместе с сигналом, а после резолва мы
+    считаем win-rate ПО КАЖДОМУ условию → видно, какие из них реально несут edge,
+    а какие шум. Это превращает «score=72, доверься» в проверяемый контракт.
+
+    Условия выводятся из компонентов score-breakdown (>0 = компонент сработал)
+    плюс пороги R/R и итогового score.
+    """
+    b = score.breakdown
+    return {
+        "trend_aligned": b.trend_alignment > 0,
+        "complexity_trending": b.complexity_hint > 0,
+        "vrt_structure_ok": b.vrt_structure > 0,
+        "markov_aligned": b.markov_state > 0,
+        "tradeable_ok": b.raw_tradeable > 0,
+        "rr_ge_2": rr_ratio >= 2.0,
+        "rr_ge_3": rr_ratio >= 3.0,
+        "score_ge_60": score.total >= 60,
+        "score_ge_75": score.total >= 75,
+    }
+
+
 def make_setup(
     score: AssetScore,
     p: dict,
@@ -392,6 +418,7 @@ def make_setup(
         size_usd=size_usd,
         score=score.total,
         reasons=list(score.reasons),
+        certificate=build_certificate(score, round(rr, 2)),
     )
 
 
