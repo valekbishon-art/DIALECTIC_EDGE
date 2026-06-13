@@ -4980,60 +4980,39 @@ def _fmt_signal_message(result: dict) -> str:
 @dp.message(Command("signal"))
 @require_vip
 async def cmd_signal(message: Message):
-    """Команда `/signal` — детерминированный auto SL/TP recommender.
+    """Команда `/signal` (кнопка «🎯 Лучшая сделка») — лучший ЖИВОЙ edge.
 
-    Берёт live-prices (тот же источник что `/markets`), скорит каждый
-    актив 0-100 (trend + complexity + VRT + Markov + raw score) и
-    выдаёт ОДИН setup если score ≥ 60, или «сегодня сидим» иначе.
+    Directional LONG/SHORT price-bet УБРАН (бэктест 2020-26: робастно
+    убыточен). Теперь показываем ОДНУ лучшую delta-neutral сделку с
+    максимальным net annualized % из carry / кросс-арб / базис — или честно
+    «сегодня сидим», если ничего выше порога костов нет.
 
-    Опциональный аргумент: `/signal 200` — задать капитал (по умолчанию
-    $123 — текущий баланс пользователя).
+    Опциональный аргумент: `/signal 5000` — депозит для оценки $/год.
     """
     user_id = message.from_user.id
     await upsert_user(user_id, message.from_user.username or "")
-    wait_msg = await message.answer("⏳ Считаю scoring по всем активам...")
+    wait_msg = await message.answer("⏳ Ищу лучший живой edge: carry · арб · базис…")
 
-    # Парсим опциональный капитал. `/signal 200` → capital=200.
-    text = (message.text or "").strip()
-    parts = text.split()
-    capital = 123.0
+    # Парсим опциональный депозит. `/signal 5000` → capital=5000.
+    parts = (message.text or "").strip().split()
+    capital = 0.0
     if len(parts) >= 2:
         try:
-            capital = max(10.0, float(parts[1].replace(",", ".")))
+            capital = max(0.0, float(parts[1].replace("$", "").replace(",", ".")))
         except ValueError:
             pass
 
     try:
-        from core.signal_scorer import rank_signals
-        from web_search import fetch_realtime_prices
+        from core.best_edge import format_best_edge, scan_best_edge
 
-        prices = await fetch_realtime_prices()
-        if not prices:
-            await bot.edit_message_text(
-                "❌ Не удалось получить цены. Попробуй позже.",
-                chat_id=message.chat.id,
-                message_id=wait_msg.message_id,
-            )
-            return
-
-        result = rank_signals(prices, capital=capital)
-        text = _fmt_signal_message(result)
-
-        # ── Provenance: морозим решение signal_scorer для replay ──
-        # Если top setup найден — пишем полный snapshot (features + breakdown
-        # + SL/TP/σ̂). Если только preview_top — тоже пишем, помечаем что
-        # score ниже порога. Без exception bubble — UI не должен падать.
-        await _freeze_signal_decision(result)
-
-        # Кнопка-глоссарий показывается всегда — даже на «сегодня сидим»,
-        # т.к. термины (порог, score, σ̂, R/R) видны в шапке независимо
-        # от того прошёл ли актив порог.
+        edge = await scan_best_edge()
+        text = format_best_edge(edge, capital=capital)
         await bot.edit_message_text(
             text,
             chat_id=message.chat.id,
             message_id=wait_msg.message_id,
             parse_mode="Markdown",
-            reply_markup=_signal_explain_keyboard(user_id, capital),
+            disable_web_page_preview=True,
         )
     except Exception as e:
         await bot.edit_message_text(
