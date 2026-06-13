@@ -227,6 +227,167 @@ def carry_verdict(ann: float | None) -> str:
     return f"· фандинг +{ann:.0f}% год (carry спит)"
 
 
+# ──────────────────────── LP-оптимизация аллокации (#4) ─────────────────────
+# Текущая выдача — «равный объём по топ-3»: игнорирует и разницу в доходности,
+# и косты дельта-нейтрала. Ниже — оптимизатор капитала по carry-возможностям.
+#
+# Задача (LP): max Σ wᵢ·net_annualᵢ  при  Σ wᵢ ≤ capital,  0 ≤ wᵢ ≤ capᵢ.
+# Для бюджет+box-ограничений оптимум LP = жадное наполнение по убыванию net-
+# доходности до лимита на актив (доказуемо; scipy не нужен — нулевые зависимости,
+# как и весь модуль). cap ограничивает концентрацию (риск дельта-нейтрала: флип
+# фандинга, проскальзывание/ликвидация ноги, делистинг спота). Косты round-trip
+# аннуализируются и вычитаются — тонкие возможности отсекаются порогом.
+
+# Дефолты костов дельта-нейтрала.
+CARRY_ROUNDTRIP_COST_PCT = 0.30   # % оборота: открыть+закрыть спот+перп (~taker)
+CARRY_HOLDING_DAYS = 30.0         # типичный holding до нормализации фандинга
+CARRY_MAX_WEIGHT = 0.25           # лимит доли капитала на одну сделку (концентрация)
+
+
+@dataclass(frozen=True)
+class CarryAllocation:
+    opp: CarryOpportunity
+    capital_usd: float        # капитал на сделку (делится на 2 ноги равного нотионала)
+    gross_annual_pct: float   # |annual| (до костов)
+    net_annual_pct: float     # после аннуализированных round-trip костов
+    weight: float             # доля портфеля (capital_usd / total_capital)
+
+    @property
+    def net_year_usd(self) -> float:
+        # фандинг собирается с шорт-перп ноги (нотионал = capital_usd/2)
+        return (self.capital_usd / 2.0) * self.net_annual_pct / 100.0
+
+
+def _annualized_cost(roundtrip_cost_pct: float, holding_days: float) -> float:
+    """Round-trip кост → годовых %. 0.30% за 30д ≈ 3.65%/год."""
+    if holding_days <= 0:
+        return 0.0
+    return roundtrip_cost_pct / holding_days * 365.0
+
+
+def optimize_carry_allocation(
+    opps: list[CarryOpportunity],
+    capital: float,
+    *,
+    max_weight: float = CARRY_MAX_WEIGHT,
+    roundtrip_cost_pct: float = CARRY_ROUNDTRIP_COST_PCT,
+    holding_days: float = CARRY_HOLDING_DAYS,
+    min_net_annual: float = THIN,
+    risk_caps: dict[str, float] | None = None,
+) -> dict:
+    """Оптимальная аллокация капитала по carry-возможностям.
+
+    Возвращает dict:
+      allocations: list[CarryAllocation]  — по убыванию net-доходности
+      total_allocated, n_legs
+      port_gross_annual_pct, port_net_annual_pct  — взвешенный портфельный yield
+      port_net_year_usd, port_net_month_usd
+      baseline_net_year_usd  — «равный объём по топ-3» (текущая логика)
+      uplift_pct             — прирост net $/год оптимизатора над baseline
+    """
+    cost_annual = _annualized_cost(roundtrip_cost_pct, holding_days)
+    # 1. net-доходность и фильтр по порогу.
+    cands = []
+    for o in opps:
+        net = abs(o.annual_pct) - cost_annual
+        if net >= min_net_annual:
+            cands.append((o, net))
+    cands.sort(key=lambda x: x[1], reverse=True)
+
+    # 2. жадное наполнение (= LP-оптимум) с лимитом на актив.
+    allocations: list[CarryAllocation] = []
+    remaining = float(capital)
+    for o, net in cands:
+        if remaining <= 0:
+            break
+        cap_i = (risk_caps or {}).get(o.asset, max_weight) * capital
+        w_usd = min(cap_i, remaining)
+        if w_usd <= 0:
+            continue
+        allocations.append(CarryAllocation(
+            opp=o, capital_usd=round(w_usd, 2),
+            gross_annual_pct=abs(o.annual_pct),
+            net_annual_pct=round(net, 2),
+            weight=round(w_usd / capital, 4) if capital else 0.0,
+        ))
+        remaining -= w_usd
+
+    total_alloc = sum(a.capital_usd for a in allocations)
+    net_year = sum(a.net_year_usd for a in allocations)
+    gross_year = sum((a.capital_usd / 2.0) * a.gross_annual_pct / 100.0
+                     for a in allocations)
+    # портфельный yield в % годовых (на задействованный капитал).
+    port_net = (net_year / (total_alloc / 2.0) * 100.0) if total_alloc else 0.0
+    port_gross = (gross_year / (total_alloc / 2.0) * 100.0) if total_alloc else 0.0
+
+    # 3. baseline = «равный объём» по ТЕМ ЖЕ отобранным ногам на ТОМ ЖЕ
+    #    задействованном капитале. Это честное сравнение: изолирует пользу
+    #    yield-взвешивания против равного веса при одинаковом риск-бюджете.
+    #    (Прирост скромный и растёт с разбросом доходностей и шириной лимита;
+    #    при cap = 1/n_legs аллокации совпадают → uplift = 0.)
+    base_net_year = _equal_weight_baseline(allocations, cost_annual)
+    uplift = ((net_year - base_net_year) / base_net_year * 100.0) if base_net_year > 0 else 0.0
+
+    return {
+        "allocations": allocations,
+        "total_allocated": round(total_alloc, 2),
+        "n_legs": len(allocations),
+        "port_gross_annual_pct": round(port_gross, 2),
+        "port_net_annual_pct": round(port_net, 2),
+        "port_net_year_usd": round(net_year, 2),
+        "port_net_month_usd": round(net_year / 12.0, 2),
+        "baseline_net_year_usd": round(base_net_year, 2),
+        "uplift_pct": round(uplift, 1),
+        "cost_annual_pct": round(cost_annual, 2),
+    }
+
+
+def _equal_weight_baseline(allocations: list, cost_annual: float) -> float:
+    """Net $/год при равном объёме по тем же ногам и том же капитале.
+
+    Берём задействованный оптимизатором капитал, делим поровну между
+    выбранными ногами и считаем net $/год по их net-доходностям. Так uplift
+    отражает чистый вклад yield-взвешивания (а не разницу в наборе/риске).
+    """
+    if not allocations:
+        return 0.0
+    deployed = sum(a.capital_usd for a in allocations)
+    n = len(allocations)
+    per = deployed / n
+    total = 0.0
+    for a in allocations:
+        total += (per / 2.0) * a.net_annual_pct / 100.0
+    return total
+
+
+def format_carry_allocation_md(plan: dict, capital: float) -> str:
+    """Markdown-секция оптимизированной аллокации carry."""
+    allocs = plan.get("allocations") or []
+    if not allocs:
+        return ""
+    lines = [
+        "",
+        "💎 *СТРУКТУРНАЯ СДЕЛКА (funding carry — оптимизированная аллокация):*",
+    ]
+    for a in allocs:
+        o = a.opp
+        leg = a.capital_usd / 2.0
+        lines.append(
+            f"• *{o.symbol}* {o.annual_pct:+.0f}% год (net {a.net_annual_pct:+.0f}%) — "
+            f"{o.play}\n"
+            f"  ${a.capital_usd:,.0f} ({a.weight*100:.0f}%) · по ${leg:,.0f}/ногу · "
+            f"~${a.net_year_usd/12:,.0f}/мес net"
+        )
+    lines.append(
+        f"_Портфель: net {plan['port_net_annual_pct']:.0f}%/год · "
+        f"~${plan['port_net_month_usd']:,.0f}/мес · {plan['n_legs']} ног · "
+        f"+{plan['uplift_pct']:.0f}% к равному объёму. "
+        f"Дельта-нейтрал: цена захеджирована, собираешь фандинг. "
+        f"Косты {plan['cost_annual_pct']:.0f}%/год учтены. Маржу/ликвидность проверь руками._"
+    )
+    return "\n".join(lines)
+
+
 def format_carry_block_md(opps: list[CarryOpportunity], capital: float = 0.0) -> str:
     """Markdown-секция для Лучшей сделки. '' если возможностей нет."""
     if not opps:
@@ -264,4 +425,6 @@ __all__ = [
     "CarryOpportunity", "scan_carry", "fetch_funding", "fetch_basis", "annualized",
     "get_asset_funding_annualized", "carry_verdict", "format_carry_block_md",
     "log_opportunities", "fetch_new_listings", "DEFAULT_ASSETS", "PRIME", "STRONG", "THIN",
+    "CarryAllocation", "optimize_carry_allocation", "format_carry_allocation_md",
+    "CARRY_MAX_WEIGHT", "CARRY_ROUNDTRIP_COST_PCT", "CARRY_HOLDING_DAYS",
 ]

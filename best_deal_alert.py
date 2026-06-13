@@ -305,8 +305,21 @@ class BestDealAlertSystem:
                                             scan_carry)
             carry_opps = await asyncio.to_thread(scan_carry)
             if carry_opps:
-                carry_block = format_carry_block_md(carry_opps)
                 log_opportunities(carry_opps)
+                # #4: оптимизированная аллокация (опционально, non-breaking).
+                try:
+                    from config import (FEATURE_CARRY_OPTIMIZER, CARRY_CAPITAL_USD,
+                                        CARRY_MAX_WEIGHT as _CARRY_MAX_W)
+                    if FEATURE_CARRY_OPTIMIZER and CARRY_CAPITAL_USD > 0:
+                        from core.carry_signal import (optimize_carry_allocation,
+                                                       format_carry_allocation_md)
+                        plan = optimize_carry_allocation(
+                            carry_opps, CARRY_CAPITAL_USD, max_weight=_CARRY_MAX_W)
+                        carry_block = format_carry_allocation_md(plan, CARRY_CAPITAL_USD)
+                except Exception:
+                    logger.debug("best-deal: carry optimizer skipped", exc_info=True)
+                if not carry_block:
+                    carry_block = format_carry_block_md(carry_opps)
         except Exception:
             logger.debug("best-deal: carry block skipped", exc_info=True)
 
