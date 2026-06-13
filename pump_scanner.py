@@ -82,6 +82,15 @@ class PumpConfig:
     mcap_min: float = 10_000_000.0
     mcap_max: float = 500_000_000.0
     early_threshold: float = 0.5   # скор >= этого => early/'разогрев'
+    # Гард свежести: последняя свеча должна быть не старше N минут. Делистнутые/
+    # остановленные пары отдают свечи многомесячной давности → биржа возвращает
+    # их как «текущие» → фантомные пампы. Любая живая пара (после фильтра по
+    # 24h-обороту) торгует почти каждую минуту, так что 30 мин — безопасный дефолт.
+    max_kline_age_min: float = 30.0
+    # Анти-коллизия тикеров: при слиянии бирж объединяем venue только если его
+    # цена в пределах ±tol от канонической (самой ликвидной). Один тикер на разных
+    # биржах может быть РАЗНЫМ токеном (LIT, FIRO...) — расходящиеся цены отсекаем.
+    merge_price_tol: float = 0.15
 
     @property
     def window_candles(self) -> int:
@@ -106,6 +115,10 @@ class PumpConfig:
                                 max_val=1e15),
             early_threshold=_env_float("PUMP_EARLY_THRESHOLD", 0.5, min_val=0.0,
                                        max_val=1.0),
+            max_kline_age_min=_env_float("PUMP_MAX_KLINE_AGE_MIN", 30.0,
+                                         min_val=1.0, max_val=10080.0),
+            merge_price_tol=_env_float("PUMP_MERGE_PRICE_TOL", 0.15,
+                                       min_val=0.0, max_val=10.0),
         )
 
 
@@ -472,6 +485,18 @@ class _Ticker:
     price: float
     quote_vol_24h: float
     venues: set
+    primary_venue: Optional[str] = None   # самый ликвидный venue = источник истины
+
+
+def kline_is_fresh(last_open_ms: Optional[int], now_ms: int,
+                   *, max_age_min: float) -> bool:
+    """True, если последняя свеча достаточно свежая. Делистнутые/остановленные
+    пары отдают свечи многомесячной давности → биржа выдаёт их как «текущие».
+    Этот гард (venue-агностик) отсекает их. Допускаем лёгкий рассинхрон часов."""
+    if not last_open_ms or last_open_ms <= 0:
+        return False
+    age_min = (now_ms - last_open_ms) / 60_000.0
+    return -2.0 <= age_min <= max_age_min
 
 
 async def _fetch_json(session, url: str, *, params: dict = None,
@@ -504,7 +529,7 @@ async def _universe_binance_like(session, url: str, venue: str) -> dict:
             if price <= 0:
                 continue
             out[base] = _Ticker(base=base, price=price, quote_vol_24h=qv,
-                                venues={venue})
+                                venues={venue}, primary_venue=venue)
         except (ValueError, TypeError, AttributeError):
             continue
     return out
@@ -528,28 +553,43 @@ async def _universe_bybit(session) -> dict:
             if price <= 0:
                 continue
             out[base] = _Ticker(base=base, price=price, quote_vol_24h=qv,
-                                venues={"Bybit"})
+                                venues={"Bybit"}, primary_venue="Bybit")
         except (ValueError, TypeError, AttributeError):
             continue
     return out
 
 
-def merge_universes(*universes) -> dict:
-    """Сливает {base:_Ticker} с разных бирж. venues объединяются, цена/объём —
-    берём максимум объёма как репрезентативные."""
-    merged: dict = {}
+def merge_universes(*universes, price_tol: float = 0.15) -> dict:
+    """Сливает {base:_Ticker} с разных бирж — КОЛЛИЗИЯ-БЕЗОПАСНО.
+
+    Один тикер на разных биржах может быть РАЗНЫМ токеном (напр. LIT = Litentry
+    на одной и совсем другой токен на другой; цены 0.74 vs 1.60). Раньше merge
+    сливал их по тикеру вслепую и брал цену самого объёмного venue, из-за чего
+    price_from (из свечей одного venue) и price_to (цена другого) склеивались в
+    бессмысленный «памп». Теперь:
+      • канонический = самый ЛИКВИДНЫЙ leg (max 24h-оборот) → источник истины;
+      • в venues попадают только биржи, чья цена в пределах ±price_tol от
+        канонической (тот же токен); расходящиеся (другой токен) отбрасываются;
+      • primary_venue = биржа канона → из неё же тянем свечи (одна биржа на сигнал).
+    """
+    by_base: dict = {}
     for uni in universes:
         for base, tk in uni.items():
-            if base not in merged:
-                merged[base] = _Ticker(base=base, price=tk.price,
-                                       quote_vol_24h=tk.quote_vol_24h,
-                                       venues=set(tk.venues))
-            else:
-                m = merged[base]
-                m.venues |= tk.venues
-                if tk.quote_vol_24h > m.quote_vol_24h:
-                    m.quote_vol_24h = tk.quote_vol_24h
-                    m.price = tk.price
+            by_base.setdefault(base, []).append(tk)
+
+    merged: dict = {}
+    for base, legs in by_base.items():
+        canon = max(legs, key=lambda t: t.quote_vol_24h)
+        cp = canon.price
+        venues: set = set()
+        for leg in legs:
+            if cp > 0 and abs(leg.price - cp) / cp <= price_tol:
+                venues |= set(leg.venues)
+        primary = canon.primary_venue or (
+            next(iter(canon.venues)) if canon.venues else None)
+        merged[base] = _Ticker(
+            base=base, price=cp, quote_vol_24h=canon.quote_vol_24h,
+            venues=venues or set(canon.venues), primary_venue=primary)
     return merged
 
 
@@ -603,7 +643,8 @@ async def _fetch_mcap_map(session, pages: int = 2) -> dict:
 
 async def _fetch_klines(session, venue: str, base: str, interval: str,
                         limit: int) -> tuple:
-    """(closes, volumes) для пары BASE/USDT. Поддержка Binance/MEXC/Bybit."""
+    """(closes, volumes, last_open_ms) для пары BASE/USDT. last_open_ms — время
+    открытия последней свечи (для гарда свежести). Поддержка Binance/MEXC/Bybit."""
     symbol = base + "USDT"
     try:
         if venue == "Bybit":
@@ -618,12 +659,13 @@ async def _fetch_klines(session, venue: str, base: str, interval: str,
             # Берём turnover (quote/USDT), чтобы единицы совпадали с quote_vol_24h.
             vols = [float(r[6]) if len(r) > 6 else float(r[5]) * float(r[4])
                     for r in rows]
-            return closes, vols
+            last_ms = int(rows[-1][0]) if rows else None
+            return closes, vols, last_ms
         url = _MEXC_KLINE if venue == "MEXC" else _BINANCE_KLINE
         data = await _fetch_json(session, url, params={
             "symbol": symbol, "interval": interval, "limit": limit})
         if not isinstance(data, list):
-            return [], []
+            return [], [], None
         closes = [float(k[4]) for k in data]
         # Binance/MEXC kline индекс [7] = quoteAssetVolume (USDT). Берём его,
         # чтобы window-объём был в тех же единицах, что и quote_vol_24h из тикера.
@@ -631,10 +673,11 @@ async def _fetch_klines(session, venue: str, base: str, interval: str,
         # проходит почти всегда (ложные пампы).
         vols = [float(k[7]) if len(k) > 7 else float(k[5]) * float(k[4])
                 for k in data]
-        return closes, vols
+        last_ms = int(data[-1][0]) if data else None
+        return closes, vols, last_ms
     except Exception as e:  # noqa: BLE001
         logger.debug("pump: klines %s %s failed: %s", venue, base, e)
-        return [], []
+        return [], [], None
 
 
 async def scan_pumps(*, cfg: Optional[PumpConfig] = None,
@@ -663,7 +706,8 @@ async def scan_pumps(*, cfg: Optional[PumpConfig] = None,
             _universe_bybit(session),
             return_exceptions=False,
         )
-        universe = merge_universes(uni_b, uni_m, uni_by)
+        universe = merge_universes(uni_b, uni_m, uni_by,
+                                   price_tol=cfg.merge_price_tol)
         mcap_map = await _fetch_mcap_map(session)
 
         # Порог ликвидности: отсекаем полумёртвые пары (где +5% делается одной
@@ -679,19 +723,32 @@ async def scan_pumps(*, cfg: Optional[PumpConfig] = None,
         prior_days = cfg.prior_days
         sem = asyncio.Semaphore(max(1, concurrency))
 
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
         async def _probe(tk: _Ticker):
             async with sem:
-                venue = next(iter(tk.venues)) if tk.venues else "Binance"
-                closes_1m, vols_1m = await _fetch_klines(
+                # Одна биржа на сигнал = самый ликвидный (канонический) venue.
+                venue = tk.primary_venue or (
+                    next(iter(tk.venues)) if tk.venues else "Binance")
+                closes_1m, vols_1m, last_ms = await _fetch_klines(
                     session, venue, tk.base, "1m", min(1000, win + 5))
                 if len(closes_1m) < 2:
                     return None
-                daily, _ = await _fetch_klines(
+                # Гард свежести: отсекаем делистнутые/остановленные пары, чьи
+                # «свечи» на самом деле многомесячной давности (фантомные пампы).
+                if not kline_is_fresh(last_ms, now_ms,
+                                      max_age_min=cfg.max_kline_age_min):
+                    logger.debug("pump: %s on %s stale (last_ms=%s) — skip",
+                                 tk.base, venue, last_ms)
+                    return None
+                daily, _, _ = await _fetch_klines(
                     session, venue, tk.base, "1d", prior_days + 1)
                 mcap = mcap_map.get(tk.base.upper())
+                # price НЕ передаём: price_to берётся из ТЕХ ЖЕ свечей (closes_1m[-1]),
+                # что и price_from/pump_pct → один venue, без склейки цен.
                 is_pump, m, fails = evaluate_pump(
                     closes_1m, vols_1m, tk.quote_vol_24h, daily,
-                    price=tk.price, mcap=mcap, cfg=cfg)
+                    mcap=mcap, cfg=cfg)
                 tier = classify_signal(is_pump, m.predictive_score, fails,
                                        early_threshold=cfg.early_threshold)
                 if tier == "none" or (tier == "early" and not include_early):
@@ -723,6 +780,6 @@ __all__ = [
     "_slope", "momentum_acceleration", "volume_ramp", "early_pump_score",
     "classify_signal",
     "evaluate_pump", "format_pump_alert", "merge_universes", "trade_url",
-    "attach_fade_to_signal",
+    "attach_fade_to_signal", "kline_is_fresh",
     "scan_pumps", "EXCHANGE_TRADE_URL",
 ]
