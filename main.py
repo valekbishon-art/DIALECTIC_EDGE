@@ -257,7 +257,8 @@ def feedback_keyboard(report_type: str) -> InlineKeyboardMarkup:
 # Подписи к кнопкам строго совпадают с тем что обрабатывают
 # `_PERSISTENT_KB_TRIGGERS` ниже (любое расхождение → кнопка не сработает).
 PERSISTENT_BTN_DAILY    = "📊 Прогноз"
-PERSISTENT_BTN_PITCH    = "💎 Питч"
+PERSISTENT_BTN_PITCH    = "💎 Питч"   # legacy: pitch lives only in /start now
+PERSISTENT_BTN_PUMP     = "🚀 Памп"
 PERSISTENT_BTN_MARKETS  = "🏛 Рынки"
 PERSISTENT_BTN_SETTINGS = "⚙️ Настройки"
 PERSISTENT_BTN_SIGNAL   = "🎯 Лучшая сделка"
@@ -282,7 +283,7 @@ def persistent_kb() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text=PERSISTENT_BTN_ARB),
-                KeyboardButton(text=PERSISTENT_BTN_PITCH),
+                KeyboardButton(text=PERSISTENT_BTN_PUMP),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
             ],
             [
@@ -2641,7 +2642,7 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🗓 Weekly", callback_data="cmd:weeklyreport"),
-            InlineKeyboardButton(text="💎 Питч", callback_data="cmd:pitch"),
+            InlineKeyboardButton(text="🚀 Памп", callback_data="cmd:pump"),
         ],
         [
             InlineKeyboardButton(text="📘 Инструкция", callback_data="cmd:guide"),
@@ -3010,6 +3011,7 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "markets": cmd_markets,
         "status": cmd_status,
         "pitch": cmd_pitch,
+        "pump": cmd_pump,
         "trackrecord": cmd_trackrecord,
         "trackrecordglobal": lambda m: _cmd_trackrecord(m, report_type="global", title="GLOBAL", filter_type="all"),
         "trackrecordrussia": lambda m: _cmd_trackrecord(m, report_type="russia", title="РОССИЯ EDGE", filter_type="all"),
@@ -3111,9 +3113,9 @@ async def _kb_daily(message: Message):
     await cmd_daily(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_PITCH)
-async def _kb_pitch(message: Message):
-    await cmd_pitch(message)
+@dp.message(F.text == PERSISTENT_BTN_PUMP)
+async def _kb_pump(message: Message):
+    await cmd_pump(message)
 
 
 @dp.message(F.text == PERSISTENT_BTN_MARKETS)
@@ -6211,13 +6213,83 @@ def _format_pitch_message() -> str:
 @dp.message(Command("pitch"))
 @require_vip
 async def cmd_pitch(message: Message):
-    """Investor pitch — 1-message overview системы."""
+    """Investor pitch — 1-message overview системы.
+
+    Питч больше НЕ висит кнопкой в меню — он показывается только из
+    приветствия /start («💎 Что я умею»). Сама команда остаётся скрытой
+    (не в /setMyCommands) на случай прямого вызова.
+    """
     try:
         msg = _format_pitch_message()
         await message.answer(msg, parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
         logger.exception("pitch error")
         await message.answer(f"Ошибка: {e}")
+
+
+# ─── /pump — памп-сканер по запросу ───────────────────────────────────────────
+
+# Сколько памп-сигналов показывать в ответ на ручной /pump (алерты-пуши
+# отдельно живут в PumpAlertSystem). Env, чтобы крутить без деплоя.
+def _pump_ondemand_limit() -> int:
+    try:
+        return max(1, int(os.getenv("PUMP_ONDEMAND_LIMIT", "5")))
+    except (TypeError, ValueError):
+        return 5
+
+
+PUMP_ONDEMAND_LIMIT = _pump_ondemand_limit()
+
+
+@dp.message(Command("pump"))
+@require_vip
+async def cmd_pump(message: Message):
+    """On-demand памп-скан. Гоняет тот же pump_scanner что и авто-алерты
+    (со всеми guard'ами целостности из PR #75: свежесть свечей, single-venue
+    консистентность, anti-collision merge) и отдаёт топ-сигналы прямо сейчас.
+    """
+    try:
+        from pump_scanner import PumpConfig, format_pump_alert, scan_pumps
+    except Exception as e:  # noqa: BLE001
+        logger.error("pump: import failed: %s", e)
+        await message.answer("Памп-сканер временно недоступен.")
+        return
+
+    notice = await message.answer("🚀 Сканирую рынок на пампы…")
+    try:
+        signals = await scan_pumps(cfg=PumpConfig.from_env(), max_symbols=0)
+    except Exception as e:  # noqa: BLE001
+        logger.error("pump: scan failed: %s", e)
+        await message.answer(f"Ошибка памп-сканера: {e}")
+        return
+
+    try:
+        if notice is not None:
+            await notice.delete()
+    except Exception:  # noqa: BLE001 — удаление статус-сообщения best-effort
+        pass
+
+    if not signals:
+        await message.answer(
+            "🚀 *Памп-сканер*\n\nСейчас активных пампов не вижу — рынок спокоен.\n"
+            "_Авто-алерты придут сами, как только что-то поедет._",
+            parse_mode="Markdown",
+        )
+        return
+
+    top = signals[:PUMP_ONDEMAND_LIMIT]
+    await message.answer(
+        f"🚀 *Памп-сканер* — нашёл *{len(signals)}*, показываю топ-{len(top)}:",
+        parse_mode="Markdown",
+    )
+    for sig in top:
+        try:
+            text = format_pump_alert(sig)
+            await message.answer(
+                text, parse_mode="Markdown", disable_web_page_preview=True,
+            )
+        except Exception as e:  # noqa: BLE001 — один битый сигнал не рушит ответ
+            logger.debug("pump: render failed for %s: %s", getattr(sig, "asset", "?"), e)
 
 
 # ─── /admin ───────────────────────────────────────────────────────────────────
@@ -6311,7 +6383,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="autotrade_status", description="🎯 Status: PnL, win-rate, Kelly"),
         BotCommand(command="audit", description="📊 AI-аудит закрытых сделок"),
         BotCommand(command="usage", description="🔢 Расход токенов"),
-        BotCommand(command="pitch", description="💎 Investor pitch (1-pager)"),
+        BotCommand(command="pump", description="🚀 Памп-сканер по запросу"),
     ]
     await bot.set_my_commands(commands)
 
