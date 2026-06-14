@@ -115,6 +115,7 @@ from refactor.handlers import (
     cmd_add_portfolio as add_portfolio_command,
     cmd_remove_portfolio as remove_portfolio_command,
     setup_admins,
+    is_admin,
     handle_stats_command,
     handle_health_command,
     handle_logs_command,
@@ -257,7 +258,8 @@ def feedback_keyboard(report_type: str) -> InlineKeyboardMarkup:
 # Подписи к кнопкам строго совпадают с тем что обрабатывают
 # `_PERSISTENT_KB_TRIGGERS` ниже (любое расхождение → кнопка не сработает).
 PERSISTENT_BTN_DAILY    = "📊 Прогноз"
-PERSISTENT_BTN_PITCH    = "💎 Питч"
+PERSISTENT_BTN_PITCH    = "💎 Питч"   # legacy: pitch lives only in /start now
+PERSISTENT_BTN_PUMP     = "🚀 Памп"
 PERSISTENT_BTN_MARKETS  = "🏛 Рынки"
 PERSISTENT_BTN_SETTINGS = "⚙️ Настройки"
 PERSISTENT_BTN_SIGNAL   = "🎯 Лучшая сделка"
@@ -282,7 +284,7 @@ def persistent_kb() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text=PERSISTENT_BTN_ARB),
-                KeyboardButton(text=PERSISTENT_BTN_PITCH),
+                KeyboardButton(text=PERSISTENT_BTN_PUMP),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
             ],
             [
@@ -2641,7 +2643,7 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🗓 Weekly", callback_data="cmd:weeklyreport"),
-            InlineKeyboardButton(text="💎 Питч", callback_data="cmd:pitch"),
+            InlineKeyboardButton(text="🚀 Памп", callback_data="cmd:pump"),
         ],
         [
             InlineKeyboardButton(text="📘 Инструкция", callback_data="cmd:guide"),
@@ -2901,86 +2903,83 @@ async def _send_newbie_guide(chat_id: int) -> None:
     part1 = (
         "🆕 *ГИД ДЛЯ НОВИЧКОВ — ЧАСТЬ 1/3*\n"
         + "═" * 28 + "\n\n"
-        "📌 *Этот гид — для тебя, если:*\n"
-        "• Никогда не торговал на бирже\n"
-        "• Хочешь использовать `/daily` для собственных сделок (без autotrade)\n"
-        "• Боишься слить депозит в первую неделю\n\n"
+        "📌 *В чём наш edge (и чего тут НЕТ)*\n\n"
+        "Мы НЕ угадываем, куда пойдёт цена. Бэктест directional-сигналов "
+        "(LONG/SHORT) на 2020–2026 показал: на дневках они *робастно убыточны*. "
+        "Поэтому directional-режим из бота удалён.\n\n"
+        "Реальный edge бота — *дельта-нейтральный доход*. Ты не ставишь на "
+        "направление цены, а собираешь структурные выплаты рынка:\n"
+        "• *funding* — плата одной стороны перпа другой\n"
+        "• *спред funding* между биржами\n"
+        "• *базис* — разница спота и квартального фьюча\n\n"
+        "Доходность скромнее иксов, зато *воспроизводима* и не зависит от того, "
+        "вырастет BTC завтра или упадёт.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⏰ *КОГДА ЗАПУСКАТЬ /daily*\n\n"
-        "👉 *09:00-10:00 МСК* — золотое время:\n"
-        "• Все ночные источники свежие (COT, CME, FinBERT, MVRV)\n"
-        "• London ещё не открылся (11:00) — есть 2 часа подумать\n"
-        "• Цены статичны, уровни не уехали\n"
-        "• Психологически удобно: кофе → дайджест → день начался\n\n"
-        "❌ *НЕ запускай в эти окна:*\n"
-        "• 11:00-13:00 МСК (London opening burst)\n"
-        "• 15:30 МСК в день US data (CPI/NFP)\n"
-        "• 16:30-17:30 МСК (US equity open, хаос)\n"
-        "• 21:00 МСК по средам FOMC weeks\n\n"
-        "📅 *Big news days — запускай ДВАЖДЫ:*\n"
-        "• CPI: середина месяца, 15:30 МСК\n"
-        "• NFP: первая пятница месяца, 15:30 МСК\n"
-        "• FOMC: раз в 6 недель, среда 21:00 МСК\n\n"
-        "Календарь: investing.com/economic-calendar\n"
-        "Фильтр: USA + High Importance."
+        "🧲 *Что такое «дельта-нейтрально»*\n\n"
+        "Две ноги гасят движение цены друг друга, а ты остаёшься с «купоном»:\n"
+        "```\nЛОНГ спот BTC  +  ШОРТ перп BTCUSDT (на ту же сумму)\n```\n"
+        "BTC вырос на 5% → спот +5%, шорт-перп −5% → *по цене ноль*.\n"
+        "BTC упал на 5% → спот −5%, шорт-перп +5% → *снова ноль*.\n"
+        "А funding капает тебе каждые 8 часов независимо от цены.\n\n"
+        "Главный враг тут — *не цена, а комиссии*. Тонкие премии не торгуем."
     )
     await bot.send_message(chat_id, part1, parse_mode="Markdown")
 
     part2 = (
         "🆕 *ГИД ДЛЯ НОВИЧКОВ — ЧАСТЬ 2/3*\n"
         + "═" * 28 + "\n\n"
-        "⚠️ *ТОЛЬКО SPOT — НИКАКИХ FUTURES*\n\n"
-        "У Бинанса 3 режима:\n"
-        "• ✅ *Spot* — покупаешь реальный BTC. Макс. потеря = 100%, медленно\n"
-        "• ❌ *Futures* — плечо. 10x → ликвидация за минуту. ВСЁ потеряешь.\n"
-        "• ❌ *Margin* — мягче чем фьючи, но всё равно опасно\n\n"
-        "*95% новичков сливают депо в первую неделю именно из-за Futures.*\n"
-        "Прячь от себя самого вкладки Margin/Futures.\n\n"
+        "🛠 *ТРИ РАБОЧИХ EDGE'А БОТА*\n\n"
+        "💰 *Carry* — `/carry`\n"
+        "ЛОНГ спот + ШОРТ перп на одной бирже, собираешь funding.\n"
+        "Порог: ниже *~8% годовых* косты двух ног съедают премию.\n\n"
+        "🔀 *Кросс-арбитраж* — `/arb`\n"
+        "ЛОНГ перп там, где funding низкий, ШОРТ перп там, где высокий "
+        "(Binance/Bybit/Gate/Hyperliquid). Зарабатываешь спред.\n"
+        "Порог: спред ниже *~12% годовых* не отбивает косты.\n\n"
+        "🗓 *Calendar basis* — `/basis`\n"
+        "ЛОНГ спот + ШОРТ квартальный фьюч, держишь до экспирации — базис "
+        "сходится к нулю, разница твоя. Доход фиксируется заранее.\n\n"
+        "🧮 *Калькулятор* — `/calc 5000 25` посчитает обе ноги и $/год.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📈 *КАКОЙ ГОРИЗОНТ ВЫБРАТЬ В БОТЕ*\n\n"
-        "При `/daily` бот предложит 3 варианта:\n\n"
-        "⚡ *Intraday (1-3 дня)*\n"
-        "Свечи 4h, стопы 2%, R/R 1:1.5\n"
-        "❌ НЕ для новичков — мониторинг каждые 4h, стопы вылетают на шуме\n\n"
-        "📈 *Swing (7-14 дней)* ← *БЕРИ ЭТО*\n"
-        "Свечи 1d, стопы 5%, R/R 1:2\n"
-        "✅ Дефолт бота, под него настроены все агенты\n"
-        "✅ Проверяешь раз в день, времени на размышление весь день\n\n"
-        "🏔 *Position (30+ дней)*\n"
-        "Свечи 1w, стопы 10%, R/R 1:3\n"
-        "❌ Для $50k+. Капитал заморожен, мало точек данных.\n\n"
-        "*Когда можно intraday?* После 10 закрытых swing-сделок с журналом."
+        "🎯 *«Лучшая сделка»* — `/signal`\n\n"
+        "Не хочешь сравнивать три команды? Жми «🎯 Лучшая сделка» — бот в "
+        "реальном времени сканирует carry/арб/базис и показывает *ОДНУ* сделку "
+        "с максимальной чистой доходностью прямо сейчас.\n"
+        "`/signal 5000` — добавь депозит, увидишь оценку $/год.\n\n"
+        "Если ничего не проходит порог костов — бот честно скажет «сегодня edge "
+        "нет, сидим в стейблах». Это валидный ответ, а не ошибка."
     )
     await bot.send_message(chat_id, part2, parse_mode="Markdown")
 
     part3 = (
         "🆕 *ГИД ДЛЯ НОВИЧКОВ — ЧАСТЬ 3/3*\n"
         + "═" * 28 + "\n\n"
+        "💵 *Деньги на биржу*\n"
+        "• `/p2p` → RUB→USDT через P2P (в РФ USDT с премией к курсу). Бери "
+        "мейкеров с большим числом сделок и completion ≥90%, не ведись на "
+        "фейково «дешёвые» заявки.\n"
+        "• Funding-кошелёк → переведи USDT на *Spot* (под спот-ногу) и на "
+        "*Derivatives* (маржа под шорт-перп). Номиналы ног — *равны*.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🛡 *7 ПРАВИЛ ВЫЖИВАНИЯ ПЕРВОЙ НЕДЕЛИ*\n\n"
-        "*1. Position size: МАКС 2% от депо за сделку*\n"
-        "$10K → 1 сделка = $200. Звучит мало — это правильно. Цель недели: выжить, не заработать.\n\n"
-        "*2. Stop loss В МОМЕНТ открытия*\n"
-        "Используй OCO order — одновременно ставит Stop Loss + Take Profit. Один сработал → второй отменяется.\n\n"
-        "*3. Торгуй только по проверенным сильным сигналам*\n"
-        "Если у setup'а нет явной направленности или сила слабая — пропускай. "
-        "Сила — это: вердикт BULLISH/BEARISH + ≥2 подтверждающих фактора + R/R ≥2:1. "
-        "На слабых/NEUTRAL входить — твоё право, но статистика не на твоей стороне. "
-        "Я бы пропустил, но это не финансовый совет.\n\n"
-        "*4. Максимум 1 открытая позиция в первую неделю*\n"
-        "Не «BTC long + SOL short + ETH long». Одна. Фокус, обдуманно.\n\n"
-        "*5. Жди ЗАКРЫТИЯ свечи за уровень*\n"
-        "Бот пишет: «не прокол хвостом — только закрытие». Алерт на TradingView → проверка дайджеста → вход.\n\n"
-        "*6. Trading journal в Google Sheet*\n"
-        "Дата, вердикт бота, причина входа, размер, стоп, результат %. Без журнала через месяц не докажешь edge.\n\n"
-        "*7. Не торгуй за час до новостей*\n"
-        "FOMC/CPI/NFP — рынок выносит произвольно.\n\n"
+        "*1.* Обе ноги — *равны по номиналу*. Неравные = скрытый риск цены.\n"
+        "*2.* Плечо на перпе *1x–2x*, не больше. Перп тут хедж, не казино. "
+        "Держи запас маржи, чтобы рост не ликвидировал шорт-ногу.\n"
+        "*3.* Не торгуй *тонкую премию* (ниже ≈8% carry / ≈12% арб). Нет "
+        "сделки — это нормальный ответ.\n"
+        "*4.* Размер — *макс 20–30% депо* на сделку первую неделю.\n"
+        "*5.* Закрывай *обе ноги одновременно*. Одна нога = голый в цене.\n"
+        "*6.* Следи за *разворотом funding* — из получателя станешь плательщиком.\n"
+        "*7.* Веди *журнал* с первой сделки: ожидаемое vs факт после костов 0.2%. "
+        "Без журнала не отличишь edge от удачи.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎯 *ИНВЕСТОРАМ ГОВОРИ ТАК:*\n"
-        "_«AI-аналитический ассистент. Решения принимаем мы. Цель первых 2 недель — calibration, не profit-max, понять win rate»._\n\n"
-        "*Честно, защищает от хайпа, даёт пространство учиться.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚠️ *Disclaimer:* это аналитический инструмент, не финансовый совет. Рынок непредсказуем. Дисциплина важнее анализа.\n\n"
-        "📘 Полная версия (10 страниц) в PDF ↑"
+        "🚫 *ЧЕГО НЕ ДЕЛАТЬ:* directional плечо (10x-лонг «по сигналу» — "
+        "быстрый слив), одна нога без хеджа, гонка за иксами.\n\n"
+        "⚠️ *Disclaimer:* это аналитический инструмент, не финансовый совет. "
+        "Дельта-нейтрал снижает ценовой риск, но не убирает его (ликвидация "
+        "перп-ноги, разворот funding, риск биржи/стейбла). Дисциплина и журнал "
+        "важнее любого сигнала.\n\n"
+        "📘 Полная версия (5 страниц) в PDF ↑"
     )
     await bot.send_message(chat_id, part3, parse_mode="Markdown")
 
@@ -3010,6 +3009,7 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "markets": cmd_markets,
         "status": cmd_status,
         "pitch": cmd_pitch,
+        "pump": cmd_pump,
         "trackrecord": cmd_trackrecord,
         "trackrecordglobal": lambda m: _cmd_trackrecord(m, report_type="global", title="GLOBAL", filter_type="all"),
         "trackrecordrussia": lambda m: _cmd_trackrecord(m, report_type="russia", title="РОССИЯ EDGE", filter_type="all"),
@@ -3111,9 +3111,9 @@ async def _kb_daily(message: Message):
     await cmd_daily(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_PITCH)
-async def _kb_pitch(message: Message):
-    await cmd_pitch(message)
+@dp.message(F.text == PERSISTENT_BTN_PUMP)
+async def _kb_pump(message: Message):
+    await cmd_pump(message)
 
 
 @dp.message(F.text == PERSISTENT_BTN_MARKETS)
@@ -3630,6 +3630,17 @@ def _parse_daily_args(text: str) -> tuple[str | None, bool]:
     return horizon_key, force_fresh
 
 
+def _resolve_force_fresh(user_id: int, requested: bool) -> bool:
+    """Force-fresh (пере-генерация дайджеста) — ТОЛЬКО админ.
+
+    Дайджест генерится 1 раз в день (cron_digest.py утром) и кэшируется в PG.
+    Обычные юзеры всегда получают этот дневной кэш — `force` для них недоступен
+    (дорогие LLM-вызовы → защита от abuse и расхода токенов). Админ может
+    форснуть свежую генерацию через `/daily [horizon] force`.
+    """
+    return bool(requested) and is_admin(user_id)
+
+
 def _horizon_picker_keyboard(force_fresh: bool = False) -> InlineKeyboardMarkup:
     """3 кнопки выбора горизонта. `force` зашиваем в callback_data, чтобы
     обработчик не зависел от внешнего состояния."""
@@ -3646,15 +3657,20 @@ def _horizon_picker_keyboard(force_fresh: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _send_horizon_picker(message: Message, force_fresh: bool = False) -> None:
+async def _send_horizon_picker(
+    message: Message, force_fresh: bool = False, *, allow_force: bool = True,
+) -> None:
     note = "" if not force_fresh else " (без кэша)"
+    # Подсказку про `force` показываем только тем, кому она доступна (админу) —
+    # обычным юзерам она вводит в заблуждение (дайджест 1×/день из кэша).
+    force_hint = "\n`/daily force` — сбросить кэш (только админ)." if allow_force else ""
     await message.answer(
         "🎯 *Выбери горизонт планирования* ⤵️" + note + "\n\n"
         "⚡️ *1–3 дня* — стопы плотные, R/R от 1:1.5, доля депо мелкая.\n"
         "📈 *7–14 дней* — свинг, стандартный режим (по умолчанию).\n"
         "🏔 *30+ дней* — макро-позиция, R/R от 1:3, входим осторожнее.\n\n"
-        "Можно сразу командой: `/daily intraday`, `/daily swing`, `/daily position`. "
-        "`/daily force` — сбросить кэш.",
+        "Можно сразу командой: `/daily intraday`, `/daily swing`, `/daily position`."
+        + force_hint,
         parse_mode="Markdown",
         reply_markup=_horizon_picker_keyboard(force_fresh=force_fresh),
     )
@@ -3793,11 +3809,20 @@ async def cmd_daily(message: Message):
         )
         return
 
-    horizon_key, force_fresh = _parse_daily_args(message.text or "")
+    horizon_key, requested_force = _parse_daily_args(message.text or "")
+    admin = is_admin(user_id)
+    force_fresh = _resolve_force_fresh(user_id, requested_force)
+    if requested_force and not force_fresh:
+        # Юзер попросил force, но он не админ — отдаём дневной кэш и поясняем.
+        await message.answer(
+            "🔒 Принудительное обновление (`force`) доступно только админу.\n"
+            "Дайджест генерится 1×/день — отдаю свежий из дневного кэша.",
+            parse_mode="Markdown",
+        )
 
     if horizon_key is None:
         # Без аргументов — показываем пикер. force, если был, не теряется.
-        await _send_horizon_picker(message, force_fresh=force_fresh)
+        await _send_horizon_picker(message, force_fresh=force_fresh, allow_force=admin)
         return
 
     await _run_daily_for_horizon(
@@ -3817,11 +3842,14 @@ async def handle_daily_horizon_pick(callback: CallbackQuery):
     if len(parts) < 2:
         return
     horizon_key = parts[1]
-    force_fresh = (len(parts) >= 3 and parts[2] == "f")
+    requested_force = (len(parts) >= 3 and parts[2] == "f")
     if horizon_key not in HORIZON_PACKS:
         return
 
     user_id = callback.from_user.id
+    # force — только админ (см. _resolve_force_fresh). Колбэк-кнопки с :f
+    # генерятся лишь когда force_fresh уже True, но гейтим defensively.
+    force_fresh = _resolve_force_fresh(user_id, requested_force)
     await upsert_user(user_id, callback.from_user.username or "")
 
     if not await check_limit(user_id):
@@ -4949,60 +4977,39 @@ def _fmt_signal_message(result: dict) -> str:
 @dp.message(Command("signal"))
 @require_vip
 async def cmd_signal(message: Message):
-    """Команда `/signal` — детерминированный auto SL/TP recommender.
+    """Команда `/signal` (кнопка «🎯 Лучшая сделка») — лучший ЖИВОЙ edge.
 
-    Берёт live-prices (тот же источник что `/markets`), скорит каждый
-    актив 0-100 (trend + complexity + VRT + Markov + raw score) и
-    выдаёт ОДИН setup если score ≥ 60, или «сегодня сидим» иначе.
+    Directional LONG/SHORT price-bet УБРАН (бэктест 2020-26: робастно
+    убыточен). Теперь показываем ОДНУ лучшую delta-neutral сделку с
+    максимальным net annualized % из carry / кросс-арб / базис — или честно
+    «сегодня сидим», если ничего выше порога костов нет.
 
-    Опциональный аргумент: `/signal 200` — задать капитал (по умолчанию
-    $123 — текущий баланс пользователя).
+    Опциональный аргумент: `/signal 5000` — депозит для оценки $/год.
     """
     user_id = message.from_user.id
     await upsert_user(user_id, message.from_user.username or "")
-    wait_msg = await message.answer("⏳ Считаю scoring по всем активам...")
+    wait_msg = await message.answer("⏳ Ищу лучший живой edge: carry · арб · базис…")
 
-    # Парсим опциональный капитал. `/signal 200` → capital=200.
-    text = (message.text or "").strip()
-    parts = text.split()
-    capital = 123.0
+    # Парсим опциональный депозит. `/signal 5000` → capital=5000.
+    parts = (message.text or "").strip().split()
+    capital = 0.0
     if len(parts) >= 2:
         try:
-            capital = max(10.0, float(parts[1].replace(",", ".")))
+            capital = max(0.0, float(parts[1].replace("$", "").replace(",", ".")))
         except ValueError:
             pass
 
     try:
-        from core.signal_scorer import rank_signals
-        from web_search import fetch_realtime_prices
+        from core.best_edge import format_best_edge, scan_best_edge
 
-        prices = await fetch_realtime_prices()
-        if not prices:
-            await bot.edit_message_text(
-                "❌ Не удалось получить цены. Попробуй позже.",
-                chat_id=message.chat.id,
-                message_id=wait_msg.message_id,
-            )
-            return
-
-        result = rank_signals(prices, capital=capital)
-        text = _fmt_signal_message(result)
-
-        # ── Provenance: морозим решение signal_scorer для replay ──
-        # Если top setup найден — пишем полный snapshot (features + breakdown
-        # + SL/TP/σ̂). Если только preview_top — тоже пишем, помечаем что
-        # score ниже порога. Без exception bubble — UI не должен падать.
-        await _freeze_signal_decision(result)
-
-        # Кнопка-глоссарий показывается всегда — даже на «сегодня сидим»,
-        # т.к. термины (порог, score, σ̂, R/R) видны в шапке независимо
-        # от того прошёл ли актив порог.
+        edge = await scan_best_edge()
+        text = format_best_edge(edge, capital=capital)
         await bot.edit_message_text(
             text,
             chat_id=message.chat.id,
             message_id=wait_msg.message_id,
             parse_mode="Markdown",
-            reply_markup=_signal_explain_keyboard(user_id, capital),
+            disable_web_page_preview=True,
         )
     except Exception as e:
         await bot.edit_message_text(
@@ -6211,13 +6218,83 @@ def _format_pitch_message() -> str:
 @dp.message(Command("pitch"))
 @require_vip
 async def cmd_pitch(message: Message):
-    """Investor pitch — 1-message overview системы."""
+    """Investor pitch — 1-message overview системы.
+
+    Питч больше НЕ висит кнопкой в меню — он показывается только из
+    приветствия /start («💎 Что я умею»). Сама команда остаётся скрытой
+    (не в /setMyCommands) на случай прямого вызова.
+    """
     try:
         msg = _format_pitch_message()
         await message.answer(msg, parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
         logger.exception("pitch error")
         await message.answer(f"Ошибка: {e}")
+
+
+# ─── /pump — памп-сканер по запросу ───────────────────────────────────────────
+
+# Сколько памп-сигналов показывать в ответ на ручной /pump (алерты-пуши
+# отдельно живут в PumpAlertSystem). Env, чтобы крутить без деплоя.
+def _pump_ondemand_limit() -> int:
+    try:
+        return max(1, int(os.getenv("PUMP_ONDEMAND_LIMIT", "5")))
+    except (TypeError, ValueError):
+        return 5
+
+
+PUMP_ONDEMAND_LIMIT = _pump_ondemand_limit()
+
+
+@dp.message(Command("pump"))
+@require_vip
+async def cmd_pump(message: Message):
+    """On-demand памп-скан. Гоняет тот же pump_scanner что и авто-алерты
+    (со всеми guard'ами целостности из PR #75: свежесть свечей, single-venue
+    консистентность, anti-collision merge) и отдаёт топ-сигналы прямо сейчас.
+    """
+    try:
+        from pump_scanner import PumpConfig, format_pump_alert, scan_pumps
+    except Exception as e:  # noqa: BLE001
+        logger.error("pump: import failed: %s", e)
+        await message.answer("Памп-сканер временно недоступен.")
+        return
+
+    notice = await message.answer("🚀 Сканирую рынок на пампы…")
+    try:
+        signals = await scan_pumps(cfg=PumpConfig.from_env(), max_symbols=0)
+    except Exception as e:  # noqa: BLE001
+        logger.error("pump: scan failed: %s", e)
+        await message.answer(f"Ошибка памп-сканера: {e}")
+        return
+
+    try:
+        if notice is not None:
+            await notice.delete()
+    except Exception:  # noqa: BLE001 — удаление статус-сообщения best-effort
+        pass
+
+    if not signals:
+        await message.answer(
+            "🚀 *Памп-сканер*\n\nСейчас активных пампов не вижу — рынок спокоен.\n"
+            "_Авто-алерты придут сами, как только что-то поедет._",
+            parse_mode="Markdown",
+        )
+        return
+
+    top = signals[:PUMP_ONDEMAND_LIMIT]
+    await message.answer(
+        f"🚀 *Памп-сканер* — нашёл *{len(signals)}*, показываю топ-{len(top)}:",
+        parse_mode="Markdown",
+    )
+    for sig in top:
+        try:
+            text = format_pump_alert(sig)
+            await message.answer(
+                text, parse_mode="Markdown", disable_web_page_preview=True,
+            )
+        except Exception as e:  # noqa: BLE001 — один битый сигнал не рушит ответ
+            logger.debug("pump: render failed for %s: %s", getattr(sig, "asset", "?"), e)
 
 
 # ─── /admin ───────────────────────────────────────────────────────────────────
@@ -6311,7 +6388,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="autotrade_status", description="🎯 Status: PnL, win-rate, Kelly"),
         BotCommand(command="audit", description="📊 AI-аудит закрытых сделок"),
         BotCommand(command="usage", description="🔢 Расход токенов"),
-        BotCommand(command="pitch", description="💎 Investor pitch (1-pager)"),
+        BotCommand(command="pump", description="🚀 Памп-сканер по запросу"),
     ]
     await bot.set_my_commands(commands)
 
@@ -6332,11 +6409,15 @@ async def main():
     register_subscription_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()
+    # Register on BOTH messages and inline callbacks so the global flood cap
+    # can't be bypassed by mashing inline buttons.
     dp.message.middleware(_rate_limiter)
+    dp.callback_query.middleware(_rate_limiter)
     if _rate_limiter.enabled:
         logger.info(
-            "⏱ RateLimitMiddleware on: window=%ds, commands=%s",
+            "⏱ RateLimitMiddleware on: cmd-window=%ds (%s), flood-cap=%d/%ds",
             _rate_limiter.window_sec, ",".join(_rate_limiter.heavy_commands),
+            _rate_limiter.max_per_window, _rate_limiter.flood_window_sec,
         )
     else:
         logger.info("⏱ RateLimitMiddleware off (FEATURE_RATE_LIMITER=0)")

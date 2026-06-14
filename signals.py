@@ -163,6 +163,8 @@ async def fetch_binance_signals(symbols: list[str] | None = None) -> dict:
                             "price_change": round(price_change, 2),
                             "volume": float(ticker.get("quoteVolume", 0)),
                             "last_price": float(ticker.get("lastPrice", 0)),
+                            "high_24h": float(ticker.get("highPrice", 0)),
+                            "low_24h": float(ticker.get("lowPrice", 0)),
                         }
                     else:
                         raise ValueError(f"Futures API returned {resp.status}")
@@ -189,6 +191,8 @@ async def fetch_binance_signals(symbols: list[str] | None = None) -> dict:
                                 "price_change": round(price_change, 2),
                                 "volume": float(ticker.get("quoteVolume", 0)),
                                 "last_price": float(ticker.get("lastPrice", 0)),
+                                "high_24h": float(ticker.get("highPrice", 0)),
+                                "low_24h": float(ticker.get("lowPrice", 0)),
                                 "funding_rate": 0,
                                 "funding_direction": "NEUTRAL",
                             }
@@ -598,6 +602,65 @@ def build_signal_bias_map(binance_data: dict, verdict: Optional[dict] = None) ->
     return bias_map
 
 
+# ── 24h High/Low (Bybit-style) ───────────────────────────────────────────────
+# Порог «у края дня»: цена в пределах N% от 24ч-хая/лоя → ставим маркер
+# 📈 у дневного максимума / 📉 у дневного минимума. Настраивается env.
+def _edge_threshold_pct() -> float:
+    try:
+        return max(0.0, float(os.getenv("SIGNALS_EDGE_THRESHOLD_PCT", "1.0")))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _fmt_price(p: float) -> str:
+    """Цена в человекочитаемом виде: BTC→70 950, ETH→3 512.4, alt→0.4218."""
+    if p is None or p <= 0:
+        return "—"
+    if p >= 1000:
+        return f"{p:,.0f}".replace(",", " ")
+    if p >= 1:
+        return f"{p:,.2f}".replace(",", " ")
+    if p >= 0.01:
+        return f"{p:.4f}"
+    return f"{p:.6f}"
+
+
+def high_low_lines(data: dict, *, threshold_pct: float | None = None) -> list[str]:
+    """Bybit-style блок 24ч High/Low + маркер близости к краю дня.
+
+    Возвращает строки для вставки в per-coin блок. Пусто, если нет валидных
+    high/low. Маркер 📈/📉 ставится когда цена в пределах ``threshold_pct`` от
+    хая/лоя (по умолчанию 1%). Также показываем позицию в диапазоне (%).
+    """
+    high = float(data.get("high_24h", 0) or 0)
+    low = float(data.get("low_24h", 0) or 0)
+    last = float(data.get("last_price", 0) or 0)
+    if high <= 0 or low <= 0 or high < low:
+        return []
+
+    thr = _edge_threshold_pct() if threshold_pct is None else max(0.0, threshold_pct)
+    lines = [f"  📊 24ч: {_fmt_price(low)} … {_fmt_price(high)}"]
+
+    if last <= 0:
+        return lines
+
+    span = high - low
+    pos_pct = (last - low) / span * 100.0 if span > 0 else 100.0
+    pos_pct = max(0.0, min(100.0, pos_pct))
+
+    # Близость к краю в % от соответствующего уровня.
+    near_high = high > 0 and (high - last) / high * 100.0 <= thr
+    near_low = low > 0 and (last - low) / low * 100.0 <= thr
+
+    if near_high:
+        lines.append(f"  📈 у дневного максимума ({pos_pct:.0f}% диапазона)")
+    elif near_low:
+        lines.append(f"  📉 у дневного минимума ({pos_pct:.0f}% диапазона)")
+    else:
+        lines.append(f"  📍 {pos_pct:.0f}% диапазона дня")
+    return lines
+
+
 def build_signals_message(signals: list, binance_data: dict, verdict: Optional[dict]) -> str:
     """Формирует красивое сообщение с сигналами."""
     lines = [
@@ -628,6 +691,11 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
                 lines.append(f"  🔼 Лонг: {long_pct}%")
                 lines.append(f"  🔽 Шорт: {short_pct}%")
                 lines.append(f"  {dominant} Доминирование")
+                # Funding оставляем и в traders-ветке (полезный сигнал).
+                if funding:
+                    lines.append(
+                        f"  Funding: {'🔼' if funding > 0 else '🔽'}{funding*100:.4f}%"
+                    )
             else:
                 # Fallback на цену
                 emoji = "🟢" if price_change > 0 else "🔴" if price_change < 0 else "⚪️"
@@ -637,6 +705,8 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
                 lines.append(f"{name}:")
                 lines.append(f"  {change_str}")
                 lines.append(f"  {funding_str}")
+            # 24ч High/Low + маркер «у края дня» (Bybit-style) — в обеих ветках.
+            lines.extend(high_low_lines(data))
             lines.append("")
 
     # Вердикт

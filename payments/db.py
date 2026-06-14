@@ -277,6 +277,54 @@ async def check_vip(user_id: int) -> bool:
         return True  # Fail-open: don't block users on DB errors
 
 
+async def has_access(user_id: int) -> bool:
+    """Return ``True`` if the user may use a gated feature right now.
+
+    Unlike :func:`check_vip` (paid subscription only), this is the *single
+    source of truth* for access and honours the free trial as well:
+
+        admin  →  active paid VIP  →  active free trial  →  access granted.
+
+    This mirrors the access rule enforced by :class:`SubscriptionMiddleware`
+    (via :func:`ensure_access`) so the two layers can never disagree. The bug
+    this closes: the per-handler ``@require_vip`` decorator used to call
+    :func:`check_vip`, which is trial-blind, so trial users were let through
+    the global middleware yet blocked on every ``@require_vip`` handler
+    (``/markets``, ``/screener`` …) while ungated handlers (``/carry``,
+    ``/arb``) worked — an inconsistent paywall.
+
+    Read-only: it never creates a trial (the middleware's
+    :func:`ensure_access` already did that on first contact). Fails open on
+    DB errors so a transient outage never locks paying users out.
+    """
+    if _is_admin(user_id):
+        return True
+    if not _is_enabled():
+        return True  # No paywall when Postgres is off
+    try:
+        from sqlalchemy import text
+
+        now = datetime.now(timezone.utc)
+        async with await _get_session() as session:
+            row = await session.execute(
+                text("""
+                    SELECT is_vip, subscription_end, trial_end
+                    FROM vip_users WHERE user_id = :uid
+                """),
+                {"uid": user_id},
+            )
+            result = row.one_or_none()
+        if not result:
+            return False
+        is_vip_flag, sub_end, trial_end = result
+        vip_active = bool(is_vip_flag) and (sub_end is None or sub_end > now)
+        trial_active = trial_end is not None and trial_end > now
+        return vip_active or trial_active
+    except Exception as e:
+        logger.warning("has_access(%s) failed: %s — fail-open", user_id, e)
+        return True  # Fail-open: don't block users on DB errors
+
+
 async def ensure_access(user_id: int, username: str = "") -> dict:
     """Register the user, start a free trial on FIRST contact, and report access.
 
