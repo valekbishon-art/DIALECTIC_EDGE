@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-14 18:52
+
+| Метрика | Значение |
+|---------|----------|
+| MVRV | 1.54 |
+| SOPR | 0.000 |
+| Fed Balance ($B) | 0 |
+| QE/QT Mode | UNKNOWN |
+| Yield Spread | 0.00% |
+| HY Spread | 0.00% |
+| VIX | 0.0 |
+| Fear & Greed | 0 |
+| Market Score | +0 |
+| Final Verdict | NEUTRAL |
+
+
+---
+
 ## 2026-06-14 18:32
 
 | Метрика | Значение |
@@ -19,6 +37,8 @@
 | Market Score | +0 |
 | Final Verdict | NEUTRAL |
 
+
+---
 
 ---
 
@@ -42,29 +62,9 @@
 
 ---
 
+---
+
 ## 2026-06-14 17:51
-
-| Метрика | Значение |
-|---------|----------|
-| MVRV | 1.54 |
-| SOPR | 0.000 |
-| Fed Balance ($B) | 0 |
-| QE/QT Mode | UNKNOWN |
-| Yield Spread | 0.00% |
-| HY Spread | 0.00% |
-| VIX | 0.0 |
-| Fear & Greed | 0 |
-| Market Score | +0 |
-| Final Verdict | NEUTRAL |
-
-
----
-
----
-
----
-
-## 2026-06-14 17:31
 
 | Метрика | Значение |
 |---------|----------|
