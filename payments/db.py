@@ -126,14 +126,19 @@ CREATE TABLE IF NOT EXISTS vip_users (
     subscription_end    TIMESTAMPTZ,
     trial_started_at    TIMESTAMPTZ,
     trial_end           TIMESTAMPTZ,
+    blocked             BOOLEAN DEFAULT FALSE,
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 """
 
-# Backward-compat: add trial columns to a pre-existing vip_users table.
+# Backward-compat: add columns to a pre-existing vip_users table.
+# `blocked` is a hard kill-switch that overrides BOTH paid VIP and the free
+# trial — the single answer to "I set is_vip=false by hand but the bot still
+# lets the user in" (the trial was still ticking). See has_access/ensure_access.
 _MIGRATE_TRIAL_COLUMNS = (
     "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ;",
     "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ;",
+    "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS blocked BOOLEAN DEFAULT FALSE;",
 )
 
 
@@ -237,6 +242,95 @@ async def grant_vip(user_id: int, days: int = 30) -> Optional[datetime]:
         return None
 
 
+async def revoke_vip(user_id: int) -> bool:
+    """Soft-revoke: strip paid VIP *and* the free trial in one shot.
+
+    Sets ``is_vip = FALSE`` and nulls both ``subscription_end`` and
+    ``trial_end`` so the user loses access immediately. This is the fix for the
+    "I set is_vip=false by hand but the bot still let them in" bug — editing
+    ``is_vip`` alone left ``trial_end`` in the future, and ``has_access`` is
+    ``vip OR trial``, so the trial kept the door open.
+
+    Does NOT set ``blocked`` — the user can start a fresh trial / pay again
+    (use :func:`block_user` for a permanent ban). Returns True if a row was
+    updated.
+    """
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import text
+
+        async with await _get_session() as session:
+            res = await session.execute(
+                text("""
+                    UPDATE vip_users
+                    SET is_vip = FALSE, subscription_end = NULL, trial_end = NULL
+                    WHERE user_id = :uid
+                """),
+                {"uid": user_id},
+            )
+            await session.commit()
+        updated = (res.rowcount or 0) > 0
+        logger.info("VIP revoked: user=%s (row_found=%s)", user_id, updated)
+        return updated
+    except Exception as e:
+        logger.error("revoke_vip(%s) failed: %s", user_id, e)
+        return False
+
+
+async def block_user(user_id: int, username: str = "") -> bool:
+    """Hard-ban: set ``blocked = TRUE`` (overrides VIP *and* trial everywhere).
+
+    Upserts the row so you can pre-ban a user_id that has never messaged the
+    bot. ``has_access`` / ``ensure_access`` / ``check_vip`` all short-circuit on
+    ``blocked``, so this is the single, reliable kill-switch — no more guessing
+    which column to edit in SQL. Returns True on success.
+    """
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import text
+
+        async with await _get_session() as session:
+            await session.execute(
+                text("""
+                    INSERT INTO vip_users (user_id, username, blocked)
+                    VALUES (:uid, :uname, TRUE)
+                    ON CONFLICT (user_id) DO UPDATE SET blocked = TRUE
+                """),
+                {"uid": user_id, "uname": username or ""},
+            )
+            await session.commit()
+        logger.info("User blocked: user=%s", user_id)
+        return True
+    except Exception as e:
+        logger.error("block_user(%s) failed: %s", user_id, e)
+        return False
+
+
+async def unblock_user(user_id: int) -> bool:
+    """Lift a hard ban (``blocked = FALSE``). Does NOT restore VIP/trial —
+    the user comes back as a plain non-VIP. Returns True if a row was updated.
+    """
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import text
+
+        async with await _get_session() as session:
+            res = await session.execute(
+                text("UPDATE vip_users SET blocked = FALSE WHERE user_id = :uid"),
+                {"uid": user_id},
+            )
+            await session.commit()
+        updated = (res.rowcount or 0) > 0
+        logger.info("User unblocked: user=%s (row_found=%s)", user_id, updated)
+        return updated
+    except Exception as e:
+        logger.error("unblock_user(%s) failed: %s", user_id, e)
+        return False
+
+
 async def check_vip(user_id: int) -> bool:
     """Check if user has active VIP subscription.
 
@@ -252,7 +346,7 @@ async def check_vip(user_id: int) -> bool:
         async with await _get_session() as session:
             row = await session.execute(
                 text("""
-                    SELECT is_vip, subscription_end FROM vip_users
+                    SELECT is_vip, subscription_end, blocked FROM vip_users
                     WHERE user_id = :uid
                 """),
                 {"uid": user_id},
@@ -260,7 +354,10 @@ async def check_vip(user_id: int) -> bool:
             result = row.one_or_none()
             if not result:
                 return False
-            is_vip, sub_end = result
+            is_vip, sub_end = result[0], result[1]
+            blocked = bool(result[2]) if len(result) > 2 else False
+            if blocked:
+                return False  # hard kill-switch overrides paid VIP
             if not is_vip:
                 return False
             if sub_end and sub_end < datetime.now(timezone.utc):
@@ -308,7 +405,7 @@ async def has_access(user_id: int) -> bool:
         async with await _get_session() as session:
             row = await session.execute(
                 text("""
-                    SELECT is_vip, subscription_end, trial_end
+                    SELECT is_vip, subscription_end, trial_end, blocked
                     FROM vip_users WHERE user_id = :uid
                 """),
                 {"uid": user_id},
@@ -316,7 +413,11 @@ async def has_access(user_id: int) -> bool:
             result = row.one_or_none()
         if not result:
             return False
-        is_vip_flag, sub_end, trial_end = result
+        is_vip_flag, sub_end, trial_end = result[0], result[1], result[2]
+        # `blocked` column may be absent in legacy rows / mocked tests → default False.
+        blocked = bool(result[3]) if len(result) > 3 else False
+        if blocked:
+            return False  # hard kill-switch: overrides VIP *and* trial
         vip_active = bool(is_vip_flag) and (sub_end is None or sub_end > now)
         trial_active = trial_end is not None and trial_end > now
         return vip_active or trial_active
@@ -374,7 +475,7 @@ async def ensure_access(user_id: int, username: str = "") -> dict:
 
             row = await session.execute(
                 text("""
-                    SELECT is_vip, subscription_end, trial_end
+                    SELECT is_vip, subscription_end, trial_end, blocked
                     FROM vip_users WHERE user_id = :uid
                 """),
                 {"uid": user_id},
@@ -387,7 +488,14 @@ async def ensure_access(user_id: int, username: str = "") -> dict:
                     "trial_active": False, "subscription_end": None,
                     "trial_end": None, "trial_started": False, "pg_enabled": True}
 
-        is_vip_flag, sub_end, t_end = result
+        is_vip_flag, sub_end, t_end = result[0], result[1], result[2]
+        blocked = bool(result[3]) if len(result) > 3 else False
+        if blocked:
+            # Hard ban — overrides VIP and trial. No access, distinct reason so
+            # the paywall/log can tell a ban apart from a lapsed subscription.
+            return {"access": False, "reason": "blocked", "is_vip": False,
+                    "trial_active": False, "subscription_end": sub_end,
+                    "trial_end": t_end, "trial_started": False, "pg_enabled": True}
         vip_active = bool(is_vip_flag) and (sub_end is None or sub_end > now)
         trial_active = t_end is not None and t_end > now
         access = vip_active or trial_active
@@ -421,21 +529,24 @@ async def get_vip_info(user_id: int) -> dict:
 
         async with await _get_session() as session:
             row = await session.execute(
-                text("SELECT is_vip, subscription_end, trial_end "
+                text("SELECT is_vip, subscription_end, trial_end, blocked "
                      "FROM vip_users WHERE user_id = :uid"),
                 {"uid": user_id},
             )
             result = row.one_or_none()
             if not result:
                 return {"is_vip": False, "subscription_end": None,
-                        "trial_active": False, "trial_end": None, "pg_enabled": True}
+                        "trial_active": False, "trial_end": None,
+                        "blocked": False, "pg_enabled": True}
             now = datetime.now(timezone.utc)
             t_end = result[2]
+            blocked = bool(result[3]) if len(result) > 3 else False
             return {
                 "is_vip": result[0] and (result[1] is None or result[1] > now),
                 "subscription_end": result[1],
                 "trial_active": t_end is not None and t_end > now,
                 "trial_end": t_end,
+                "blocked": blocked,
                 "pg_enabled": True,
             }
     except Exception as e:

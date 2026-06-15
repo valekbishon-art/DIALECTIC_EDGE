@@ -150,6 +150,18 @@ class TestHasAccessRows(unittest.IsolatedAsyncioTestCase):
     async def test_no_vip_no_trial(self):
         self.assertFalse(await self._access((False, None, None)))
 
+    async def test_blocked_overrides_active_vip(self):
+        # blocked=True must kill access even for a paying VIP.
+        self.assertFalse(await self._access((True, FUTURE, None, True)))
+
+    async def test_blocked_overrides_active_trial(self):
+        # blocked=True must kill access even within the free trial.
+        self.assertFalse(await self._access((False, None, FUTURE, True)))
+
+    async def test_not_blocked_4tuple_still_grants(self):
+        # Explicit blocked=False 4-tuple behaves like the legacy 3-tuple.
+        self.assertTrue(await self._access((True, FUTURE, None, False)))
+
     async def test_db_error_fails_open(self):
         # A transient DB outage must never lock paying users out.
         with patch("payments.db._get_session",
