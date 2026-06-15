@@ -162,6 +162,19 @@ class TestHasAccessRows(unittest.IsolatedAsyncioTestCase):
         # Explicit blocked=False 4-tuple behaves like the legacy 3-tuple.
         self.assertTrue(await self._access((True, FUTURE, None, False)))
 
+    async def test_trial_disabled_kills_active_trial(self):
+        # trial_end in the future but trial_disabled=True → no access.
+        # Row layout: (is_vip, sub_end, trial_end, blocked, trial_disabled)
+        self.assertFalse(await self._access((False, None, FUTURE, False, True)))
+
+    async def test_trial_disabled_does_not_touch_vip(self):
+        # trial_disabled only kills the trial; an active VIP still has access.
+        self.assertTrue(await self._access((True, FUTURE, None, False, True)))
+
+    async def test_trial_enabled_5tuple_still_grants(self):
+        # trial_disabled=False 5-tuple keeps the trial working.
+        self.assertTrue(await self._access((False, None, FUTURE, False, False)))
+
     async def test_db_error_fails_open(self):
         # A transient DB outage must never lock paying users out.
         with patch("payments.db._get_session",

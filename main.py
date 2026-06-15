@@ -6409,11 +6409,16 @@ async def cmd_vipinfo(message: Message):
         return dt.strftime("%d.%m.%Y %H:%M") if dt else "—"
 
     blocked = info.get("blocked", False)
+    trial_disabled = info.get("trial_disabled", False)
+    trial_line = (
+        "🎁 Триал: отключён (trial_disabled)" if trial_disabled
+        else f"🎁 Триал: {'активен' if info.get('trial_active') else 'нет'} (до {_fmt(info.get('trial_end'))})"
+    )
     await message.answer(
         f"👤 *Доступ юзера* `{uid}`\n\n"
         f"{'🚫 *ЗАБЛОКИРОВАН*' if blocked else '✅ Не заблокирован'}\n"
         f"💎 VIP: {'да' if info.get('is_vip') else 'нет'} (до {_fmt(info.get('subscription_end'))})\n"
-        f"🎁 Триал: {'активен' if info.get('trial_active') else 'нет'} (до {_fmt(info.get('trial_end'))})\n",
+        f"{trial_line}\n",
         parse_mode="Markdown",
     )
 
@@ -6505,6 +6510,66 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="pump", description="🚀 Памп-сканер по запросу"),
     ]
     await bot.set_my_commands(commands)
+
+
+async def run_vip_notifier(bot: Bot) -> None:
+    """Background loop: DM users whose VIP was granted by hand in Neon.
+
+    The bot doesn't watch the database live, so when an admin flips ``is_vip``
+    to TRUE directly in the Neon table editor there's no event to react to. This
+    poller bridges that gap: every ``VIP_NOTIFY_INTERVAL`` seconds it asks the
+    DB who is VIP-but-not-yet-told, sends each a one-time "you're VIP now" DM,
+    and marks them notified. In-bot purchases pre-mark themselves notified
+    (see ``grant_vip``), so only manual grants trigger a message here.
+
+    No-op when ``DATABASE_URL`` is unset. Never raises — a bad poll is logged
+    and the loop keeps going.
+    """
+    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+    from payments.db import (
+        _is_enabled,
+        pending_vip_notifications,
+        mark_vip_notified,
+        reset_stale_vip_notifications,
+    )
+
+    if not _is_enabled():
+        logger.info("🔔 VIP notifier off (DATABASE_URL not set)")
+        return
+
+    try:
+        interval = max(10, int(os.getenv("VIP_NOTIFY_INTERVAL", "30")))
+    except (TypeError, ValueError):
+        interval = 30
+    logger.info("🔔 VIP notifier on (every %ss)", interval)
+
+    while True:
+        try:
+            await reset_stale_vip_notifications()
+            for item in await pending_vip_notifications():
+                uid = item["user_id"]
+                sub_end = item.get("subscription_end")
+                end_str = sub_end.strftime("%d.%m.%Y") if sub_end else "∞ (бессрочно)"
+                try:
+                    await bot.send_message(
+                        uid,
+                        "🎉 *Поздравляем — у тебя теперь VIP!*\n\n"
+                        f"💎 Доступ активен до: {end_str}\n"
+                        "Открыты все функции бота. Спасибо, что с нами!",
+                        parse_mode="Markdown",
+                    )
+                    await mark_vip_notified(uid)
+                    logger.info("VIP notify sent: user=%s", uid)
+                except (TelegramForbiddenError, TelegramBadRequest) as e:
+                    # User blocked the bot / never started a chat — undeliverable.
+                    # Mark notified so we don't retry this forever.
+                    logger.info("VIP notify undeliverable user=%s: %s", uid, e)
+                    await mark_vip_notified(uid)
+                except Exception as e:  # noqa: BLE001 — transient: retry next cycle
+                    logger.warning("VIP notify failed user=%s: %s — will retry", uid, e)
+        except Exception as e:  # noqa: BLE001 — keep the loop alive no matter what
+            logger.warning("VIP notifier cycle failed: %s", e)
+        await asyncio.sleep(interval)
 
 
 async def main():
@@ -6613,6 +6678,7 @@ async def main():
             dp.start_polling(bot),
             scheduler.start(),
             signal_trader_task,   # ← теперь в gather — падение будет видно
+            run_vip_notifier(bot),  # DM при ручной выдаче VIP в Neon
             run_healthz_server(),  # /healthz на $PORT для Railway restart policy
         )
     else:
@@ -6620,6 +6686,7 @@ async def main():
         await asyncio.gather(
             dp.start_polling(bot),
             scheduler.start(),
+            run_vip_notifier(bot),  # DM при ручной выдаче VIP в Neon
             run_healthz_server(),  # /healthz на $PORT для Railway restart policy
         )
 
