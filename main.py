@@ -6304,6 +6304,120 @@ async def cmd_admin(message: Message):
     await handle_stats_command(message)
 
 
+# ─── Управление доступом (только админ) ─────────────────────────────────────────
+
+def _parse_target_user_id(message: Message) -> Optional[int]:
+    """Вытащить user_id из аргумента команды: `/ban 12345` → 12345."""
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1].strip())
+    except (TypeError, ValueError):
+        return None
+
+
+@dp.message(Command("revoke"))
+async def cmd_revoke(message: Message):
+    """Снять VIP И обнулить триал у юзера. Использование: /revoke <user_id>.
+
+    Чинит баг «поставил is_vip=false руками, а бот всё равно пускает» — триал
+    тикал параллельно. Здесь гасим и VIP, и триал разом. Юзер может потом снова
+    оплатить/получить триал — для перманентного бана используй /ban.
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Команда только для админов.")
+        return
+    uid = _parse_target_user_id(message)
+    if uid is None:
+        await message.answer("Использование: `/revoke <user_id>`", parse_mode="Markdown")
+        return
+    from payments.db import revoke_vip
+    ok = await revoke_vip(uid)
+    await message.answer(
+        f"✅ VIP и триал сняты у `{uid}`." if ok
+        else f"⚠️ Юзер `{uid}` не найден в базе (или БД выключена).",
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(Command("ban"))
+async def cmd_ban(message: Message):
+    """Перманентно заблокировать юзера. Использование: /ban <user_id>.
+
+    Ставит blocked=TRUE — перебивает и VIP, и активный триал. Это надёжный
+    рубильник: больше не нужно угадывать, какую колонку править в SQL.
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Команда только для админов.")
+        return
+    uid = _parse_target_user_id(message)
+    if uid is None:
+        await message.answer("Использование: `/ban <user_id>`", parse_mode="Markdown")
+        return
+    if is_admin(uid):
+        await message.answer("🛡 Нельзя забанить админа.")
+        return
+    from payments.db import block_user
+    ok = await block_user(uid)
+    await message.answer(
+        f"🚫 Юзер `{uid}` заблокирован (VIP и триал перебиты)." if ok
+        else f"⚠️ Не удалось заблокировать `{uid}` (БД выключена?).",
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(Command("unban"))
+async def cmd_unban(message: Message):
+    """Снять блокировку. Использование: /unban <user_id>.
+
+    VIP/триал НЕ восстанавливаются — юзер возвращается как обычный не-VIP.
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Команда только для админов.")
+        return
+    uid = _parse_target_user_id(message)
+    if uid is None:
+        await message.answer("Использование: `/unban <user_id>`", parse_mode="Markdown")
+        return
+    from payments.db import unblock_user
+    ok = await unblock_user(uid)
+    await message.answer(
+        f"✅ Блокировка снята с `{uid}` (VIP/триал не восстановлены)." if ok
+        else f"⚠️ Юзер `{uid}` не найден в базе (или БД выключена).",
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(Command("vipinfo"))
+async def cmd_vipinfo(message: Message):
+    """Показать статус доступа любого юзера. Использование: /vipinfo <user_id>."""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Команда только для админов.")
+        return
+    uid = _parse_target_user_id(message)
+    if uid is None:
+        await message.answer("Использование: `/vipinfo <user_id>`", parse_mode="Markdown")
+        return
+    from payments.db import get_vip_info
+    info = await get_vip_info(uid)
+    if not info.get("pg_enabled"):
+        await message.answer("⚙️ База подписок выключена (DATABASE_URL не задан).")
+        return
+
+    def _fmt(dt):
+        return dt.strftime("%d.%m.%Y %H:%M") if dt else "—"
+
+    blocked = info.get("blocked", False)
+    await message.answer(
+        f"👤 *Доступ юзера* `{uid}`\n\n"
+        f"{'🚫 *ЗАБЛОКИРОВАН*' if blocked else '✅ Не заблокирован'}\n"
+        f"💎 VIP: {'да' if info.get('is_vip') else 'нет'} (до {_fmt(info.get('subscription_end'))})\n"
+        f"🎁 Триал: {'активен' if info.get('trial_active') else 'нет'} (до {_fmt(info.get('trial_end'))})\n",
+        parse_mode="Markdown",
+    )
+
+
 # ─── Фидбек ───────────────────────────────────────────────────────────────────
 
 @dp.message(Command("health"))
