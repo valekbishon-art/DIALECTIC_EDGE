@@ -578,7 +578,8 @@ class Scheduler:
         if os.getenv("FEATURE_CARRY_BRIEFING", "1").strip().lower() in {"1", "true", "yes", "on"}:
             tasks.append(self._carry_briefing_loop())
             logger.info(
-                "💱 Carry briefing loop включён (interval=%ss, единственный +edge: carry)",
+                "💱 Carry monitor+briefing включён (monitor=%ss, briefing=%ss)",
+                os.getenv("CARRY_MONITOR_INTERVAL_SEC", str(30 * 60)),
                 os.getenv("CARRY_BRIEFING_INTERVAL_SEC", str(6 * 3600)),
             )
 
@@ -623,62 +624,116 @@ class Scheduler:
         return sent_ok
 
     async def _carry_briefing_loop(self):
-        """Ежедневный carry-брифинг: режим рынка + пошаговая carry-сделка + листинги.
+        """Мониторинг открытых carry/арб позиций + периодический полный брифинг.
 
-        Шлёт подписчикам (resolver как у alert_engine) понятное HTML-сообщение с
-        ИНСТРУКЦИЯМИ по шагам (купи спот, шорт перп 1x, выход по сигналу) + сигналы
-        ЗАКРЫВАЙ когда фандинг по активу упал. Размер — от CARRY_BRIEFING_CAPITAL
-        (пример-база, юзер масштабирует). Non-fatal: ошибки логируются, луп живёт.
+        ЗАКРЫТИЯ/ПЕРЕВОРОТЫ детектятся БЫСТРЫМ тиком (CARRY_MONITOR_INTERVAL_SEC,
+        дефолт 30 мин) — диф против ПРЕДЫДУЩЕГО тика, а не раз в 6ч. Иначе фандинг
+        схлопывается, а юзер узнаёт об этом через часы и пачкой (баг latency-аудита).
+        Полный брифинг (режим рынка + пошаговая carry-сделка + листинги) тяжёлый и
+        шлётся РЕЖЕ — раз в CARRY_BRIEFING_INTERVAL_SEC (дефолт 6ч).
+
+        Состояние открытых позиций ПЕРСИСТИТСЯ на диск (DATA_DIR/том Railway):
+        рестарт не теряет позиции и не делает первый тик слепым.
+        Non-fatal: ошибки логируются, луп живёт. Состояние обновляем только при
+        надёжных данных (health-guard) — пустой фетч не даёт ложный масс-выход.
         """
-        interval = int(os.getenv("CARRY_BRIEFING_INTERVAL_SEC", str(6 * 3600)))
+        from core.carry_briefing import (arb_close_alerts, build_briefing,
+                                          close_alerts, load_monitor_state,
+                                          save_monitor_state, scan_carry_open)
+        from core.carry_signal import fetch_funding
+
+        monitor_interval = max(60, int(os.getenv("CARRY_MONITOR_INTERVAL_SEC", str(30 * 60))))
+        briefing_interval = max(monitor_interval,
+                                int(os.getenv("CARRY_BRIEFING_INTERVAL_SEC", str(6 * 3600))))
         capital = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
+        ticks_per_briefing = max(1, round(briefing_interval / monitor_interval))
+
+        # Файл состояния — в DATA_DIR (том Railway переживает рестарт), иначе рядом с БД.
+        try:
+            from pathlib import Path
+            from config import DB_PATH
+            state_path = str(Path(DB_PATH).resolve().parent / "carry_monitor_state.json")
+        except Exception:  # noqa: BLE001
+            state_path = "carry_monitor_state.json"
+
+        # Восстанавливаем прошлое состояние (закрытия за время даунтайма не теряются).
+        self._carry_open, self._arb_open = load_monitor_state(state_path)
+        logger.info(
+            "💱 Carry monitor: tick=%ss, briefing каждые %s тиков (~%ss); "
+            "восстановлено carry=%d arb=%d из %s",
+            monitor_interval, ticks_per_briefing, briefing_interval,
+            len(self._carry_open), len(self._arb_open), state_path,
+        )
+
         await asyncio.sleep(900)  # warm-up 15 мин, не толкаемся на старте
+        tick = 0
         while self._running:
             try:
-                from core.carry_briefing import build_briefing, close_alerts, arb_close_alerts
-                # Сканируем кросс-арб ОДИН раз и отдаём тот же результат и в строку
-                # брифинга, и в стейт/алерты — иначе два скана дают разные биржи в
-                # одной позиции (баг TRX: briefing HL/Binance, сигнал HL/Gate).
-                arb, healthy = [], True
+                # Один скан на тик — общий и для детекта закрытий, и (если пора)
+                # для брифинга. Кросс-арб сканируем ОДИН раз: иначе briefing и
+                # сигнал берут разные биржи в одной позиции (баг TRX).
+                arb, arb_healthy = [], True
                 try:
                     from core.cross_exchange import scan_with_health
-                    arb, healthy = await asyncio.to_thread(scan_with_health)
+                    arb, arb_healthy = await asyncio.to_thread(scan_with_health)
                 except Exception:  # noqa: BLE001
                     logger.debug("arb scan skipped", exc_info=True)
-                text, cur_open = await asyncio.to_thread(
-                    build_briefing, capital, arb_opps=arb)
-                prev_open = getattr(self, "_carry_open", {})
-                closes = close_alerts(prev_open, cur_open)
-                self._carry_open = cur_open
-                # Кросс-арб: храним спред+направление+фандинг ног (чтобы ловить и
-                # переворот ног, И смену знака фандинга на ноге — баг DOT).
+                    arb_healthy = False
+                fund = await asyncio.to_thread(fetch_funding)
+                cur_open, _pos, carry_healthy = scan_carry_open(data=fund)
+                # Кросс-арб: храним спред+направление+фандинг ног (ловим и переворот
+                # ног, И смену знака фандинга на ноге — баг DOT).
                 cur_arb = {o.asset: (o.spread, o.short_venue, o.long_venue,
                                      o.short_ann, o.long_ann) for o in arb}
-                prev_arb = getattr(self, "_arb_open", {})
-                closes = closes + arb_close_alerts(prev_arb, cur_arb, cur_healthy=healthy)
-                # состояние обновляем ТОЛЬКО при надёжных данных — иначе пустой
-                # фетч затёр бы открытые позиции и дал ложный масс-выход.
-                if healthy:
+
+                # Детект против прошлого тика, с health-guard на обеих стратегиях.
+                closes = close_alerts(self._carry_open, cur_open, cur_healthy=carry_healthy)
+                closes = closes + arb_close_alerts(self._arb_open, cur_arb,
+                                                   cur_healthy=arb_healthy)
+
+                # Состояние обновляем и персистим ТОЛЬКО при надёжных данных —
+                # иначе пустой фетч затёр бы открытые позиции и дал ложный масс-выход.
+                changed = False
+                if carry_healthy:
+                    self._carry_open = cur_open
+                    changed = True
+                if arb_healthy:
                     self._arb_open = cur_arb
-                try:
-                    chat_ids = (_alert_engine_chat_ids(ADMIN_IDS)
-                                if ALERT_ENGINE_LOADED else list(ADMIN_IDS))
-                except Exception:  # noqa: BLE001
-                    chat_ids = list(ADMIN_IDS)
-                for chat_id in chat_ids:
+                    changed = True
+                if changed:
+                    save_monitor_state(state_path, self._carry_open, self._arb_open)
+
+                # Полный брифинг — раз в ticks_per_briefing тиков (и на старте, tick=0).
+                text = None
+                if tick % ticks_per_briefing == 0:
                     try:
-                        # СНАЧАЛА сигналы закрытия/переворота, ПОТОМ брифинг (где
-                        # может быть новое открытие) — чтобы старую позицию закрыли до новой.
-                        for cm in closes:
-                            await self.bot.send_message(chat_id, cm, parse_mode="HTML")
-                        await self.bot.send_message(
-                            chat_id, text, parse_mode="HTML",
-                            disable_web_page_preview=True)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("carry briefing send failed chat=%s: %s", chat_id, exc)
+                        text, _ = await asyncio.to_thread(
+                            build_briefing, capital, arb_opps=arb, funding=fund)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("carry briefing build error: %s", e)
+
+                if closes or text:
+                    try:
+                        chat_ids = (_alert_engine_chat_ids(ADMIN_IDS)
+                                    if ALERT_ENGINE_LOADED else list(ADMIN_IDS))
+                    except Exception:  # noqa: BLE001
+                        chat_ids = list(ADMIN_IDS)
+                    for chat_id in chat_ids:
+                        try:
+                            # СНАЧАЛА закрытия/переворот, ПОТОМ брифинг (новое открытие) —
+                            # чтобы старую позицию закрыли до новой.
+                            for cm in closes:
+                                await self.bot.send_message(chat_id, cm, parse_mode="HTML")
+                            if text:
+                                await self.bot.send_message(
+                                    chat_id, text, parse_mode="HTML",
+                                    disable_web_page_preview=True)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("carry monitor send failed chat=%s: %s", chat_id, exc)
             except Exception as e:  # noqa: BLE001
-                logger.error("carry briefing loop error: %s", e)
-            await asyncio.sleep(interval)
+                logger.error("carry monitor loop error: %s", e)
+            tick += 1
+            await asyncio.sleep(monitor_interval)
 
     async def _daily_digest_loop(self):
         """Каждую минуту проверяет — не пора ли слать дайджест подписчикам."""

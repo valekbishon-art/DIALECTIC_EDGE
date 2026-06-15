@@ -9,7 +9,9 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from core.carry_signal import (STRONG, THIN, fetch_basis, fetch_funding,
@@ -17,6 +19,26 @@ from core.carry_signal import (STRONG, THIN, fetch_basis, fetch_funding,
 from core.regime_radar import format_regime_md, regime_now
 
 logger = logging.getLogger(__name__)
+
+
+def scan_carry_open(*, data: dict | None = None) -> tuple[dict, list, bool]:
+    """Текущее состояние открытых carry-позиций.
+
+    Возвращает ``(open_state, pos, healthy)``:
+      • ``open_state`` — ``{asset: ann%}`` по активам с положительным фандингом ≥ THIN;
+      • ``pos`` — список ``CarryOpportunity`` (для рендера шагов в брифинге);
+      • ``healthy`` — ``False``, если ``fetch_funding()`` вернул ``{}`` (геоблок 451 /
+        таймаут). В этом случае ``open_state`` пуст НЕ потому что carry исчез, а потому
+        что фетч упал.
+
+    Вызывающий ОБЯЗАН передать ``healthy`` в :func:`close_alerts` как ``cur_healthy``,
+    иначе пустой фетч даст ложный масс-выход «ЗАКРЫВАЙ» по всем открытым активам.
+    """
+    fund = data if data is not None else fetch_funding()
+    healthy = bool(fund)
+    pos = [o for o in scan_carry(threshold=THIN, data=fund) if o.positive] if healthy else []
+    open_state = {o.asset: round(o.annual_pct, 1) for o in pos}
+    return open_state, pos, healthy
 
 
 def funding_trade_steps(asset: str, ann: float, capital: float, regime_size: float) -> str:
@@ -84,12 +106,15 @@ def listing_block(listings: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_briefing(capital: float, *, arb_opps: list | None = None) -> tuple[str, dict]:
+def build_briefing(capital: float, *, arb_opps: list | None = None,
+                   funding: dict | None = None) -> tuple[str, dict]:
     """(текст брифинга HTML, состояние открытых carry {asset: ann%}).
 
     arb_opps: если передан — используем ГОТОВЫЙ скан арба (чтобы строка в брифинге
     и стейт/алерты шли от ОДНОГО скана — иначе баг TRX: два скана дают разные
-    биржи в одной позиции). None → сканируем сами (CLI / ручной вызов)."""
+    биржи в одной позиции). None → сканируем сами (CLI / ручной вызов).
+    funding: готовый fetch_funding() (чтобы брифинг и детект закрытий шли от ОДНОГО
+    скана фандинга и не дёргать сеть дважды). None → фетчим сами."""
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
     parts = [f"🤖 <b>ДНЕВНОЙ БРИФИНГ</b> · {now}\n"]
 
@@ -97,9 +122,7 @@ def build_briefing(capital: float, *, arb_opps: list | None = None) -> tuple[str
     parts.append(format_regime_md(reg))
     size = reg.get("carry_size", 0.7) if reg else 0.7
 
-    fund = fetch_funding()
-    pos = [o for o in scan_carry(threshold=THIN, data=fund) if o.positive]
-    open_state: dict = {}
+    open_state, pos, _healthy = scan_carry_open(data=funding)
     parts.append("\n" + "─" * 20)
     if pos:
         best = pos[0]
@@ -111,7 +134,6 @@ def build_briefing(capital: float, *, arb_opps: list | None = None) -> tuple[str
                 f"<b>{best.asset} +{best.annual_pct:.0f}% годовых</b> — скромно.\n"
                 f"Можешь поставить МАЛЕНЬКИЙ carry на {best.asset} (шаги те же, сумма меньше) "
                 f"или подождать. По-крупному — когда увижу ≥{STRONG:.0f}% и пришлю 💎.")
-        open_state = {o.asset: round(o.annual_pct, 1) for o in pos}
         try:
             log_opportunities(pos)
         except Exception:  # noqa: BLE001
@@ -168,8 +190,14 @@ def build_briefing(capital: float, *, arb_opps: list | None = None) -> tuple[str
     return "\n".join(parts), open_state
 
 
-def close_alerts(prev_open: dict, cur_open: dict) -> list[str]:
-    """Сигналы ЗАКРЫВАЙ: актив был в carry, фандинг упал ниже THIN."""
+def close_alerts(prev_open: dict, cur_open: dict, *, cur_healthy: bool = True) -> list[str]:
+    """Сигналы ЗАКРЫВАЙ: актив был в carry, фандинг упал ниже THIN.
+
+    cur_healthy=False (fetch_funding вернул {} — геоблок 451 / таймаут) → НЕ
+    закрываем ничего: пустой фетч не значит, что фандинг исчез по всем активам
+    разом (иначе ложный масс-выход — тот же guard, что у arb_close_alerts)."""
+    if not cur_healthy:
+        return []
     msgs = []
     for asset in prev_open:
         if asset not in cur_open:
@@ -270,5 +298,35 @@ def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
     return msgs
 
 
+def load_monitor_state(path: str) -> tuple[dict, dict]:
+    """Прочитать сохранённое состояние монитора: ``(carry_open, arb_open)``.
+
+    ``({}, {})`` если файла нет/битый. ВАЖНО: arb-значения после JSON-сериализации
+    становятся списками (а не кортежами) — :func:`_arb_unpack` это понимает, поэтому
+    к кортежам НЕ приводим. Персист нужен, чтобы рестарт бота не терял открытые
+    позиции (иначе первый тик после рестарта слеп — нечего диффить)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return dict(d.get("carry") or {}), dict(d.get("arb") or {})
+    except FileNotFoundError:
+        return {}, {}
+    except Exception:  # noqa: BLE001
+        logger.warning("carry monitor: битый файл состояния %s — старт с нуля", path)
+        return {}, {}
+
+
+def save_monitor_state(path: str, carry_open: dict, arb_open: dict) -> None:
+    """Атомарно сохранить состояние монитора (tmp + os.replace — без полузаписи)."""
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"carry": carry_open, "arb": arb_open}, f)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001
+        logger.debug("carry monitor: сохранение состояния не удалось", exc_info=True)
+
+
 __all__ = ["build_briefing", "close_alerts", "arb_close_alerts",
-           "funding_trade_steps", "listing_block"]
+           "funding_trade_steps", "listing_block", "scan_carry_open",
+           "load_monitor_state", "save_monitor_state"]
