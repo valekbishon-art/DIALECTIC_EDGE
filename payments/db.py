@@ -127,18 +127,34 @@ CREATE TABLE IF NOT EXISTS vip_users (
     trial_started_at    TIMESTAMPTZ,
     trial_end           TIMESTAMPTZ,
     blocked             BOOLEAN DEFAULT FALSE,
+    trial_disabled      BOOLEAN DEFAULT FALSE,
+    vip_notified        BOOLEAN DEFAULT FALSE,
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 """
 
 # Backward-compat: add columns to a pre-existing vip_users table.
-# `blocked` is a hard kill-switch that overrides BOTH paid VIP and the free
-# trial — the single answer to "I set is_vip=false by hand but the bot still
-# lets the user in" (the trial was still ticking). See has_access/ensure_access.
+#
+# Admin-facing boolean toggles (flip them right in the Neon table editor):
+#   blocked         — hard kill-switch; overrides BOTH paid VIP and the trial.
+#                     The answer to "I set is_vip=false by hand but the bot
+#                     still let the user in" (the trial was still ticking).
+#   trial_disabled  — kill THIS user's free trial without touching the
+#                     trial_end timestamp. VIP can still be granted on top.
+#   is_vip          — flip to TRUE to grant lifetime VIP by hand (leave
+#                     subscription_end NULL = never expires). The bot then DMs
+#                     the user "you're VIP now" (see run_vip_notifier in main).
+#
+# Internal (don't touch by hand):
+#   vip_notified    — set once we've DM'd the user about their VIP grant, so the
+#                     notifier doesn't spam them every poll. Reset to FALSE
+#                     automatically when is_vip goes back to FALSE.
 _MIGRATE_TRIAL_COLUMNS = (
     "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ;",
     "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ;",
     "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS blocked BOOLEAN DEFAULT FALSE;",
+    "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS trial_disabled BOOLEAN DEFAULT FALSE;",
+    "ALTER TABLE vip_users ADD COLUMN IF NOT EXISTS vip_notified BOOLEAN DEFAULT FALSE;",
 )
 
 
@@ -227,10 +243,10 @@ async def grant_vip(user_id: int, days: int = 30) -> Optional[datetime]:
 
             await session.execute(
                 text("""
-                    INSERT INTO vip_users (user_id, is_vip, subscription_end)
-                    VALUES (:uid, TRUE, :end)
+                    INSERT INTO vip_users (user_id, is_vip, subscription_end, vip_notified)
+                    VALUES (:uid, TRUE, :end, TRUE)
                     ON CONFLICT (user_id) DO UPDATE
-                        SET is_vip = TRUE, subscription_end = :end
+                        SET is_vip = TRUE, subscription_end = :end, vip_notified = TRUE
                 """),
                 {"uid": user_id, "end": new_end},
             )
@@ -405,7 +421,7 @@ async def has_access(user_id: int) -> bool:
         async with await _get_session() as session:
             row = await session.execute(
                 text("""
-                    SELECT is_vip, subscription_end, trial_end, blocked
+                    SELECT is_vip, subscription_end, trial_end, blocked, trial_disabled
                     FROM vip_users WHERE user_id = :uid
                 """),
                 {"uid": user_id},
@@ -414,12 +430,13 @@ async def has_access(user_id: int) -> bool:
         if not result:
             return False
         is_vip_flag, sub_end, trial_end = result[0], result[1], result[2]
-        # `blocked` column may be absent in legacy rows / mocked tests → default False.
+        # Newer columns may be absent in legacy rows / mocked tests → default False.
         blocked = bool(result[3]) if len(result) > 3 else False
+        trial_disabled = bool(result[4]) if len(result) > 4 else False
         if blocked:
             return False  # hard kill-switch: overrides VIP *and* trial
         vip_active = bool(is_vip_flag) and (sub_end is None or sub_end > now)
-        trial_active = trial_end is not None and trial_end > now
+        trial_active = (not trial_disabled) and trial_end is not None and trial_end > now
         return vip_active or trial_active
     except Exception as e:
         logger.warning("has_access(%s) failed: %s — fail-open", user_id, e)
@@ -475,7 +492,7 @@ async def ensure_access(user_id: int, username: str = "") -> dict:
 
             row = await session.execute(
                 text("""
-                    SELECT is_vip, subscription_end, trial_end, blocked
+                    SELECT is_vip, subscription_end, trial_end, blocked, trial_disabled
                     FROM vip_users WHERE user_id = :uid
                 """),
                 {"uid": user_id},
@@ -490,6 +507,7 @@ async def ensure_access(user_id: int, username: str = "") -> dict:
 
         is_vip_flag, sub_end, t_end = result[0], result[1], result[2]
         blocked = bool(result[3]) if len(result) > 3 else False
+        trial_disabled = bool(result[4]) if len(result) > 4 else False
         if blocked:
             # Hard ban — overrides VIP and trial. No access, distinct reason so
             # the paywall/log can tell a ban apart from a lapsed subscription.
@@ -497,7 +515,7 @@ async def ensure_access(user_id: int, username: str = "") -> dict:
                     "trial_active": False, "subscription_end": sub_end,
                     "trial_end": t_end, "trial_started": False, "pg_enabled": True}
         vip_active = bool(is_vip_flag) and (sub_end is None or sub_end > now)
-        trial_active = t_end is not None and t_end > now
+        trial_active = (not trial_disabled) and t_end is not None and t_end > now
         access = vip_active or trial_active
         reason = "vip" if vip_active else "trial" if trial_active else "expired"
         return {"access": access, "reason": reason, "is_vip": vip_active,
@@ -529,7 +547,7 @@ async def get_vip_info(user_id: int) -> dict:
 
         async with await _get_session() as session:
             row = await session.execute(
-                text("SELECT is_vip, subscription_end, trial_end, blocked "
+                text("SELECT is_vip, subscription_end, trial_end, blocked, trial_disabled "
                      "FROM vip_users WHERE user_id = :uid"),
                 {"uid": user_id},
             )
@@ -537,21 +555,116 @@ async def get_vip_info(user_id: int) -> dict:
             if not result:
                 return {"is_vip": False, "subscription_end": None,
                         "trial_active": False, "trial_end": None,
-                        "blocked": False, "pg_enabled": True}
+                        "blocked": False, "trial_disabled": False, "pg_enabled": True}
             now = datetime.now(timezone.utc)
             t_end = result[2]
             blocked = bool(result[3]) if len(result) > 3 else False
+            trial_disabled = bool(result[4]) if len(result) > 4 else False
             return {
                 "is_vip": result[0] and (result[1] is None or result[1] > now),
                 "subscription_end": result[1],
-                "trial_active": t_end is not None and t_end > now,
+                "trial_active": (not trial_disabled) and t_end is not None and t_end > now,
                 "trial_end": t_end,
                 "blocked": blocked,
+                "trial_disabled": trial_disabled,
                 "pg_enabled": True,
             }
     except Exception as e:
         logger.warning("get_vip_info(%s) failed: %s", user_id, e)
         return {"is_vip": True, "subscription_end": None, "pg_enabled": True}
+
+
+# ─── Manual-VIP notifier support ─────────────────────────────────────────────
+#
+# Lets the bot react to VIP grants made by hand in the Neon table editor. The
+# bot never watches the DB live, so a background loop (run_vip_notifier in
+# main.py) polls these helpers every few seconds:
+#   1. reset_stale_vip_notifications() — clear the flag for anyone who lost VIP,
+#      so a future re-grant notifies again.
+#   2. pending_vip_notifications()     — users who are VIP now but haven't been
+#      told yet (is_vip flipped on directly in Neon).
+#   3. mark_vip_notified(uid)          — after the DM is delivered.
+# grant_vip() (the in-bot payment path) pre-sets vip_notified=TRUE, so only
+# *manual* edits ever trigger a DM here — no double messages.
+
+async def pending_vip_notifications(limit: int = 50) -> list[dict]:
+    """Return users with active VIP that haven't been notified yet.
+
+    Each item: ``{"user_id": int, "subscription_end": datetime | None}``.
+    Empty list when Postgres is off or on any error (never raises).
+    """
+    if not _is_enabled():
+        return []
+    try:
+        from sqlalchemy import text
+
+        now = datetime.now(timezone.utc)
+        async with await _get_session() as session:
+            rows = await session.execute(
+                text("""
+                    SELECT user_id, subscription_end FROM vip_users
+                    WHERE is_vip = TRUE
+                      AND COALESCE(blocked, FALSE) = FALSE
+                      AND COALESCE(vip_notified, FALSE) = FALSE
+                      AND (subscription_end IS NULL OR subscription_end > :now)
+                    ORDER BY user_id
+                    LIMIT :lim
+                """),
+                {"now": now, "lim": limit},
+            )
+            return [{"user_id": r[0], "subscription_end": r[1]} for r in rows.all()]
+    except Exception as e:
+        logger.warning("pending_vip_notifications failed: %s", e)
+        return []
+
+
+async def mark_vip_notified(user_id: int) -> None:
+    """Flag a user as already told about their VIP grant (idempotent)."""
+    if not _is_enabled():
+        return
+    try:
+        from sqlalchemy import text
+
+        async with await _get_session() as session:
+            await session.execute(
+                text("UPDATE vip_users SET vip_notified = TRUE WHERE user_id = :uid"),
+                {"uid": user_id},
+            )
+            await session.commit()
+    except Exception as e:
+        logger.warning("mark_vip_notified(%s) failed: %s", user_id, e)
+
+
+async def reset_stale_vip_notifications() -> int:
+    """Clear vip_notified for users who are no longer active VIP.
+
+    Ensures that if VIP is turned off and later on again (by hand or by a new
+    payment), the user gets a fresh "you're VIP" DM. Returns rows affected.
+    """
+    if not _is_enabled():
+        return 0
+    try:
+        from sqlalchemy import text
+
+        now = datetime.now(timezone.utc)
+        async with await _get_session() as session:
+            res = await session.execute(
+                text("""
+                    UPDATE vip_users SET vip_notified = FALSE
+                    WHERE COALESCE(vip_notified, FALSE) = TRUE
+                      AND (
+                            COALESCE(is_vip, FALSE) = FALSE
+                            OR (subscription_end IS NOT NULL AND subscription_end <= :now)
+                            OR COALESCE(blocked, FALSE) = TRUE
+                          )
+                """),
+                {"now": now},
+            )
+            await session.commit()
+            return res.rowcount or 0
+    except Exception as e:
+        logger.warning("reset_stale_vip_notifications failed: %s", e)
+        return 0
 
 
 # ─── Daily digest cache ─────────────────────────────────────────────────────
