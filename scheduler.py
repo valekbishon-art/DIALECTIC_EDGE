@@ -638,8 +638,9 @@ class Scheduler:
         надёжных данных (health-guard) — пустой фетч не даёт ложный масс-выход.
         """
         from core.carry_briefing import (arb_close_alerts, build_briefing,
-                                          close_alerts, load_monitor_state,
-                                          save_monitor_state, scan_carry_open)
+                                          cap_state, close_alerts, load_monitor_state,
+                                          save_monitor_state, scan_carry_open,
+                                          select_tracked_arb, select_tracked_carry)
         from core.carry_signal import fetch_funding
 
         monitor_interval = max(60, int(os.getenv("CARRY_MONITOR_INTERVAL_SEC", str(30 * 60))))
@@ -647,6 +648,10 @@ class Scheduler:
                                 int(os.getenv("CARRY_BRIEFING_INTERVAL_SEC", str(6 * 3600))))
         capital = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
         ticks_per_briefing = max(1, round(briefing_interval / monitor_interval))
+        # Сколько позиций РЕАЛЬНО трекать (= сколько рекомендуем). Анти-спам:
+        # раньше трекалось всё из скана (15-20) → пачка «ЗАКРЫВАЙ/ПЕРЕВОРОТ».
+        carry_max = max(1, int(os.getenv("CARRY_MAX_TRACK", "3")))
+        arb_max = max(1, int(os.getenv("ARB_MAX_TRACK", "3")))
 
         # Файл состояния — в DATA_DIR (том Railway переживает рестарт), иначе рядом с БД.
         try:
@@ -657,7 +662,10 @@ class Scheduler:
             state_path = "carry_monitor_state.json"
 
         # Восстанавливаем прошлое состояние (закрытия за время даунтайма не теряются).
-        self._carry_open, self._arb_open = load_monitor_state(state_path)
+        # Капаем старое раздутое состояние до лимита — иначе первый тик дал бы бурст.
+        _c, _a = load_monitor_state(state_path)
+        self._carry_open = cap_state(_c, carry_max)
+        self._arb_open = cap_state(_a, arb_max, by_spread=True)
         logger.info(
             "💱 Carry monitor: tick=%ss, briefing каждые %s тиков (~%ss); "
             "восстановлено carry=%d arb=%d из %s",
@@ -680,25 +688,32 @@ class Scheduler:
                     logger.debug("arb scan skipped", exc_info=True)
                     arb_healthy = False
                 fund = await asyncio.to_thread(fetch_funding)
-                cur_open, _pos, carry_healthy = scan_carry_open(data=fund)
+                cur_open_full, _pos, carry_healthy = scan_carry_open(data=fund)
                 # Кросс-арб: храним спред+направление+фандинг ног (ловим и переворот
                 # ног, И смену знака фандинга на ноге — баг DOT).
-                cur_arb = {o.asset: (o.spread, o.short_venue, o.long_venue,
-                                     o.short_ann, o.long_ann) for o in arb}
+                cur_arb_full = {o.asset: (o.spread, o.short_venue, o.long_venue,
+                                          o.short_ann, o.long_ann) for o in arb}
+
+                # АНТИ-СПАМ: трекаем только то, что реально рекомендуем (вход на
+                # STRONG, держим пока ≥ THIN, кап top-N) — не весь скан из 15-20.
+                tracked_carry = select_tracked_carry(self._carry_open, cur_open_full,
+                                                     max_track=carry_max)
+                tracked_arb = select_tracked_arb(self._arb_open, cur_arb_full,
+                                                 max_track=arb_max)
 
                 # Детект против прошлого тика, с health-guard на обеих стратегиях.
-                closes = close_alerts(self._carry_open, cur_open, cur_healthy=carry_healthy)
-                closes = closes + arb_close_alerts(self._arb_open, cur_arb,
+                closes = close_alerts(self._carry_open, tracked_carry, cur_healthy=carry_healthy)
+                closes = closes + arb_close_alerts(self._arb_open, tracked_arb,
                                                    cur_healthy=arb_healthy)
 
                 # Состояние обновляем и персистим ТОЛЬКО при надёжных данных —
                 # иначе пустой фетч затёр бы открытые позиции и дал ложный масс-выход.
                 changed = False
                 if carry_healthy:
-                    self._carry_open = cur_open
+                    self._carry_open = tracked_carry
                     changed = True
                 if arb_healthy:
-                    self._arb_open = cur_arb
+                    self._arb_open = tracked_arb
                     changed = True
                 if changed:
                     save_monitor_state(state_path, self._carry_open, self._arb_open)

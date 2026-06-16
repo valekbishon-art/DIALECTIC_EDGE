@@ -134,6 +134,18 @@ EXCHANGE_TRADE_URL = {
 }
 
 
+def _link_venues() -> set:
+    """Биржи, для которых показываем кнопки/ссылки (env PUMP_LINK_VENUES).
+
+    По умолчанию MEXC,Gate — биржи юзера. Так из радар-алерта уходят ссылки на
+    Binance/Bybit, где юзер не торгует. Пустое значение = показывать все
+    задетекченные. Сам СКАН по биржам это не меняет (радар видит пампы везде),
+    только КУДА ведут кнопки.
+    """
+    raw = os.getenv("PUMP_LINK_VENUES", "MEXC,Gate")
+    return {v.strip().upper() for v in raw.split(",") if v.strip()}
+
+
 def trade_url(exchange: str, base: str) -> Optional[str]:
     fn = EXCHANGE_TRADE_URL.get(exchange)
     if fn is None:
@@ -364,12 +376,18 @@ class PumpSignal:
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def venue_buttons(self) -> list:
-        """[(подпись, url)] для inline-кнопок на биржи."""
+        """[(подпись, url)] для inline-кнопок «посмотреть» (НЕ «купить»).
+
+        Фильтруем по PUMP_LINK_VENUES (по умолч. MEXC/Gate) — биржи юзера.
+        """
+        allow = _link_venues()
         out: list = []
         for v in self.venues:
+            if allow and v.upper() not in allow:
+                continue
             url = trade_url(v, self.asset)
             if url:
-                out.append(("Биржа " + v.upper(), url))
+                out.append(("📊 " + v.upper(), url))
         return out
 
 
@@ -406,52 +424,67 @@ def _pair_links(sig: PumpSignal) -> str:
     ровно на тот контракт, который засёк сканер, а не на одноимённый токен.
     MEXC показываем первой, если она есть.
     """
+    allow = _link_venues()
     ordered = sorted(sig.venues, key=lambda v: (v.upper() != "MEXC", v.upper()))
     parts = []
     for v in ordered:
+        if allow and v.upper() not in allow:
+            continue
         url = trade_url(v, sig.asset)
         if url:
             parts.append(f"[{v.upper()} {sig.asset}/USDT]({url})")
     return " · ".join(parts)
 
 
+def _pump_heat(pct: float) -> str:
+    """Визуальная «температура» пампа — для вовлечённости (чисто декор)."""
+    if pct >= 50:
+        return "🔥🔥🔥"
+    if pct >= 25:
+        return "🔥🔥"
+    return "🔥"
+
+
 def format_pump_alert(sig: PumpSignal) -> str:
-    """Текст алерта (Markdown) в стиле скрина сканера. Tier-aware."""
+    """Текст ЧЕСТНОГО ПАМП-РАДАРА (Markdown). Tier-aware.
+
+    Радар = «что задвигалось на рынке», НЕ торговый сигнал. Памп ни в лонг, ни в
+    шорт не является эджем после костов (проверено бэктестом на 1400 монетах,
+    обе биржи, оба направления — scripts/pump_edge_search.py). Поэтому НИКАКИХ
+    «купи/шорти»-плейбуков: только факт движения + честная плашка. Живой вид
+    (📡 радар, 🔥-температура, объём, цена) — для вовлечённости, без обмана.
+    """
     venues = " · ".join(v.upper() for v in sig.venues) if sig.venues else "—"
+    heat = _pump_heat(sig.pump_pct)
     if sig.tier == "early":
-        header = f"🔥 *{sig.asset}* — разогрев (опережающий сигнал)"
-        second = f"Рост: *{sig.pump_pct:.2f}%* за {sig.window_min} мин (ещё формируется)"
+        header = f"📡 *ПАМП-РАДАР* {heat} · разогрев"
+        second = f"*{sig.asset}*  +{sig.pump_pct:.1f}% за {sig.window_min} мин _(ещё формируется)_"
     else:
-        header = f"🚀 *{sig.asset}*"
-        second = f"Pump: *{sig.pump_pct:.2f}%* за {sig.window_min} мин"
+        header = f"📡 *ПАМП-РАДАР* {heat}"
+        second = f"*{sig.asset}*  +{sig.pump_pct:.1f}% за {sig.window_min} мин"
     lines = [
         header,
         second,
         f"{_fmt_price(sig.price_from)} → {_fmt_price(sig.price_to)}",
-        f"📊 Объём: x{sig.vol_ratio:.1f} от среднего",
+        f"📊 Объём: ×{sig.vol_ratio:.1f} от среднего",
     ]
     if sig.tier == "early":
         lines.append(f"⚡ Скор разогрева: {sig.predictive_score:.0%} "
-                     f"(объём x{sig.vol_ramp:.1f}, ускорение {sig.accel:+.2f})")
+                     f"(объём ×{sig.vol_ramp:.1f}, ускорение {sig.accel:+.2f})")
     if sig.mcap:
         lines.append(f"💰 MCap: ${sig.mcap/1_000_000:.0f}M")
     lines.append(f"🏦 Биржи: {venues}")
     pair = _pair_links(sig)
     if pair:
-        lines.append(f"🔗 Пара: {pair}")
+        lines.append(f"🔗 Глянуть: {pair}")
     lines.append(
-        "🔍 Тикер: [проверить на CoinGecko]"
+        "🔍 [Проверить на CoinGecko]"
         "(https://www.coingecko.com/en/search?query=" + sig.asset + ")")
     lines.append("")
-    lines.append("⚠️ _Это не сигнал на покупку. Памп — высокий риск, DYOR._")
-    if getattr(sig, "fade", None) is not None:
-        try:
-            from core.pump_fade import format_fade_play
-            lines.append("")
-            lines.append("─────────")
-            lines.append(format_fade_play(sig.fade))
-        except Exception:  # noqa: BLE001
-            logger.debug("format_fade_play failed", exc_info=True)
+    lines.append("⚠️ *Это радар, а не сигнал.* Памп — уже случившееся движение:")
+    lines.append("• Покупать вдогон = −EV (берёшь хай).")
+    lines.append("• Шортить откат после костов — тоже не эдж (проверено бэктестом).")
+    lines.append("_Просто рынок задвигался. Решай сам, DYOR._")
     return "\n".join(lines)
 
 

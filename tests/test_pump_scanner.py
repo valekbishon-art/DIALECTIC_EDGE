@@ -203,9 +203,10 @@ class TestSignalAndUrls(unittest.TestCase):
             venues=["Bybit", "MEXC"], mcap=50_000_000)
         text = format_pump_alert(sig)
         self.assertIn("0PN", text)
-        self.assertIn("7.63%", text)
+        self.assertIn("7.6%", text)        # формат радара: +7.6% (1 знак)
         self.assertIn("30", text)
-        self.assertIn("x3.2", text)
+        self.assertIn("×3.2", text)        # объём ×N (было xN)
+        self.assertIn("РАДАР", text)       # честный радар, не «сигнал»
 
     def test_format_alert_early_tier(self):
         sig = PumpSignal(
@@ -229,22 +230,35 @@ class TestSignalAndUrls(unittest.TestCase):
         self.assertIn("mexc.com/exchange/PAI_USDT", text)
 
     def test_pair_links_mexc_first(self):
+        import os
         sig = PumpSignal(
             asset="ABC", pump_pct=6.0, vol_ratio=4.0, prior_pct=1.0,
             price_from=1.0, price_to=1.06, window_min=30,
             venues=["Bybit", "MEXC"])
-        links = _pair_links(sig)
+        old = os.environ.get("PUMP_LINK_VENUES")
+        os.environ["PUMP_LINK_VENUES"] = ""   # без фильтра — тестим порядок по всем биржам
+        try:
+            links = _pair_links(sig)
+        finally:
+            os.environ.pop("PUMP_LINK_VENUES", None) if old is None \
+                else os.environ.__setitem__("PUMP_LINK_VENUES", old)
         self.assertTrue(links.index("MEXC") < links.index("BYBIT"))
 
     def test_venue_buttons(self):
+        import os
         sig = PumpSignal(
             asset="0PN", pump_pct=7.6, vol_ratio=3.2, prior_pct=2.0,
             price_from=0.22, price_to=0.24, window_min=30,
             venues=["Bybit", "MEXC"])
-        buttons = sig.venue_buttons()
-        labels = [b[0] for b in buttons]
-        self.assertIn("Биржа BYBIT", labels)
-        self.assertIn("Биржа MEXC", labels)
+        old = os.environ.get("PUMP_LINK_VENUES")
+        os.environ["PUMP_LINK_VENUES"] = ""   # без фильтра — обе кнопки
+        try:
+            labels = [b[0] for b in sig.venue_buttons()]
+        finally:
+            os.environ.pop("PUMP_LINK_VENUES", None) if old is None \
+                else os.environ.__setitem__("PUMP_LINK_VENUES", old)
+        self.assertIn("📊 BYBIT", labels)     # новый формат метки (было «Биржа …»)
+        self.assertIn("📊 MEXC", labels)
 
 
 class TestMergeUniverses(unittest.TestCase):

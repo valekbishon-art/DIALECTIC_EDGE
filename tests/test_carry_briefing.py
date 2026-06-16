@@ -5,9 +5,10 @@ import os
 import tempfile
 import unittest
 
-from core.carry_briefing import (arb_close_alerts, close_alerts,
+from core.carry_briefing import (arb_close_alerts, cap_state, close_alerts,
                                   load_monitor_state, save_monitor_state,
-                                  scan_carry_open)
+                                  scan_carry_open, select_tracked_arb,
+                                  select_tracked_carry)
 
 
 class CloseAlertsTest(unittest.TestCase):
@@ -94,6 +95,58 @@ class ArbCloseAlertsTest(unittest.TestCase):
         msgs = arb_close_alerts({"SOL": 30.0}, {"SOL": 15.0}, min_keep=20.0)
         self.assertEqual(len(msgs), 1)
         self.assertIn("ЗАКРЫВАЙ АРБ SOL", msgs[0])
+
+
+class TrackingAntiSpamTest(unittest.TestCase):
+    """Гистерезис + кап: трекаем только рекомендованное, без пачки ЗАКРЫВАЙ."""
+
+    def test_carry_enters_only_strong(self):
+        # STRONG=20, THIN=8. Входим только на ≥20; 15% не входит (не рекомендуем).
+        new = select_tracked_carry({}, {"BTC": 25.0, "ETH": 15.0, "SOL": 30.0})
+        self.assertEqual(set(new), {"BTC", "SOL"})
+
+    def test_carry_holds_below_strong_while_above_thin(self):
+        # Уже в позиции ETH (была STRONG), просела до 15% (≥THIN) → ДЕРЖИМ, не закрываем.
+        new = select_tracked_carry({"ETH": 22.0}, {"ETH": 15.0})
+        self.assertEqual(new, {"ETH": 15.0})
+        self.assertEqual(close_alerts({"ETH": 22.0}, new), [])
+
+    def test_carry_closes_when_below_thin(self):
+        # Позиция XRP упала ниже THIN → нет в full_open → закрытие.
+        new = select_tracked_carry({"XRP": 25.0}, {})
+        self.assertEqual(new, {})
+        self.assertEqual(len(close_alerts({"XRP": 25.0}, new)), 1)
+
+    def test_carry_cap_limits_new_entries(self):
+        full = {"A": 30.0, "B": 29.0, "C": 28.0, "D": 27.0}
+        new = select_tracked_carry({}, full, max_track=3)
+        self.assertEqual(len(new), 3)
+
+    def test_arb_caps_to_top_by_spread(self):
+        full = {"A": (40.0, "X", "Y"), "B": (30.0, "X", "Y"),
+                "C": (20.0, "X", "Y"), "D": (15.0, "X", "Y")}
+        new = select_tracked_arb({}, full, max_track=2)
+        self.assertEqual(set(new), {"A", "B"})
+
+    def test_arb_keeps_survivor(self):
+        # Низкоспредовая, но уже в позиции — держим (выживший добавляется первым).
+        full = {"D": (13.0, "X", "Y"), "A": (40.0, "X", "Y")}
+        new = select_tracked_arb({"D": (15.0, "X", "Y")}, full, max_track=2)
+        self.assertIn("D", new)
+
+    def test_cap_state_trims_to_top(self):
+        self.assertEqual(set(cap_state({"A": 30.0, "B": 10.0, "C": 20.0}, 2)), {"A", "C"})
+
+    def test_cap_state_by_spread(self):
+        st = {"A": (5.0, "X", "Y"), "B": (40.0, "X", "Y"), "C": (20.0, "X", "Y")}
+        self.assertEqual(set(cap_state(st, 2, by_spread=True)), {"B", "C"})
+
+    def test_no_burst_from_stale_state(self):
+        # Старое раздутое состояние (20 арбов) капается до 3 при загрузке —
+        # моделируем: cap_state -> select -> close_alerts не должен дать 20 закрытий.
+        stale = {f"C{i}": (12.0 + i, "X", "Y") for i in range(20)}
+        capped = cap_state(stale, 3, by_spread=True)
+        self.assertEqual(len(capped), 3)
 
 
 if __name__ == "__main__":
