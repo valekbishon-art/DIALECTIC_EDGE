@@ -298,6 +298,58 @@ def arb_close_alerts(prev_open: dict, cur_open: dict, *, min_keep: float = 12.0,
     return msgs
 
 
+def select_tracked_carry(prev_tracked: dict, full_open: dict, *,
+                         max_track: int = 3, enter: float = STRONG) -> dict:
+    """Какие carry-активы реально «в позиции» — гистерезис + кап.
+
+    Фикс спама «20 ЗАКРЫВАЙ»: раньше трекалось ВСЁ с фандингом ≥ THIN (8%),
+    хотя брифинг рекомендует только топ ≥ STRONG (20%). Теперь:
+      • в трекинг ВХОДИМ только когда фандинг ≥ ``enter`` (STRONG) — то, что
+        реально советуем открыть;
+      • ДЕРЖИМ пока ≥ THIN (``full_open`` уже отфильтрован по THIN);
+      • не больше ``max_track`` позиций.
+    Выжившие добавляются первыми и капом НЕ режутся (иначе ложное закрытие),
+    поэтому prev_tracked должен быть уже ≤ max_track (капается при загрузке).
+    Закрытия считает потом :func:`close_alerts`(prev_tracked, new).
+    """
+    new = {a: full_open[a] for a in prev_tracked if a in full_open}  # выжившие (≥ THIN)
+    for a, ann in sorted(full_open.items(), key=lambda kv: -kv[1]):
+        if len(new) >= max_track:
+            break
+        if a not in new and ann >= enter:
+            new[a] = ann
+    return new
+
+
+def _arb_spread(v) -> float:
+    return float(v[0]) if isinstance(v, (tuple, list)) else float(v)
+
+
+def select_tracked_arb(prev_tracked: dict, full_arb: dict, *, max_track: int = 3) -> dict:
+    """Какие арб-активы реально «в позиции» — топ по спреду + кап + гистерезис.
+
+    Брифинг показывает только лучший арб, а трекалось ВСЁ (≥ min_keep) — отсюда
+    пачка «ПЕРЕВОРОТ/ЗАКРЫВАЙ». Держим выживших, добавляем новые по убыванию
+    спреда до ``max_track``. Закрытия/переворот считает :func:`arb_close_alerts`.
+    """
+    new = {a: full_arb[a] for a in prev_tracked if a in full_arb}  # выжившие
+    for a, v in sorted(full_arb.items(), key=lambda kv: -_arb_spread(kv[1])):
+        if len(new) >= max_track:
+            break
+        if a not in new:
+            new[a] = v
+    return new
+
+
+def cap_state(state: dict, max_track: int, *, by_spread: bool = False) -> dict:
+    """Обрезать загруженное состояние до топ-max_track (защита от старого
+    раздутого файла, который дал бы бурст закрытий на первом тике)."""
+    if len(state) <= max_track:
+        return dict(state)
+    key = (lambda kv: -_arb_spread(kv[1])) if by_spread else (lambda kv: -kv[1])
+    return dict(sorted(state.items(), key=key)[:max_track])
+
+
 def load_monitor_state(path: str) -> tuple[dict, dict]:
     """Прочитать сохранённое состояние монитора: ``(carry_open, arb_open)``.
 
@@ -329,4 +381,5 @@ def save_monitor_state(path: str, carry_open: dict, arb_open: dict) -> None:
 
 __all__ = ["build_briefing", "close_alerts", "arb_close_alerts",
            "funding_trade_steps", "listing_block", "scan_carry_open",
-           "load_monitor_state", "save_monitor_state"]
+           "load_monitor_state", "save_monitor_state",
+           "select_tracked_carry", "select_tracked_arb", "cap_state"]
