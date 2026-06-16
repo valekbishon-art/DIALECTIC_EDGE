@@ -113,7 +113,7 @@ class ScannerWiringTest(unittest.TestCase):
         # PUMP_LINK_VENUES по умолч. MEXC/Gate → кнопки Binance/Bybit не показываем.
         import os
         import pump_scanner as ps
-        sig = ps.PumpSignal(asset="AAA", pump_pct=25.0, vol_ratio=5.0,
+        sig = ps.PumpSignal(asset="AAA", pump_pct=25.0, vol_ratio=5.0, prior_pct=3.0,
                             price_from=80.0, price_to=100.0, window_min=30,
                             venues=["MEXC", "Bybit", "Binance"])
         old = os.environ.get("PUMP_LINK_VENUES")
