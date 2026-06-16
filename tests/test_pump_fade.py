@@ -95,27 +95,47 @@ class ResolverIntegrationTest(unittest.TestCase):
 
 
 class ScannerWiringTest(unittest.TestCase):
-    def test_attach_and_format(self):
+    def test_alert_is_honest_radar_no_playbook(self):
+        # Бэктест показал: памп не эдж (ни лонг, ни шорт). Алерт = ЧЕСТНЫЙ РАДАР,
+        # без fade/buy-плейбука. Большой памп НЕ должен давать торговый план.
         import pump_scanner as ps
-        # большой памп → fade навешивается
         sig = ps.PumpSignal(asset="AAA", pump_pct=25.0, vol_ratio=5.0, prior_pct=3.0,
                             price_from=80.0, price_to=100.0, window_min=30,
-                            venues=["binance"], mcap=50_000_000.0)
-        ps.attach_fade_to_signal(sig)
-        self.assertIsNotNone(sig.fade)
+                            venues=["MEXC"], mcap=50_000_000.0)
         msg = ps.format_pump_alert(sig)
-        self.assertIn("FADE", msg)
-        self.assertIn("не сигнал на покупку", msg)  # старое предупреждение осталось
+        self.assertIn("РАДАР", msg)
+        self.assertIn("не сигнал", msg)
+        self.assertNotIn("FADE", msg)            # больше НЕ показываем fade-план
+        self.assertNotIn("ЗАКРЫВАЙ", msg)
+        self.assertNotIn("ШОРТ перп", msg)       # никаких торговых инструкций
 
-    def test_small_pump_no_fade(self):
+    def test_links_only_user_venues(self):
+        # PUMP_LINK_VENUES по умолч. MEXC/Gate → кнопки Binance/Bybit не показываем.
+        import os
+        import pump_scanner as ps
+        sig = ps.PumpSignal(asset="AAA", pump_pct=25.0, vol_ratio=5.0,
+                            price_from=80.0, price_to=100.0, window_min=30,
+                            venues=["MEXC", "Bybit", "Binance"])
+        old = os.environ.get("PUMP_LINK_VENUES")
+        os.environ["PUMP_LINK_VENUES"] = "MEXC,Gate"
+        try:
+            labels = [lbl for lbl, _ in sig.venue_buttons()]
+        finally:
+            if old is None:
+                os.environ.pop("PUMP_LINK_VENUES", None)
+            else:
+                os.environ["PUMP_LINK_VENUES"] = old
+        self.assertTrue(any("MEXC" in x for x in labels))
+        self.assertFalse(any("BYBIT" in x or "BINANCE" in x for x in labels))
+
+    def test_small_pump_is_radar_too(self):
         import pump_scanner as ps
         sig = ps.PumpSignal(asset="BBB", pump_pct=6.0, vol_ratio=4.0, prior_pct=2.0,
                             price_from=98.0, price_to=100.0, window_min=30,
-                            venues=["binance"])
-        ps.attach_fade_to_signal(sig)
-        self.assertIsNone(sig.fade)              # 6% < 15% → нет fade
+                            venues=["MEXC"])
         msg = ps.format_pump_alert(sig)
         self.assertNotIn("FADE", msg)
+        self.assertIn("РАДАР", msg)
 
 
 if __name__ == "__main__":
