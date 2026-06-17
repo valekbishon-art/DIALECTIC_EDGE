@@ -200,13 +200,10 @@ try:
     )
     from refactor.services.alert_rules import (
         BtcEtfOutflowRule as _BtcEtfOutflowRule,
-        LiquidationClusterRule as _LiquidationClusterRule,
         ScreenerAnomalyRule as _ScreenerAnomalyRule,
     )
     from refactor.services.alert_rules.btc_etf_outflow import feature_enabled as _alert_btc_etf_enabled
-    from refactor.services.alert_rules.liquidation_cluster import (
-        feature_enabled as _alert_liq_enabled,
-    )
+    # [HALAL] liquidation_cluster удалён (деривативы/ликвидации = харам).
     from refactor.services.alert_rules.screener_anomaly import (
         feature_enabled as _alert_screener_enabled,
     )
@@ -637,6 +634,7 @@ class Scheduler:
         Non-fatal: ошибки логируются, луп живёт. Состояние обновляем только при
         надёжных данных (health-guard) — пустой фетч не даёт ложный масс-выход.
         """
+        return  # [removed] carry/арб-мониторинг отключён (деривативы/фандинг/процент)
         from core.carry_briefing import (arb_close_alerts, build_briefing,
                                           cap_state, close_alerts, load_monitor_state,
                                           save_monitor_state, scan_carry_open,
@@ -1147,8 +1145,7 @@ class Scheduler:
             rules.append(_ScreenerAnomalyRule.build())
         if _alert_btc_etf_enabled():
             rules.append(_BtcEtfOutflowRule.build())
-        if _alert_liq_enabled():
-            rules.append(_LiquidationClusterRule.build())
+        # [HALAL] LiquidationClusterRule удалён (деривативы = харам).
 
         if not rules:
             logger.info(

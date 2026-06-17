@@ -273,26 +273,17 @@ PERSISTENT_BTN_HELP     = "❓ Помощь"
 
 
 def persistent_kb() -> ReplyKeyboardMarkup:
-    """Главное меню снизу. Висит постоянно. 3 ряда по 3 — без 'Лучшей сделки'
-    (directional-пережиток, доказанно убыточен). Carry/Арб на видном месте."""
+    """Главное меню снизу. Висит постоянно. Спот-инструменты: прогноз, рынки,
+    скринер, P2P, настройки, помощь."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [
                 KeyboardButton(text=PERSISTENT_BTN_DAILY),
                 KeyboardButton(text=PERSISTENT_BTN_MARKETS),
-                KeyboardButton(text=PERSISTENT_BTN_CARRY),
-            ],
-            [
-                KeyboardButton(text=PERSISTENT_BTN_ARB),
-                KeyboardButton(text=PERSISTENT_BTN_PUMP),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
             ],
             [
-                KeyboardButton(text=PERSISTENT_BTN_BASIS),
-                KeyboardButton(text=PERSISTENT_BTN_CALC),
                 KeyboardButton(text=PERSISTENT_BTN_P2P),
-            ],
-            [
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -920,8 +911,8 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
     else:
         lines.extend(["", "📋 *Торговый план:*",
                       "_⚠️ Уровни ниже — для НАБЛЮДЕНИЯ, не сигналы: бэктест 2020-26 "
-                      "показал, что MA-пробои на дневках убыточны. Что РЕАЛЬНО делать — "
-                      "/carry и /arb (см. низ дайджеста)._"])
+                      "показал, что MA-пробои на дневках убыточны. Что РЕАЛЬНО работает — "
+                      "следование тренду на споте (см. низ дайджеста)._"])
         if plans:
             # Per-asset coverage: 5-6 крипто (BTC/ETH/SOL/BNB/XRP) + 6 макро
             # (SPX/NDX/GOLD/OIL/DXY/VIX) → до 11 планов в одном дайджесте.
@@ -1002,8 +993,8 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
         "",
         "📜 Полный raw-ответ модели и полные дебаты доступны кнопками ниже.",
         "",
-        "💱 *Что РЕАЛЬНО делать* (проверено бэктестом 2020-26, не угадайка цены): "
-        "жми /carry — режим рынка + carry-сделка по шагам · /arb — кросс-биржевой funding-арбитраж.",
+        "📈 *Что РЕАЛЬНО работает* (проверено бэктестом 2020-26, не угадайка цены): "
+        "следование тренду на споте — держим активы выше SMA, уходим в стейбл ниже. Без плеча и шортов.",
     ])
 
     return ["\n".join(lines)]
@@ -1603,11 +1594,11 @@ def format_money_button_message(report_text: str, macro=None) -> str:
         except Exception:
             pass
     out.append("")
-    # Честная плашка: directional MA-уровни доказанно убыточны на дневках. Реальный
-    # edge (carry/арб) уходит отдельным сообщением ниже из колбэка.
+    # Честная плашка: directional MA-уровни доказанно убыточны на дневках.
+    # Реальный подход — следование тренду на споте.
     out.append("⚠️ _Уровни ниже — для НАБЛЮДЕНИЯ, не сигналы: бэктест 2020-26 показал, "
-               "что MA-пробои на дневках убыточны. Что РЕАЛЬНО делать (carry + кросс-арб) — "
-               "в сообщении ниже 👇_")
+               "что MA-пробои на дневках убыточны. Что РЕАЛЬНО работает — следование "
+               "тренду на споте (держим выше SMA, в стейбле ниже)._")
     out.append("")
 
     if actionable:
@@ -1744,18 +1735,6 @@ async def handle_money_button_callback(callback: CallbackQuery):
         clean_markdown(msg),
         parse_mode="Markdown",
     )
-    # РЕАЛЬНЫЙ EDGE — то что доказано работает (режим + carry + кросс-арб), отдельным
-    # HTML-сообщением. Non-fatal: ошибка/геоблок не ломает основную стратегию.
-    try:
-        from core.carry_briefing import build_briefing
-        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-        edge_text, _ = await asyncio.to_thread(build_briefing, cap)
-        await bot.send_message(
-            callback.message.chat.id, edge_text,
-            parse_mode="HTML", disable_web_page_preview=True,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("real-edge block (money button) skipped: %s", e)
 
 
 def format_signal_trader_status_message(status: dict) -> str:
@@ -2906,48 +2885,38 @@ async def _send_newbie_guide(chat_id: int) -> None:
         "📌 *В чём наш edge (и чего тут НЕТ)*\n\n"
         "Мы НЕ угадываем, куда пойдёт цена. Бэктест directional-сигналов "
         "(LONG/SHORT) на 2020–2026 показал: на дневках они *робастно убыточны*. "
-        "Поэтому directional-режим из бота удалён.\n\n"
-        "Реальный edge бота — *дельта-нейтральный доход*. Ты не ставишь на "
-        "направление цены, а собираешь структурные выплаты рынка:\n"
-        "• *funding* — плата одной стороны перпа другой\n"
-        "• *спред funding* между биржами\n"
-        "• *базис* — разница спота и квартального фьюча\n\n"
-        "Доходность скромнее иксов, зато *воспроизводима* и не зависит от того, "
-        "вырастет BTC завтра или упадёт.\n\n"
+        "Поэтому угадывание направления из бота удалено.\n\n"
+        "Реальный edge бота — *спот + следование тренду с управлением риском*. "
+        "Держишь актив, только пока он в восходящем тренде (цена выше скользящей "
+        "средней SMA50); ушёл в нисходящий — сидишь в стейбле.\n\n"
+        "*Только спот, без плеча, без шортов, без деривативов.*\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🧲 *Что такое «дельта-нейтрально»*\n\n"
-        "Две ноги гасят движение цены друг друга, а ты остаёшься с «купоном»:\n"
-        "```\nЛОНГ спот BTC  +  ШОРТ перп BTCUSDT (на ту же сумму)\n```\n"
-        "BTC вырос на 5% → спот +5%, шорт-перп −5% → *по цене ноль*.\n"
-        "BTC упал на 5% → спот −5%, шорт-перп +5% → *снова ноль*.\n"
-        "А funding капает тебе каждые 8 часов независимо от цены.\n\n"
-        "Главный враг тут — *не цена, а комиссии*. Тонкие премии не торгуем."
+        "🧲 *Зачем тренд-фильтр*\n\n"
+        "На 5 годах данных это режет просадку почти *вдвое* (−55% против −84% у "
+        "«купи и держи») при близкой доходности. Меньше боли в медвежьем рынке: "
+        "когда актив падает ниже тренда — ты уже в стейбле, а не ловишь нож."
     )
     await bot.send_message(chat_id, part1, parse_mode="Markdown")
 
     part2 = (
         "🆕 *ГИД ДЛЯ НОВИЧКОВ — ЧАСТЬ 2/3*\n"
         + "═" * 28 + "\n\n"
-        "🛠 *ТРИ РАБОЧИХ EDGE'А БОТА*\n\n"
-        "💰 *Carry* — `/carry`\n"
-        "ЛОНГ спот + ШОРТ перп на одной бирже, собираешь funding.\n"
-        "Порог: ниже *~8% годовых* косты двух ног съедают премию.\n\n"
-        "🔀 *Кросс-арбитраж* — `/arb`\n"
-        "ЛОНГ перп там, где funding низкий, ШОРТ перп там, где высокий "
-        "(Binance/Bybit/Gate/Hyperliquid). Зарабатываешь спред.\n"
-        "Порог: спред ниже *~12% годовых* не отбивает косты.\n\n"
-        "🗓 *Calendar basis* — `/basis`\n"
-        "ЛОНГ спот + ШОРТ квартальный фьюч, держишь до экспирации — базис "
-        "сходится к нулю, разница твоя. Доход фиксируется заранее.\n\n"
-        "🧮 *Калькулятор* — `/calc 5000 25` посчитает обе ноги и $/год.\n\n"
+        "🛠 *КАК ЭТО РАБОТАЕТ*\n\n"
+        "📈 *Трендовый сигнал*\n"
+        "Из отфильтрованного списка монет держишь равным весом те, что *сейчас "
+        "выше SMA50*; упала ниже — продал в стейбл. Покупаешь силу, выходишь "
+        "из слабости.\n\n"
+        "🧮 *Фильтр активов*\n"
+        "Берём только утилити/платёжные/инфраструктурные монеты. Исключаем "
+        "кредит-протоколы, спекулятивные мем-коины и гемблинг-токены.\n\n"
+        "📊 *Скринер акций*\n"
+        "Крупные компании, прошедшие секторный + балансовый скрин (низкий долг), "
+        "которые сейчас в аптренде.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎯 *«Лучшая сделка»* — `/signal`\n\n"
-        "Не хочешь сравнивать три команды? Жми «🎯 Лучшая сделка» — бот в "
-        "реальном времени сканирует carry/арб/базис и показывает *ОДНУ* сделку "
-        "с максимальной чистой доходностью прямо сейчас.\n"
-        "`/signal 5000` — добавь депозит, увидишь оценку $/год.\n\n"
-        "Если ничего не проходит порог костов — бот честно скажет «сегодня edge "
-        "нет, сидим в стейблах». Это валидный ответ, а не ошибка."
+        "🎯 *Главное правило*\n\n"
+        "Купить *спот* равным весом то, что выше SMA; ушло ниже — продать. "
+        "Никакого плеча, шортов и деривативов. Если ничего не в тренде — "
+        "сидим в стейблах. Это валидный ответ, а не ошибка."
     )
     await bot.send_message(chat_id, part2, parse_mode="Markdown")
 
@@ -2955,31 +2924,26 @@ async def _send_newbie_guide(chat_id: int) -> None:
         "🆕 *ГИД ДЛЯ НОВИЧКОВ — ЧАСТЬ 3/3*\n"
         + "═" * 28 + "\n\n"
         "💵 *Деньги на биржу*\n"
-        "• `/p2p` → RUB→USDT через P2P (в РФ USDT с премией к курсу). Бери "
-        "мейкеров с большим числом сделок и completion ≥90%, не ведись на "
-        "фейково «дешёвые» заявки.\n"
-        "• Funding-кошелёк → переведи USDT на *Spot* (под спот-ногу) и на "
-        "*Derivatives* (маржа под шорт-перп). Номиналы ног — *равны*.\n\n"
+        "• `/p2p` → RUB→USDT через P2P. Бери мейкеров с большим числом сделок и "
+        "completion ≥90%, не ведись на фейково «дешёвые» заявки.\n"
+        "• Держишь USDT на *Spot* и покупаешь активы спотом — то, чем реально "
+        "владеешь.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🛡 *7 ПРАВИЛ ВЫЖИВАНИЯ ПЕРВОЙ НЕДЕЛИ*\n\n"
-        "*1.* Обе ноги — *равны по номиналу*. Неравные = скрытый риск цены.\n"
-        "*2.* Плечо на перпе *1x–2x*, не больше. Перп тут хедж, не казино. "
-        "Держи запас маржи, чтобы рост не ликвидировал шорт-ногу.\n"
-        "*3.* Не торгуй *тонкую премию* (ниже ≈8% carry / ≈12% арб). Нет "
-        "сделки — это нормальный ответ.\n"
-        "*4.* Размер — *макс 20–30% депо* на сделку первую неделю.\n"
-        "*5.* Закрывай *обе ноги одновременно*. Одна нога = голый в цене.\n"
-        "*6.* Следи за *разворотом funding* — из получателя станешь плательщиком.\n"
-        "*7.* Веди *журнал* с первой сделки: ожидаемое vs факт после костов 0.2%. "
-        "Без журнала не отличишь edge от удачи.\n\n"
+        "🛡 *ПРАВИЛА ВЫЖИВАНИЯ ПЕРВОЙ НЕДЕЛИ*\n\n"
+        "*1.* Только *спот* — что купил, тем и владеешь. Без плеча.\n"
+        "*2.* Размер — *макс 20–30% депо* на актив первую неделю, диверсифицируй "
+        "по списку в тренде.\n"
+        "*3.* Актив ушёл *ниже SMA* — продай, не «усредняйся вниз».\n"
+        "*4.* Не гонись за иксами и мем-коинами — это азарт, не стратегия.\n"
+        "*5.* Ничего не в тренде — сиди в стейбле, это нормальный ответ.\n"
+        "*6.* Веди *журнал* с первой сделки: ожидаемое vs факт после костов.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚫 *ЧЕГО НЕ ДЕЛАТЬ:* directional плечо (10x-лонг «по сигналу» — "
-        "быстрый слив), одна нога без хеджа, гонка за иксами.\n\n"
+        "🚫 *ЧЕГО НЕ ДЕЛАТЬ:* плечо, шорты, деривативы, гонка за иксами, "
+        "усреднение в падающем активе.\n\n"
         "⚠️ *Disclaimer:* это аналитический инструмент, не финансовый совет. "
-        "Дельта-нейтрал снижает ценовой риск, но не убирает его (ликвидация "
-        "перп-ноги, разворот funding, риск биржи/стейбла). Дисциплина и журнал "
-        "важнее любого сигнала.\n\n"
-        "📘 Полная версия (5 страниц) в PDF ↑"
+        "Тренд-фильтр снижает просадку, но не убирает риск (резкие развороты, "
+        "риск биржи/стейбла). Дисциплина и журнал важнее любого сигнала.\n\n"
+        "📘 Полная версия в PDF ↑"
     )
     await bot.send_message(chat_id, part3, parse_mode="Markdown")
 
@@ -3009,7 +2973,6 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "markets": cmd_markets,
         "status": cmd_status,
         "pitch": cmd_pitch,
-        "pump": cmd_pump,
         "trackrecord": cmd_trackrecord,
         "trackrecordglobal": lambda m: _cmd_trackrecord(m, report_type="global", title="GLOBAL", filter_type="all"),
         "trackrecordrussia": lambda m: _cmd_trackrecord(m, report_type="russia", title="РОССИЯ EDGE", filter_type="all"),
@@ -3018,7 +2981,6 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "premium": cmd_premium,
         "help": cmd_help,
         "signal": cmd_signal,
-        "funding": handle_funding_command,
         "signalstatus": cmd_signal_status,
         "screener": cmd_screener,
         "backtest": cmd_backtest,
@@ -3111,9 +3073,6 @@ async def _kb_daily(message: Message):
     await cmd_daily(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_PUMP)
-async def _kb_pump(message: Message):
-    await cmd_pump(message)
 
 
 @dp.message(F.text == PERSISTENT_BTN_MARKETS)
@@ -3142,7 +3101,7 @@ async def _kb_help(message: Message):
 
 
 # ─── /carry — единственный +edge: режим + carry-сделка по шагам + листинги ──────
-@dp.message(Command("carry"))
+# [removed] @dp.message(Command("carry"))  — функция отключена (модуль удалён)
 async def cmd_carry(message: Message):
     """Carry-брифинг по запросу: режим рынка, пошаговая carry-сделка, листинги."""
     wait = await message.answer("⏳ Собираю carry-брифинг (режим, фандинг, базис, листинги)…")
@@ -3162,13 +3121,10 @@ async def cmd_carry(message: Message):
         await message.answer(text)
 
 
-@dp.message(F.text == PERSISTENT_BTN_CARRY)
-async def _kb_carry(message: Message):
-    await cmd_carry(message)
 
 
 # ─── /arb — КРОСС-БИРЖЕВОЙ funding-арбитраж (чего нет на одной бирже) ───────────
-@dp.message(Command("arb"))
+# [removed] @dp.message(Command("arb"))  — функция отключена (модуль удалён)
 async def cmd_arb(message: Message):
     """Кросс-биржевой funding-арб: лонг перп где фандинг низкий, шорт где высокий."""
     wait = await message.answer("⏳ Сканирую фандинг по 4 биржам (Binance/Bybit/Gate/Hyperliquid)…")
@@ -3189,13 +3145,10 @@ async def cmd_arb(message: Message):
         await message.answer(text)
 
 
-@dp.message(F.text == PERSISTENT_BTN_ARB)
-async def _kb_arb(message: Message):
-    await cmd_arb(message)
 
 
 # ─── /basis — calendar basis carry (cash-and-carry, держим до экспирации) ──────
-@dp.message(Command("basis"))
+# [removed] @dp.message(Command("basis"))  — функция отключена (модуль удалён)
 async def cmd_basis(message: Message):
     """Basis carry: ЛОНГ спот + ШОРТ квартальный фьюч, держим до экспирации.
 
@@ -3225,13 +3178,10 @@ async def cmd_basis(message: Message):
         await message.answer(text)
 
 
-@dp.message(F.text == PERSISTENT_BTN_BASIS)
-async def _kb_basis(message: Message):
-    await cmd_basis(message)
 
 
 # ─── /calc — калькулятор дельта-нейтральной позиции ────────────────────────────
-@dp.message(Command("calc"))
+# [removed] @dp.message(Command("calc"))  — калькулятор carry/арб-позиции отключён
 async def cmd_calc(message: Message):
     """Калькулятор позиции: /calc <депозит> [ставка%]. Считает ноги + доход.
 
@@ -3275,13 +3225,10 @@ async def cmd_calc(message: Message):
         await message.answer(_re.sub(r"</?[a-zA-Z][^>]*>", "", msg))
 
 
-@dp.message(F.text == PERSISTENT_BTN_CALC)
-async def _kb_calc(message: Message):
-    await cmd_calc(message)
 
 
 # ─── /track — track-record найденных carry/арб-окон ────────────────────────────
-@dp.message(Command("track"))
+# [removed] @dp.message(Command("track"))  — track-record carry/арб-окон отключён
 async def cmd_track(message: Message):
     """Честная сводка: сколько edge-окон бот поймал, средняя ставка."""
     try:
@@ -4977,46 +4924,26 @@ def _fmt_signal_message(result: dict) -> str:
 @dp.message(Command("signal"))
 @require_vip
 async def cmd_signal(message: Message):
-    """Команда `/signal` (кнопка «🎯 Лучшая сделка») — лучший ЖИВОЙ edge.
+    """Команда `/signal` (кнопка «🎯 Лучшая сделка») — что РЕАЛЬНО делать сейчас.
 
-    Directional LONG/SHORT price-bet УБРАН (бэктест 2020-26: робастно
-    убыточен). Теперь показываем ОДНУ лучшую delta-neutral сделку с
-    максимальным net annualized % из carry / кросс-арб / базис — или честно
-    «сегодня сидим», если ничего выше порога костов нет.
-
-    Опциональный аргумент: `/signal 5000` — депозит для оценки $/год.
+    Угадывание направления (LONG/SHORT) убрано — бэктест 2020-26 показал, что
+    на дневках это робастно убыточно. Подход системы: спот + следование тренду
+    (держим активы выше SMA, в стейбле когда ниже). Без плеча, шортов, деривативов.
     """
-    user_id = message.from_user.id
-    await upsert_user(user_id, message.from_user.username or "")
-    wait_msg = await message.answer("⏳ Ищу лучший живой edge: carry · арб · базис…")
-
-    # Парсим опциональный депозит. `/signal 5000` → capital=5000.
-    parts = (message.text or "").strip().split()
-    capital = 0.0
-    if len(parts) >= 2:
-        try:
-            capital = max(0.0, float(parts[1].replace("$", "").replace(",", ".")))
-        except ValueError:
-            pass
-
-    try:
-        from core.best_edge import format_best_edge, scan_best_edge
-
-        edge = await scan_best_edge()
-        text = format_best_edge(edge, capital=capital)
-        await bot.edit_message_text(
-            text,
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-    except Exception as e:
-        await bot.edit_message_text(
-            f"❌ Ошибка: {e}",
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-        )
+    await upsert_user(message.from_user.id, message.from_user.username or "")
+    text = (
+        "🎯 *ЧТО ДЕЛАТЬ СЕЙЧАС*\n"
+        + "═" * 22 + "\n\n"
+        "Система не угадывает направление цены (это убыточно на дневках). "
+        "Подход — *спот + следование тренду*:\n\n"
+        "• держим равным весом активы, что *сейчас выше SMA50* (в восходящем тренде);\n"
+        "• ушёл ниже SMA — продаём в стейбл;\n"
+        "• ничего в тренде — сидим в стейбле, это нормальный ответ.\n\n"
+        "📊 Свежий список активов в тренде — в дайджесте `/daily`.\n"
+        "🧪 Аномалии рынка — `/screener`.\n\n"
+        "_Без плеча, шортов и деривативов. Не финансовый совет._"
+    )
+    await message.answer(text, parse_mode="Markdown")
 
 
 async def _freeze_signal_decision(result: dict) -> None:
@@ -6111,7 +6038,6 @@ async def cmd_help(message: Message):
         "• `/markets` — живой контекст + сигналы, кнопки подписки\n"
         "• `/help markets` — подробный гайд по цифрам в /markets 📊\n"
         "• `/signal [capital]` — auto SL/TP setup на основе нашего scoring 🎯\n"
-        "• `/funding` — funding по top-10 futures + аномалии contango/short squeeze\n"
         "• `/trackrecord` — история точности (всё)\n"
         "• `/trackrecordglobal` — Global\n"
         "• `/trackrecordrussia` — Россия Edge 🇷🇺\n"
@@ -6246,7 +6172,7 @@ def _pump_ondemand_limit() -> int:
 PUMP_ONDEMAND_LIMIT = _pump_ondemand_limit()
 
 
-@dp.message(Command("pump"))
+# [removed] @dp.message(Command("pump"))  — команда отключена (pump_scanner удалён)
 @require_vip
 async def cmd_pump(message: Message):
     """On-demand памп-скан. Гоняет тот же pump_scanner что и авто-алерты
@@ -6483,12 +6409,6 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="trackrecordrussia", description="🇷🇺 Россия Edge"),
         BotCommand(command="trackrecord", description="📊 Вся статистика"),
         BotCommand(command="markets", description="Рынки + сигналы, подписка"),
-        BotCommand(command="funding", description="💸 Funding top-10 futures"),
-        BotCommand(command="carry", description="💱 Carry-сделка по шагам + режим"),
-        BotCommand(command="arb", description="🔀 Кросс-биржевой funding-арбитраж"),
-        BotCommand(command="basis", description="🗓 Calendar basis carry (cash-and-carry)"),
-        BotCommand(command="calc", description="🧮 Калькулятор позиции под депозит"),
-        BotCommand(command="track", description="📊 Track-record найденных окон"),
         BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
         BotCommand(command="status", description="Краткий статус"),
         BotCommand(command="tt", description="🧪 Тест"),
@@ -6507,7 +6427,6 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="autotrade_status", description="🎯 Status: PnL, win-rate, Kelly"),
         BotCommand(command="audit", description="📊 AI-аудит закрытых сделок"),
         BotCommand(command="usage", description="🔢 Расход токенов"),
-        BotCommand(command="pump", description="🚀 Памп-сканер по запросу"),
     ]
     await bot.set_my_commands(commands)
 
