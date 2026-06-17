@@ -265,6 +265,8 @@ PERSISTENT_BTN_SETTINGS = "⚙️ Настройки"
 PERSISTENT_BTN_SIGNAL   = "🎯 Лучшая сделка"
 PERSISTENT_BTN_SCREENER = "🧪 Скринер"
 PERSISTENT_BTN_P2P      = "🧭 P2P арбитраж"
+PERSISTENT_BTN_STOCKS   = "📈 Акции"
+PERSISTENT_BTN_TREND    = "🧭 Тренд"
 PERSISTENT_BTN_CARRY    = "💱 Carry"
 PERSISTENT_BTN_ARB      = "🔀 Кросс-арб"
 PERSISTENT_BTN_BASIS    = "🗓 Базис"
@@ -283,7 +285,11 @@ def persistent_kb() -> ReplyKeyboardMarkup:
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_STOCKS),
+                KeyboardButton(text=PERSISTENT_BTN_TREND),
                 KeyboardButton(text=PERSISTENT_BTN_P2P),
+            ],
+            [
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -2578,6 +2584,94 @@ async def cmd_screener(message: Message):
         await message.answer(f"Ошибка сканера: {e}")
 
 
+@dp.message(Command("stocks"))
+async def cmd_stocks(message: Message):
+    """Скринер акций: курируемый вотчлист + тренд (SMA) и моментум. /stocks [sma]"""
+    parts = (message.text or "").split()
+    sma = 50
+    try:
+        if len(parts) >= 2:
+            sma = max(10, min(200, int(parts[1])))
+    except ValueError:
+        pass
+    wait = await message.answer("📈 Считаю силу акций (тренд + моментум)…")
+    try:
+        import halal_signals
+        text = await halal_signals.build_stocks_card(sma=sma)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать акции: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
+@dp.message(Command("trend"))
+async def cmd_trend(message: Message):
+    """Крипто-тренд: кто сейчас в аптренде (price>SMA), равный вес. /trend [sma]"""
+    parts = (message.text or "").split()
+    sma = 50
+    try:
+        if len(parts) >= 2:
+            sma = max(10, min(200, int(parts[1])))
+    except ValueError:
+        pass
+    wait = await message.answer("🧭 Сканирую тренд по крупным спот-монетам…")
+    try:
+        import halal_signals
+        text = await halal_signals.build_crypto_trend_card(sma=sma)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать тренд: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
+@dp.message(Command("dca"))
+async def cmd_dca(message: Message):
+    """План усреднения (DCA): /dca <депозит> [траншей] [интервал_дней]."""
+    parts = (message.text or "").split()
+    deposit, tranches, days = 1000.0, 6, 5
+    try:
+        if len(parts) >= 2:
+            deposit = float(parts[1].replace("$", "").replace(",", ""))
+        if len(parts) >= 3:
+            tranches = int(parts[2])
+        if len(parts) >= 4:
+            days = max(1, int(parts[3]))
+    except ValueError:
+        await message.answer("Формат: /dca 5000 6 7  (депозит, траншей, интервал в днях)")
+        return
+    try:
+        import halal_signals
+        text = halal_signals.build_dca_plan(deposit, tranches, days)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать DCA-план: {e}"
+    try:
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
+@dp.message(F.text == PERSISTENT_BTN_STOCKS)
+async def _kb_stocks(message: Message):
+    await cmd_stocks(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_TREND)
+async def _kb_trend(message: Message):
+    await cmd_trend(message)
+
+
 @dp.message(Command("instruction"))
 async def cmd_instruction(message: Message):
     """Полнейшая инструкция как для пятилетнего: /instruction"""
@@ -3098,149 +3192,6 @@ async def _kb_p2p(message: Message):
 @dp.message(F.text == PERSISTENT_BTN_HELP)
 async def _kb_help(message: Message):
     await cmd_help(message)
-
-
-# ─── /carry — единственный +edge: режим + carry-сделка по шагам + листинги ──────
-# [removed] @dp.message(Command("carry"))  — функция отключена (модуль удалён)
-async def cmd_carry(message: Message):
-    """Carry-брифинг по запросу: режим рынка, пошаговая carry-сделка, листинги."""
-    wait = await message.answer("⏳ Собираю carry-брифинг (режим, фандинг, базис, листинги)…")
-    try:
-        from core.carry_briefing import build_briefing
-        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-        text, _ = await asyncio.to_thread(build_briefing, cap)
-    except Exception as e:  # noqa: BLE001
-        text = f"⚠️ Не получилось собрать carry-брифинг: {e}"
-    try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
-
-
-
-
-# ─── /arb — КРОСС-БИРЖЕВОЙ funding-арбитраж (чего нет на одной бирже) ───────────
-# [removed] @dp.message(Command("arb"))  — функция отключена (модуль удалён)
-async def cmd_arb(message: Message):
-    """Кросс-биржевой funding-арб: лонг перп где фандинг низкий, шорт где высокий."""
-    wait = await message.answer("⏳ Сканирую фандинг по 4 биржам (Binance/Bybit/Gate/Hyperliquid)…")
-    try:
-        from core.cross_exchange import scan as scan_arb, format_arb_md
-        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-        opps = await asyncio.to_thread(scan_arb)
-        text = format_arb_md(opps, capital=cap)
-    except Exception as e:  # noqa: BLE001
-        text = f"⚠️ Не получилось собрать кросс-арб: {e}"
-    try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
-
-
-
-
-# ─── /basis — calendar basis carry (cash-and-carry, держим до экспирации) ──────
-# [removed] @dp.message(Command("basis"))  — функция отключена (модуль удалён)
-async def cmd_basis(message: Message):
-    """Basis carry: ЛОНГ спот + ШОРТ квартальный фьюч, держим до экспирации.
-
-    /basis [депозит] — депозит для расчёта ног (по умолчанию из env).
-    """
-    wait = await message.answer("⏳ Считаю calendar basis по квартальным фьючам Binance…")
-    parts = (message.text or "").split()
-    cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-    try:
-        if len(parts) >= 2:
-            cap = float(parts[1].replace("$", "").replace(",", ""))
-    except ValueError:
-        pass
-    try:
-        from core.basis_carry import scan, format_basis_md
-        opps = await asyncio.to_thread(scan)
-        text = format_basis_md(opps, capital=cap)
-    except Exception as e:  # noqa: BLE001
-        text = f"⚠️ Не получилось собрать basis carry: {e}"
-    try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
-
-
-
-
-# ─── /calc — калькулятор дельта-нейтральной позиции ────────────────────────────
-# [removed] @dp.message(Command("calc"))  — калькулятор carry/арб-позиции отключён
-async def cmd_calc(message: Message):
-    """Калькулятор позиции: /calc <депозит> [ставка%]. Считает ноги + доход.
-
-    Без аргументов — берёт лучший живой фандинг как пример. С двумя — точный расчёт.
-    """
-    parts = (message.text or "").split()
-    capital = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-    rate = None
-    asset = ""
-    # Аргументы парсим ТОЛЬКО если это реально команда /calc. По кнопке текст —
-    # «🧮 Калькулятор», аргументов нет → показываем пример по живому фандингу.
-    is_command = bool(parts) and parts[0].lstrip("/").lower().startswith("calc")
-    try:
-        if is_command and len(parts) >= 2:
-            capital = float(parts[1].replace("$", "").replace(",", ""))
-        if is_command and len(parts) >= 3:
-            rate = float(parts[2].replace("%", ""))
-    except ValueError:
-        await message.answer("Формат: /calc 5000 25  (депозит $5000, ставка 25% год)")
-        return
-    try:
-        from core.position_calc import calc_position, format_calc_md
-        if rate is None:
-            # подставим лучший живой фандинг как пример
-            from core.carry_signal import fetch_funding, scan_carry, THIN
-            pos = [o for o in scan_carry(threshold=THIN, data=await asyncio.to_thread(fetch_funding)) if o.positive]
-            if pos:
-                rate, asset = pos[0].annual_pct, pos[0].asset
-            else:
-                rate = 20.0
-        plan = calc_position(capital, rate, kind="carry")
-        msg = format_calc_md(plan, kind="carry", asset=asset)
-        msg += "\n\n💡 Точный расчёт: /calc 5000 25 (депозит и ставка% год). Для арба — /arb."
-    except Exception as e:  # noqa: BLE001
-        msg = f"⚠️ Калькулятор недоступен: {e}"
-    try:
-        await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        # HTML не распарсился — шлём без тегов, а не сырой разметкой
-        import re as _re
-        await message.answer(_re.sub(r"</?[a-zA-Z][^>]*>", "", msg))
-
-
-
-
-# ─── /track — track-record найденных carry/арб-окон ────────────────────────────
-# [removed] @dp.message(Command("track"))  — track-record carry/арб-окон отключён
-async def cmd_track(message: Message):
-    """Честная сводка: сколько edge-окон бот поймал, средняя ставка."""
-    try:
-        from core.track_record import summarize, format_track_md
-        msg = format_track_md(await asyncio.to_thread(summarize))
-    except Exception as e:  # noqa: BLE001
-        msg = f"⚠️ Track-record недоступен: {e}"
-    try:
-        await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(msg)
-
 
 # ─── /profile ─────────────────────────────────────────────────────────────────
 
@@ -6174,54 +6125,6 @@ PUMP_ONDEMAND_LIMIT = _pump_ondemand_limit()
 
 # [removed] @dp.message(Command("pump"))  — команда отключена (pump_scanner удалён)
 @require_vip
-async def cmd_pump(message: Message):
-    """On-demand памп-скан. Гоняет тот же pump_scanner что и авто-алерты
-    (со всеми guard'ами целостности из PR #75: свежесть свечей, single-venue
-    консистентность, anti-collision merge) и отдаёт топ-сигналы прямо сейчас.
-    """
-    try:
-        from pump_scanner import PumpConfig, format_pump_alert, scan_pumps
-    except Exception as e:  # noqa: BLE001
-        logger.error("pump: import failed: %s", e)
-        await message.answer("Памп-сканер временно недоступен.")
-        return
-
-    notice = await message.answer("🚀 Сканирую рынок на пампы…")
-    try:
-        signals = await scan_pumps(cfg=PumpConfig.from_env(), max_symbols=0)
-    except Exception as e:  # noqa: BLE001
-        logger.error("pump: scan failed: %s", e)
-        await message.answer(f"Ошибка памп-сканера: {e}")
-        return
-
-    try:
-        if notice is not None:
-            await notice.delete()
-    except Exception:  # noqa: BLE001 — удаление статус-сообщения best-effort
-        pass
-
-    if not signals:
-        await message.answer(
-            "🚀 *Памп-сканер*\n\nСейчас активных пампов не вижу — рынок спокоен.\n"
-            "_Авто-алерты придут сами, как только что-то поедет._",
-            parse_mode="Markdown",
-        )
-        return
-
-    top = signals[:PUMP_ONDEMAND_LIMIT]
-    await message.answer(
-        f"🚀 *Памп-сканер* — нашёл *{len(signals)}*, показываю топ-{len(top)}:",
-        parse_mode="Markdown",
-    )
-    for sig in top:
-        try:
-            text = format_pump_alert(sig)
-            await message.answer(
-                text, parse_mode="Markdown", disable_web_page_preview=True,
-            )
-        except Exception as e:  # noqa: BLE001 — один битый сигнал не рушит ответ
-            logger.debug("pump: render failed for %s: %s", getattr(sig, "asset", "?"), e)
-
 
 # ─── /admin ───────────────────────────────────────────────────────────────────
 
@@ -6415,6 +6318,9 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="signalstatus", description="📊 Статус трейдера"),
         BotCommand(command="eval", description="📈 Валидация сигналов"),
         BotCommand(command="screener", description="📡 Сканер аномалий"),
+        BotCommand(command="stocks", description="📈 Акции: тренд + моментум"),
+        BotCommand(command="trend", description="🧭 Крипто-тренд (спот/лонг)"),
+        BotCommand(command="dca", description="💧 План усреднения (DCA)"),
         BotCommand(command="newbie", description="🆕 Гид для новичков (PDF + правила)"),
         BotCommand(command="instruction", description="📖 Инструкция для чайников"),
         BotCommand(command="close", description="Закрыть позицию"),
