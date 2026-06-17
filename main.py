@@ -129,8 +129,6 @@ from refactor.handlers import (
     register_p2p_arbitrage_handlers,
     register_postmortem_handlers,
     register_retro_handlers,
-    register_sniping_handlers,
-    sniping_callback_data,
 )
 from refactor.handlers.advisor_handler import register_advisor_handlers
 from refactor.handlers.advisor_portfolio_handler import (
@@ -2672,6 +2670,45 @@ async def _kb_trend(message: Message):
     await cmd_trend(message)
 
 
+@dp.message(Command("alerts"))
+async def cmd_alerts(message: Message):
+    """Спот-автоалерты вкл/выкл: пуш при смене режима тренда (/trend, /stocks).
+
+    /alerts        — показать статус и переключить
+    /alerts on     — включить
+    /alerts off    — выключить
+    """
+    from database import get_user_halal_alert_status, set_halal_alert_sub
+    user_id = message.from_user.id
+    parts = (message.text or "").split()
+    arg = parts[1].lower() if len(parts) >= 2 else None
+
+    current = await get_user_halal_alert_status(user_id)
+    if arg in ("on", "вкл", "1"):
+        new = True
+    elif arg in ("off", "выкл", "0"):
+        new = False
+    else:
+        new = not current  # без аргумента — переключаем
+
+    await set_halal_alert_sub(user_id, new)
+    if new:
+        text = (
+            "🔔 *Спот-автоалерты включены*\n\n"
+            "Раз в ~6 часов проверяю режим тренда. Пришлю пуш, когда:\n"
+            "• монета входит/выходит из аптренда (по SMA50) — `/trend`;\n"
+            "• акция входит/выходит из топа силы (моментум) — `/stocks`.\n\n"
+            "В каждом алерте — диплинки на биржи и график. Только спот/лонг, без плеча. "
+            "Выключить: `/alerts off`. Не инвест-совет."
+        )
+    else:
+        text = "🔕 Спот-автоалерты выключены. Включить обратно: `/alerts on`."
+    try:
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
 @dp.message(Command("instruction"))
 async def cmd_instruction(message: Message):
     """Полнейшая инструкция как для пятилетнего: /instruction"""
@@ -4468,10 +4505,6 @@ def _signal_explain_keyboard(user_id: int, capital: float = 123.0) -> InlineKeyb
         InlineKeyboardButton(
             text="📖 Что значат эти слова?",
             callback_data=f"sigexplain:{user_id}",
-        ),
-        InlineKeyboardButton(
-            text="🎯 Снайпинг",
-            callback_data=sniping_callback_data(user_id, capital),
         ),
     ]])
 
@@ -6321,6 +6354,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="stocks", description="📈 Акции: тренд + моментум"),
         BotCommand(command="trend", description="🧭 Крипто-тренд (спот/лонг)"),
         BotCommand(command="dca", description="💧 План усреднения (DCA)"),
+        BotCommand(command="alerts", description="🔔 Автоалерты смены тренда"),
         BotCommand(command="newbie", description="🆕 Гид для новичков (PDF + правила)"),
         BotCommand(command="instruction", description="📖 Инструкция для чайников"),
         BotCommand(command="close", description="Закрыть позицию"),
@@ -6409,7 +6443,6 @@ async def main():
     register_p2p_arbitrage_handlers(dp)
     register_postmortem_handlers(dp)
     register_retro_handlers(dp)
-    register_sniping_handlers(dp)
     register_subscription_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()

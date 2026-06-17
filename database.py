@@ -51,6 +51,21 @@ async def init_db():
         except Exception:
             pass
 
+        # Подписка на спот-автоалерты (/trend и /stocks: смена режима тренда).
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN halal_alert_sub INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+        # Универсальное key-value хранилище (состояние автоалертов и пр.).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS app_kv (
+                key   TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -779,6 +794,59 @@ async def get_user_signals_status(user_id: int) -> bool:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] == 1 if row else False
+
+
+# ─── Спот-автоалерты (смена режима тренда по /trend и /stocks) ────────────────
+async def get_halal_alert_subscribers() -> list[dict]:
+    """Пользователи с включёнными спот-автоалертами."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users WHERE halal_alert_sub = 1"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def set_halal_alert_sub(user_id: int, enabled: bool):
+    """Вкл/выкл спот-автоалерты для пользователя."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET halal_alert_sub = ? WHERE user_id = ?",
+            (1 if enabled else 0, user_id),
+        )
+        await db.commit()
+
+
+async def get_user_halal_alert_status(user_id: int) -> bool:
+    """Статус подписки на спот-автоалерты."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT halal_alert_sub FROM users WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] == 1 if row else False
+
+
+# ─── Универсальное key-value (состояние автоалертов и пр.) ────────────────────
+async def kv_get(key: str) -> Optional[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT value FROM app_kv WHERE key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def kv_set(key: str, value: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO app_kv (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+            (key, value),
+        )
+        await db.commit()
 
 
 def _parse_signals_assets(raw: Optional[str]) -> Optional[list[str]]:

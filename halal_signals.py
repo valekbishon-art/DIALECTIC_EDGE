@@ -19,6 +19,7 @@ import statistics
 import urllib.request
 from typing import Sequence
 
+import links
 import ui_kit
 
 _YH = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
@@ -113,7 +114,8 @@ async def build_stocks_card(sma: int = 50, top: int = 8) -> str:
             f"{ui_kit.rank_emoji(i)} *{sym}* · {name}\n"
             f"    `{_spark(closes)}`  {ui_kit.chip(mom)} _6м_\n"
             f"    тренд: {'🟢 выше' if up else '🔴 ниже'} SMA{sma} "
-            f"({ui_kit.pct(ext)})"
+            f"({ui_kit.pct(ext)})\n"
+            f"    {links.stock_line(sym)}"
         )
     n_up = len(holds)
     footer = (f"_В аптренде {n_up} из {len(rows_data)}. Равный вес среди зелёных, "
@@ -147,6 +149,7 @@ async def build_crypto_trend_card(sma: int = 50, universe: Sequence[str] | None 
         rows.append(f"*Держать (спот, равный вес {w:.0f}%):*")
         for i, (coin, ext) in enumerate(hold, 1):
             rows.append(f"   🟢 *{coin:<5}* `{sparks.get(coin,'')}`  +{ext*100:.0f}% над SMA{sma}")
+            rows.append(f"        {links.crypto_line(coin)}")
     if cash:
         rows.append("")
         rows.append("*В стейбл (ниже SMA, ждём):* " + ", ".join(c for c, _ in cash))

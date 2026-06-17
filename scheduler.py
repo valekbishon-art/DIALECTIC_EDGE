@@ -41,6 +41,13 @@ except ImportError:
     AUTO_TRACKER_ENABLED = False
 
 try:
+    from halal_alerts import HalalAlertSystem
+    from database import get_halal_alert_subscribers
+    HALAL_ALERT_ENABLED = True
+except ImportError:
+    HALAL_ALERT_ENABLED = False
+
+try:
     from smart_money_alert import SmartMoneyAlertSystem
     SMART_MONEY_ALERT_ENABLED = True
 except ImportError:
@@ -345,6 +352,14 @@ class Scheduler:
             except Exception as e:
                 logger.warning(f"Auto tracker init error: {e}")
 
+        self._halal_alert = None
+        if HALAL_ALERT_ENABLED:
+            try:
+                self._halal_alert = HalalAlertSystem(self.bot)
+                logger.info("✅ Спот-автоалерты инициализированы")
+            except Exception as e:
+                logger.warning(f"Halal alert init error: {e}")
+
         self._smart_money_alert = None
         if SMART_MONEY_ALERT_ENABLED:
             try:
@@ -393,6 +408,10 @@ class Scheduler:
 
         if AUTO_TRACKER_ENABLED and self._auto_tracker:
             tasks.append(self._auto_tracker_loop())
+
+        if HALAL_ALERT_ENABLED and self._halal_alert:
+            tasks.append(self._halal_alert_loop())
+            logger.info("🔔 Спот-автоалерты: loop запущен (каждые 6ч)")
 
         if SMART_MONEY_ALERT_ENABLED and self._smart_money_alert:
             tasks.append(self._smart_money_alert_loop())
@@ -1228,6 +1247,22 @@ class Scheduler:
 
             # Проверяем каждую минуту
             await asyncio.sleep(60)
+
+    async def _halal_alert_loop(self):
+        """Спот-автоалерты: проверяет смену режима тренда каждые 6 часов."""
+        await asyncio.sleep(420)  # warm-up: ~7 минут при старте
+
+        while self._running:
+            try:
+                if self._halal_alert is not None:
+                    subscribers = await get_halal_alert_subscribers()
+                    sent = await self._halal_alert.check_and_alert(subscribers)
+                    if sent > 0:
+                        logger.info(f"🔔 Спот-автоалерты отправлены: {sent}")
+            except Exception as e:
+                logger.error(f"Halal alert loop error: {e}")
+
+            await asyncio.sleep(6 * 3600)  # каждые 6 часов
 
     async def _advisor_portfolio_watcher_loop(self):
         """M2: watcher для виртуального портфеля advisor-планов.
