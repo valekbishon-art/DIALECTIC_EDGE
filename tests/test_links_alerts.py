@@ -2,7 +2,11 @@
 import re
 
 import links
-import halal_alerts as ha
+
+try:  # halal_alerts тянет aiogram — нет в minimal-deps CI (unit-fast)
+    import halal_alerts as ha
+except ImportError:  # pragma: no cover - aiogram отсутствует
+    ha = None
 
 RELIGIOUS = re.compile(r"halal|haram|shari|riba|gharar|fiqh|fatwa|ислам|халя|харам|шариат", re.I)
 
