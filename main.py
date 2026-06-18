@@ -3238,6 +3238,9 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "guide": lambda m: _send_bot_guide(m.chat.id),
         "instruction": lambda m: _send_detailed_guide(m.chat.id),
         "newbie": lambda m: _send_newbie_guide(m.chat.id),
+        "dca": cmd_dca,
+        "p2p": handle_p2p_command,
+        "alerts": cmd_alerts,
     }
 
     if cmd == "guide":
@@ -3252,7 +3255,17 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
     if not fn:
         await bot.send_message(callback.from_user.id, "Команда не найдена в меню. Открой `/help`.", parse_mode="Markdown")
         return
-    await fn(proxy)
+    try:
+        await fn(proxy)
+    except Exception as e:  # noqa: BLE001 — одна кнопка не должна валить весь колбэк
+        logger.error(f"inline cmd '{cmd}' failed: {e}")
+        try:
+            await bot.send_message(
+                callback.from_user.id,
+                f"⚠️ Не получилось открыть «{cmd}». Попробуй команду напрямую.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
@@ -3273,24 +3286,42 @@ async def cmd_start(message: Message):
     # по торговой дисциплине (когда запускать /daily, только Spot, какой
     # горизонт, правила выживания первой недели). Опытному пользователю
     # можно сразу идти на «📊 Покажи прогноз сейчас» или ⚙️ Настройки.
+    # Полное inline-меню: все функции бота прямо на /start (тренд, акции,
+    # рынки, скринер, P2P, DCA, алерты, сигнал, бэктест, трек-рекорд и т.д.).
     welcome_inline = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🆕 Я новичок — гид + PDF",  callback_data="cmd:newbie")],
         [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас",  callback_data="cmd:signal")],
-        [
-            InlineKeyboardButton(text="🧭 Тренд",              callback_data="hsnav:trend"),
-            InlineKeyboardButton(text="📈 Акции",              callback_data="hsnav:stocks"),
-        ],
         [
             InlineKeyboardButton(text="📊 Прогноз",            callback_data="cmd:daily"),
             InlineKeyboardButton(text="🏛 Рынки",              callback_data="cmd:markets"),
         ],
         [
-            InlineKeyboardButton(text="🧪 Скринер",            callback_data="cmd:screener"),
-            InlineKeyboardButton(text="💎 Что я умею",         callback_data="cmd:pitch"),
+            InlineKeyboardButton(text="🧭 Тренд",              callback_data="hsnav:trend"),
+            InlineKeyboardButton(text="📈 Акции",              callback_data="hsnav:stocks"),
         ],
         [
+            InlineKeyboardButton(text="🧪 Скринер",            callback_data="cmd:screener"),
+            InlineKeyboardButton(text="🧭 P2P арбитраж",       callback_data="cmd:p2p"),
+        ],
+        [
+            InlineKeyboardButton(text="💰 DCA-план",           callback_data="cmd:dca"),
+            InlineKeyboardButton(text="🔔 Алерты",             callback_data="cmd:alerts"),
+        ],
+        [
+            InlineKeyboardButton(text="📡 Сигнал-статус",      callback_data="cmd:signalstatus"),
+            InlineKeyboardButton(text="🧪 Бэктест",            callback_data="cmd:backtest"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Трек-рекорд",        callback_data="cmd:trackrecord"),
+            InlineKeyboardButton(text="💎 VIP",                callback_data="cmd:premium"),
+        ],
+        [
+            InlineKeyboardButton(text="💎 Что я умею",         callback_data="cmd:pitch"),
             InlineKeyboardButton(text="⚙️ Настройки",          callback_data="cmd:profile"),
+        ],
+        [
             InlineKeyboardButton(text="📘 Команды",            callback_data="cmd:guide"),
+            InlineKeyboardButton(text="❓ Помощь",             callback_data="cmd:help"),
         ],
     ])
 
