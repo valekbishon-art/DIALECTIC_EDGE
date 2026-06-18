@@ -201,6 +201,21 @@ class TestFormatPricesRendersSlTp(unittest.TestCase):
         self.assertIn("TP $83,034", out)
         self.assertIn("SL $77,160", out)
 
+    def test_user_facing_is_spot_only_no_short(self):
+        # for_user=True (карточка /markets) — только спот/лонг, без SHORT.
+        # Шорт/деривативы вне проекта; в пользовательском выводе их быть не должно.
+        out = format_prices_for_agents(self._btc(), for_user=True)
+        # Спот-уровень входа есть, число то же.
+        self.assertIn("🎯 Спот", out)
+        self.assertIn("TP $83,034", out)
+        self.assertIn("R/R 2:1", out)
+        # А SHORT — нигде: ни SL/TP-строкой, ни в MA-триггерах, ни в quant.
+        self.assertNotIn("SHORT", out)
+        self.assertNotIn("🎯 LONG", out)
+        # MA-триггеры переформулированы по споту.
+        self.assertIn("→ покупка спот", out)
+        self.assertIn("→ выход в стейбл", out)
+
     def test_sl_tp_follows_ma_triggers(self):
         # Визуальный порядок: цена → MA-триггеры → SL/TP → тренд → quant.
         # Это специально — юзер сначала видит «при пробое», потом «если

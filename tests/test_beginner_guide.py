@@ -44,10 +44,14 @@ class TestInlineGuideSource(unittest.TestCase):
         start = src.index("async def _send_newbie_guide")
         end = src.index("class _CallbackMessageProxy", start)
         body = src[start:end]
-        for term in ("дельта-нейтрал", "/carry", "/arb", "/basis", "funding"):
+        # Гид должен продавать реальный edge — спот + следование тренду,
+        # а не угадывание направления.
+        for term in ("спот", "тренд", "SMA"):
             self.assertIn(term, body, f"в inline-гиде нет «{term}»")
-        for banned in ("BULLISH", "MA50", "MA200"):
-            self.assertNotIn(banned, body, f"directional-пережиток «{banned}»")
+        # И не должен тянуть исключённые из проекта механики/обещания направления.
+        # (MA50/MA200 не баним — SMA50/SMA200 это легитимный трендовый фильтр.)
+        for banned in ("BULLISH", "/carry", "/arb", "/basis", "funding"):
+            self.assertNotIn(banned, body, f"в гиде остался исключённый «{banned}»")
 
 
 if __name__ == "__main__":

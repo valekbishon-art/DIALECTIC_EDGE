@@ -41,6 +41,13 @@ except ImportError:
     AUTO_TRACKER_ENABLED = False
 
 try:
+    from halal_alerts import HalalAlertSystem
+    from database import get_halal_alert_subscribers
+    HALAL_ALERT_ENABLED = True
+except ImportError:
+    HALAL_ALERT_ENABLED = False
+
+try:
     from smart_money_alert import SmartMoneyAlertSystem
     SMART_MONEY_ALERT_ENABLED = True
 except ImportError:
@@ -67,6 +74,20 @@ try:
     PUMP_ALERT_ENABLED = True
 except ImportError:
     PUMP_ALERT_ENABLED = False
+
+# Фича ДЕПЕГ: алерт о депеге фиат-обеспеченных стейблов (возможен возврат к $1).
+# Импорт через try/except — старый код без depeg_monitor.py продолжает стартовать.
+# Подписчиков берём из спот-автоалертов (get_halal_alert_subscribers).
+try:
+    from depeg_monitor import (
+        DepegAlertSystem,
+        feature_enabled as depeg_feature_enabled,
+        get_interval_seconds as depeg_interval_seconds,
+    )
+    from database import get_halal_alert_subscribers  # подписчики спот-алертов
+    DEPEG_ALERT_ENABLED = True
+except ImportError:
+    DEPEG_ALERT_ENABLED = False
 
 # Post-mortem loop (24h-later анализ дайджеста).  Импорт через try/except,
 # чтобы старый код, без `core/post_mortem.py`, продолжал стартовать.
@@ -200,13 +221,10 @@ try:
     )
     from refactor.services.alert_rules import (
         BtcEtfOutflowRule as _BtcEtfOutflowRule,
-        LiquidationClusterRule as _LiquidationClusterRule,
         ScreenerAnomalyRule as _ScreenerAnomalyRule,
     )
     from refactor.services.alert_rules.btc_etf_outflow import feature_enabled as _alert_btc_etf_enabled
-    from refactor.services.alert_rules.liquidation_cluster import (
-        feature_enabled as _alert_liq_enabled,
-    )
+    # liquidation_cluster удалён (деривативы вне спот-режима).
     from refactor.services.alert_rules.screener_anomaly import (
         feature_enabled as _alert_screener_enabled,
     )
@@ -348,6 +366,14 @@ class Scheduler:
             except Exception as e:
                 logger.warning(f"Auto tracker init error: {e}")
 
+        self._halal_alert = None
+        if HALAL_ALERT_ENABLED:
+            try:
+                self._halal_alert = HalalAlertSystem(self.bot)
+                logger.info("✅ Спот-автоалерты инициализированы")
+            except Exception as e:
+                logger.warning(f"Spot alert init error: {e}")
+
         self._smart_money_alert = None
         if SMART_MONEY_ALERT_ENABLED:
             try:
@@ -373,6 +399,16 @@ class Scheduler:
             except Exception as e:
                 logger.warning(f"Pump alert init error: {e}")
 
+        # Фича ДЕПЕГ: авто-алерт о депеге стейблов. По умолчанию ВЫКЛ
+        # (FEATURE_DEPEG_ALERT=1). Команда /depeg работает всегда.
+        self._depeg_alert = None
+        if DEPEG_ALERT_ENABLED and depeg_feature_enabled():
+            try:
+                self._depeg_alert = DepegAlertSystem(self.bot)
+                logger.info("✅ Депег-алерт стейблов инициализирован")
+            except Exception as e:
+                logger.warning(f"Depeg alert init error: {e}")
+
     async def start(self):
         self._running = True
         logger.info("⏰ Scheduler запущен")
@@ -394,8 +430,18 @@ class Scheduler:
         if PUMP_ALERT_ENABLED and self._pump_alert is not None:
             tasks.append(self._pump_scanner_loop())
 
+        # Фича ДЕПЕГ: фоновый авто-алерт (только если FEATURE_DEPEG_ALERT=1).
+        if DEPEG_ALERT_ENABLED and self._depeg_alert is not None:
+            tasks.append(self._depeg_alert_loop())
+            logger.info("⚖️ Депег-алерт стейблов: loop запущен (interval=%ss)",
+                        depeg_interval_seconds())
+
         if AUTO_TRACKER_ENABLED and self._auto_tracker:
             tasks.append(self._auto_tracker_loop())
+
+        if HALAL_ALERT_ENABLED and self._halal_alert:
+            tasks.append(self._halal_alert_loop())
+            logger.info("🔔 Спот-автоалерты: loop запущен (каждые 6ч)")
 
         if SMART_MONEY_ALERT_ENABLED and self._smart_money_alert:
             tasks.append(self._smart_money_alert_loop())
@@ -497,7 +543,7 @@ class Scheduler:
                 name for name, ok in (
                     ("screener", _alert_screener_enabled()),
                     ("btc_etf", _alert_btc_etf_enabled()),
-                    ("liquidation", _alert_liq_enabled()),
+                    # liquidation rule удалён (деривативы вне спот-режима).
                 ) if ok
             ]
             logger.info(
@@ -637,6 +683,7 @@ class Scheduler:
         Non-fatal: ошибки логируются, луп живёт. Состояние обновляем только при
         надёжных данных (health-guard) — пустой фетч не даёт ложный масс-выход.
         """
+        return  # [removed] carry/арб-мониторинг отключён (деривативы/фандинг/процент)
         from core.carry_briefing import (arb_close_alerts, build_briefing,
                                           cap_state, close_alerts, load_monitor_state,
                                           save_monitor_state, scan_carry_open,
@@ -954,7 +1001,7 @@ class Scheduler:
         Шлёт алерт подписчикам сигналов только когда ≥ 2 институциональных
         индикаторов синхронно показывают один же direction. Анти-спам внутри.
         """
-        await asyncio.sleep(900)  # ждём 15 минут при старте — пусть система прогреется
+        await asyncio.sleep(900)  # ждём 15 минут при ст��рте — пусть система прогреется
 
         while self._running:
             try:
@@ -1147,8 +1194,7 @@ class Scheduler:
             rules.append(_ScreenerAnomalyRule.build())
         if _alert_btc_etf_enabled():
             rules.append(_BtcEtfOutflowRule.build())
-        if _alert_liq_enabled():
-            rules.append(_LiquidationClusterRule.build())
+        # LiquidationClusterRule удалён (деривативы вне спот-режима).
 
         if not rules:
             logger.info(
@@ -1231,6 +1277,38 @@ class Scheduler:
 
             # Проверяем каждую минуту
             await asyncio.sleep(60)
+
+    async def _halal_alert_loop(self):
+        """Спот-автоалерты: проверяет смену режима тренда каждые 6 часов."""
+        await asyncio.sleep(420)  # warm-up: ~7 минут при старте
+
+        while self._running:
+            try:
+                if self._halal_alert is not None:
+                    subscribers = await get_halal_alert_subscribers()
+                    sent = await self._halal_alert.check_and_alert(subscribers)
+                    if sent > 0:
+                        logger.info(f"🔔 Спот-автоалерты отправлены: {sent}")
+            except Exception as e:
+                logger.error(f"Spot alert loop error: {e}")
+
+            await asyncio.sleep(6 * 3600)  # каждые 6 часов
+
+    async def _depeg_alert_loop(self):
+        """Депег-алерт: проверяет цены стейблов и шлёт алерт при новом депеге.
+        Подписчиков берём из спот-автоалертов (get_halal_alert_subscribers)."""
+        await asyncio.sleep(300)  # warm-up: 5 минут при старте
+        interval = depeg_interval_seconds()
+        while self._running:
+            try:
+                if self._depeg_alert is not None:
+                    subscribers = await get_halal_alert_subscribers()
+                    sent = await self._depeg_alert.check_and_alert(subscribers)
+                    if sent > 0:
+                        logger.info(f"⚖️ Депег-алерты отправлены: {sent}")
+            except Exception as e:
+                logger.error(f"Depeg alert loop error: {e}")
+            await asyncio.sleep(interval)
 
     async def _advisor_portfolio_watcher_loop(self):
         """M2: watcher для виртуального портфеля advisor-планов.

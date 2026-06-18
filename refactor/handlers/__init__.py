@@ -212,15 +212,7 @@ from .admin_handler import (
     setup_admins,
 )
 
-from .funding_handler import (
-    FUNDING_SYMBOLS,
-    FundingRow,
-    classify_funding,
-    fetch_funding_rates,
-    format_funding_report,
-    handle_funding_command,
-    register_funding_handlers,
-)
+# [removed] funding_handler удалён — funding rate / carry (вне спот-режима).
 
 from .btc_handler import (
     build_btc_outlook_message,
@@ -229,17 +221,7 @@ from .btc_handler import (
     register_btc_handlers,
 )
 
-from .sniping_handler import (
-    SniperPlan,
-    SniperReport,
-    build_sniper_plans_for_asset,
-    format_sniper_report,
-    handle_sniping_callback,
-    handle_sniping_command,
-    parse_sniping_callback_data,
-    register_sniping_handlers as _register_sniping_handlers_base,
-    sniping_callback_data,
-)
+# [removed] sniping_handler удалён — снайпинг листингов = спекуляция (вне спот-режима).
 
 from .p2p_arbitrage_handler import (
     fetch_binance_p2p_ads,
@@ -249,19 +231,14 @@ from .p2p_arbitrage_handler import (
     register_p2p_arbitrage_handlers,
 )
 
-from .postmortem_handler import (
-    handle_postmortem_command,
-    register_postmortem_handlers,
-)
+# [removed] postmortem_handler удалён — пост-мортем ликвидационных каскадов (деривативы вне спот-режима).
 
 from .retro_handler import (
     handle_retro_command,
     register_retro_handlers,
 )
 
-# PUMP scanner /pump command. Composed into register_sniping_handlers below
-# (see wrapper) so the ~6.7k-line main.py entrypoint needs no edits.
-from .pump_handler import register_pump_handlers
+# [removed] pump_handler удалён — памп-сканер (спекуляция/шорт-фейд вне спот-режима).
 
 # Utilities
 from .utils import (
@@ -281,24 +258,34 @@ import logging as _logging
 _logger = _logging.getLogger(__name__)
 
 
-def register_sniping_handlers(dp) -> None:
-    """Register the `/sniping` handlers and the PUMP scanner `/pump` command.
+# ─────────────────────────────────────────────────────────────────────────────
+# [removed] Заглушки-no-op для удалённых отключённых хендлеров. main.py импортирует и
+# вызывает эти имена при старте; оставляем их как безопасные пустышки, чтобы
+# импорт-граф и запуск не падали, а сами отключённые фичи (funding/sniping/pump/
+# postmortem-ликвидаций) просто отсутствовали.
+# ─────────────────────────────────────────────────────────────────────────────
+def register_sniping_handlers(dp=None, *args, **kwargs) -> None:
+    """[removed] снайпинг/памп удалены — no-op."""
+    _logger.info("[removed] sniping/pump handlers отключены (вне спот-режима).")
 
-    ``main.py`` (~6.7k LOC) imports ``register_sniping_handlers`` from this
-    package and calls it once at startup. We compose the pump-scanner
-    registration here, at the handlers-package aggregation point, so the
-    entrypoint needs no edits and ``sniping_handler`` / ``pump_handler`` each
-    stay single-responsibility.
 
-    Best-effort: a failure to wire the pump scanner never blocks the sniping
-    handlers. The ``/pump`` command itself is gated behind
-    ``FEATURE_PUMP_SCANNER`` at runtime.
-    """
-    _register_sniping_handlers_base(dp)
-    try:
-        register_pump_handlers(dp)
-    except Exception as exc:  # noqa: BLE001
-        _logger.warning("PUMP scanner /pump registration skipped: %s", exc)
+def register_funding_handlers(dp=None, *args, **kwargs) -> None:
+    """[removed] funding carry удалён — no-op."""
+    _logger.info("[removed] funding handlers отключены (вне спот-режима).")
+
+
+def register_postmortem_handlers(dp=None, *args, **kwargs) -> None:
+    """[removed] пост-мортем ликвидаций удалён — no-op."""
+    _logger.info("[removed] postmortem handlers отключены (деривативы).")
+
+
+def register_pump_handlers(dp=None, *args, **kwargs) -> None:
+    """[removed] памп-сканер удалён — no-op."""
+
+
+async def handle_funding_command(*args, **kwargs) -> None:
+    """[removed] /funding удалён (вне спот-режима) — no-op."""
+    _logger.info("[removed] /funding вызван, но фича удалена (вне спот-режима).")
 
 
 __all__ = [
@@ -356,7 +343,6 @@ __all__ = [
     "fetch_p2p_ads",
     "handle_p2p_command",
     "register_p2p_arbitrage_handlers",
-    "handle_postmortem_command",
     "register_postmortem_handlers",
     "handle_retro_command",
     "register_retro_handlers",

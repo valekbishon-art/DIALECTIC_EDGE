@@ -79,6 +79,9 @@ from database import (
     get_track_record, save_feedback, get_feedback_stats,
     import_forecasts_from_markdown,
     get_signals_subscribers, set_signals_sub, get_user_signals_status,
+    get_user_edge_profile, set_user_edge_profile,
+    add_trade, close_trade, get_trades, get_open_trade_by_symbol,
+    delete_trade, get_trade_stats,
     get_user_signals_assets, set_user_signals_assets, toggle_user_signal_asset,
     add_portfolio_position, get_portfolio, remove_portfolio_position,
     add_backtest_signal, close_backtest_signal, get_backtest_signals, get_backtest_stats,
@@ -129,8 +132,6 @@ from refactor.handlers import (
     register_p2p_arbitrage_handlers,
     register_postmortem_handlers,
     register_retro_handlers,
-    register_sniping_handlers,
-    sniping_callback_data,
 )
 from refactor.handlers.advisor_handler import register_advisor_handlers
 from refactor.handlers.advisor_portfolio_handler import (
@@ -265,34 +266,57 @@ PERSISTENT_BTN_SETTINGS = "⚙️ Настройки"
 PERSISTENT_BTN_SIGNAL   = "🎯 Лучшая сделка"
 PERSISTENT_BTN_SCREENER = "🧪 Скринер"
 PERSISTENT_BTN_P2P      = "🧭 P2P арбитраж"
+PERSISTENT_BTN_STOCKS   = "📈 Акции"
+PERSISTENT_BTN_TREND    = "🧭 Тренд"
 PERSISTENT_BTN_CARRY    = "💱 Carry"
 PERSISTENT_BTN_ARB      = "🔀 Кросс-арб"
 PERSISTENT_BTN_BASIS    = "🗓 Базис"
 PERSISTENT_BTN_CALC     = "🧮 Калькулятор"
 PERSISTENT_BTN_HELP     = "❓ Помощь"
+# Полный набор для нижнего меню (зеркало inline-меню /start)
+PERSISTENT_BTN_DCA      = "💰 DCA"
+PERSISTENT_BTN_ALERTS   = "🔔 Алерты"
+PERSISTENT_BTN_SIGSTAT  = "🤖 Автоторговля"
+PERSISTENT_BTN_BACKTEST = "🧪 Бэктест"
+PERSISTENT_BTN_TRACK    = "📊 Трек-рекорд"
+PERSISTENT_BTN_VIP      = "💎 VIP"
+PERSISTENT_BTN_WHATIDO  = "💎 Что я умею"
+PERSISTENT_BTN_NEWBIE   = "🆕 Новичок"
+PERSISTENT_BTN_GUIDE    = "📘 Команды"
 
 
 def persistent_kb() -> ReplyKeyboardMarkup:
-    """Главное меню снизу. Висит постоянно. 3 ряда по 3 — без 'Лучшей сделки'
-    (directional-пережиток, доказанно убыточен). Carry/Арб на видном месте."""
+    """Главное меню снизу. Висит постоянно. Спот-инструменты: прогноз, рынки,
+    скринер, P2P, настройки, помощь."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [
+                KeyboardButton(text=PERSISTENT_BTN_SIGNAL),
                 KeyboardButton(text=PERSISTENT_BTN_DAILY),
                 KeyboardButton(text=PERSISTENT_BTN_MARKETS),
-                KeyboardButton(text=PERSISTENT_BTN_CARRY),
             ],
             [
-                KeyboardButton(text=PERSISTENT_BTN_ARB),
-                KeyboardButton(text=PERSISTENT_BTN_PUMP),
+                KeyboardButton(text=PERSISTENT_BTN_TREND),
+                KeyboardButton(text=PERSISTENT_BTN_STOCKS),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
             ],
             [
-                KeyboardButton(text=PERSISTENT_BTN_BASIS),
-                KeyboardButton(text=PERSISTENT_BTN_CALC),
                 KeyboardButton(text=PERSISTENT_BTN_P2P),
+                KeyboardButton(text=PERSISTENT_BTN_DCA),
+                KeyboardButton(text=PERSISTENT_BTN_ALERTS),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_SIGSTAT),
+                KeyboardButton(text=PERSISTENT_BTN_BACKTEST),
+                KeyboardButton(text=PERSISTENT_BTN_TRACK),
+            ],
+            [
+                KeyboardButton(text=PERSISTENT_BTN_VIP),
+                KeyboardButton(text=PERSISTENT_BTN_WHATIDO),
+                KeyboardButton(text=PERSISTENT_BTN_NEWBIE),
+            ],
+            [
+                KeyboardButton(text=PERSISTENT_BTN_GUIDE),
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -350,7 +374,7 @@ _DEBATE_START_MARKERS = (
     "🗣 *ДЕБАТЫ АГЕНТОВ*",
     "🗣 *ХОД ДЕБАТОВ*",
     "🗣 ХОД ДЕБАТОВ",
-    "🗣 ДЕБАТЫ АГЕНТОВ",
+    "🗣 ДЕБ����ТЫ АГЕНТОВ",
 )
 _ROUND_HEADER_RE = re.compile(r"──\s*Раунд\s+\d+")
 
@@ -726,7 +750,7 @@ def _trading_plan_grouped_lines(plans: list[dict] | None, prices: dict | None) -
 
     Источник истины — `prices_dict` (MA50/MA200 из web_search.py:_fetch_*).
     `plans[]` (Synth output) используется только чтобы определить, какие
-    активы Synth решил включить в план. Раньше рендер был «11 одинаковых
+    активы Synth решил включить в ��лан. Раньше рендер был «11 одинаковых
     bullet-строк подряд», читать тяжело; плюс из-за `${ma:.0f}` в
     `format_prices_for_agents` XRP-триггеры приходили как `$1/$2` —
     теперь берём MA-уровни напрямую из структурированных данных.
@@ -772,8 +796,8 @@ def _trading_plan_grouped_lines(plans: list[dict] | None, prices: dict | None) -
             dn_level, dn_tag = (ma_b, tag_b) if ma_a >= ma_b else (ma_a, tag_a)
 
             head = f"{emoji} *{label}* — `${_fmt_money_compact(price_f)}`"
-            up = f"   ▲ выше `${_fmt_money_compact(up_level)}` ({up_tag}) → LONG"
-            dn = f"   ▼ ниже `${_fmt_money_compact(dn_level)}` ({dn_tag}) → SHORT"
+            up = f"   ▲ выше `${_fmt_money_compact(up_level)}` ({up_tag}) → покупка спот"
+            dn = f"   ▼ ниже `${_fmt_money_compact(dn_level)}` ({dn_tag}) → выход в стейбл"
             group_lines.extend([head, up, dn])
 
         if group_lines:
@@ -841,7 +865,7 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
 
       💬 Простыми словами: …
 
-      📜 Полный raw-ответ модели и полные дебаты доступны кнопками ниже.
+      📜 Полный raw-ответ модели и полны�� дебаты доступны кнопками ниже.
 
     Возвращает список из одного элемента, чтобы существующие caller'ы
     (refactor/handlers/market_handler.py и т.п.) ломались только если
@@ -879,7 +903,7 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
         lines.append(f"⏱ *Горизонт:* {horizon.label_pretty}")
     lines.extend([
         "",
-        f"🎯 *Вердикт:* {verdict_emoji} *{verdict_label}*",
+        f"🎯 *��ердикт:* {verdict_emoji} *{verdict_label}*",
         f"📊 *Сигнал:* {stars} ({pct}%)",
     ])
 
@@ -920,8 +944,8 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
     else:
         lines.extend(["", "📋 *Торговый план:*",
                       "_⚠️ Уровни ниже — для НАБЛЮДЕНИЯ, не сигналы: бэктест 2020-26 "
-                      "показал, что MA-пробои на дневках убыточны. Что РЕАЛЬНО делать — "
-                      "/carry и /arb (см. низ дайджеста)._"])
+                      "показал, что MA-пробои на дневках убыточны. Что РЕАЛЬНО работает — "
+                      "следование тренду на споте (см. низ дайджеста)._"])
         if plans:
             # Per-asset coverage: 5-6 крипто (BTC/ETH/SOL/BNB/XRP) + 6 макро
             # (SPX/NDX/GOLD/OIL/DXY/VIX) → до 11 планов в одном дайджесте.
@@ -1002,8 +1026,8 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
         "",
         "📜 Полный raw-ответ модели и полные дебаты доступны кнопками ниже.",
         "",
-        "💱 *Что РЕАЛЬНО делать* (проверено бэктестом 2020-26, не угадайка цены): "
-        "жми /carry — режим рынка + carry-сделка по шагам · /arb — кросс-биржевой funding-арбитраж.",
+        "📈 *Что РЕАЛЬНО работает* (проверено бэктестом 2020-26, не угадайка цены): "
+        "следование тренду на споте — держим активы выше SMA, уходим в стейбл ниже. Без плеча и шортов.",
     ])
 
     return ["\n".join(lines)]
@@ -1388,7 +1412,7 @@ def _eli5_for_actionable_trade(plan: dict) -> str:
     size = str(plan.get("size") or "").strip()
 
     # Имена в винительном падеже (объект действия) для разговорной речи.
-    # «Покупаем биткоин», «шортим эфир» — звучит естественно.
+    # «Покупаем биткоин», «шортим эфир» — звучит естестве��но.
     asset_accusative = {
         "BTC": "биткоин",
         "ETH": "эфир",
@@ -1400,7 +1424,7 @@ def _eli5_for_actionable_trade(plan: dict) -> str:
         "TON": "тон",
     }.get(sym, sym)
 
-    verb = "Покупаем" if direction == "LONG" else "Шортим"
+    verb = "По��упаем" if direction == "LONG" else "Шортим"
 
     parts = [f"{verb} {asset_accusative} по {_money_format_price(entry)}."]
 
@@ -1472,7 +1496,7 @@ def _eli5_for_watch_only(watch_levels: list[dict]) -> str:
             "выше" in note_lower or "купим" in note_lower or
             "откроем long" in note_lower
         )
-        # Цена ВСЕГДА берётся из поля `level` (там реальный уровень $82608),
+        # Цена ВСЕГДА берётся из поля `level` (там ре��льный уровень $82608),
         # а не из `note` (там может быть «MA200 — ключевое сопротивление…»,
         # и regex случайно вытаскивал «200» из «MA200» как цену → юзеру
         # показывалось «закроет свечу выше $200» вместо $82608. Если в level
@@ -1564,7 +1588,7 @@ def format_money_button_message(report_text: str, macro=None) -> str:
         elif d in {"CASH", "WATCH", "WAIT", "FLAT"}:
             cash_plans.append(p)
 
-    # CASH/WATCH-планы с триггерами → синтезируем в watch_levels (если их там
+    # CASH/WATCH-пл��ны с триггерами → синтезируем в watch_levels (если их там
     # ещё нет). Иначе кнопка «Стратегия» не показывает условия флипа из CASH-планов.
     seen_watch_syms = {(w.get("symbol") or "").upper() for w in watch_levels}
     for p in cash_plans:
@@ -1603,11 +1627,11 @@ def format_money_button_message(report_text: str, macro=None) -> str:
         except Exception:
             pass
     out.append("")
-    # Честная плашка: directional MA-уровни доказанно убыточны на дневках. Реальный
-    # edge (carry/арб) уходит отдельным сообщением ниже из колбэка.
+    # Честная плашка: directional MA-уровни доказанно убыточны на дневках.
+    # Реальный подход — следование тренду на споте.
     out.append("⚠️ _Уровни ниже — для НАБЛЮДЕНИЯ, не сигналы: бэктест 2020-26 показал, "
-               "что MA-пробои на дневках убыточны. Что РЕАЛЬНО делать (carry + кросс-арб) — "
-               "в сообщении ниже 👇_")
+               "что MA-пробои на дневках убыточны. Что РЕАЛЬНО работает — следование "
+               "тренду на споте (держим выше SMA, в стейбле ниже)._")
     out.append("")
 
     if actionable:
@@ -1622,7 +1646,7 @@ def format_money_button_message(report_text: str, macro=None) -> str:
             size = str(p.get("size") or "").strip() or "—"
             trigger = str(p.get("trigger") or "").strip()
             out.append(
-                f"• *{sym} {direction}* — вход {entry}, стоп {stop}, цель {target}, R/R {rr}, размер {size} депозита"
+                f"• *{sym} {direction}* — вход {entry}, сто�� {stop}, цель {target}, R/R {rr}, размер {size} депозита"
             )
             if trigger:
                 out.append(f"  Триггер: {trigger}")
@@ -1744,18 +1768,6 @@ async def handle_money_button_callback(callback: CallbackQuery):
         clean_markdown(msg),
         parse_mode="Markdown",
     )
-    # РЕАЛЬНЫЙ EDGE — то что доказано работает (режим + carry + кросс-арб), отдельным
-    # HTML-сообщением. Non-fatal: ошибка/геоблок не ломает основную стратегию.
-    try:
-        from core.carry_briefing import build_briefing
-        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-        edge_text, _ = await asyncio.to_thread(build_briefing, cap)
-        await bot.send_message(
-            callback.message.chat.id, edge_text,
-            parse_mode="HTML", disable_web_page_preview=True,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("real-edge block (money button) skipped: %s", e)
 
 
 def format_signal_trader_status_message(status: dict) -> str:
@@ -1882,16 +1894,8 @@ def format_signal_trader_status_message(status: dict) -> str:
 
 @dp.message(F.text.startswith("/signalstatus"))
 async def cmd_signal_status(message: Message):
-    """Check signal trader status with entry prices."""
-    try:
-        from signal_trader import get_signal_trader_status
-
-        status = await get_signal_trader_status()
-        msg = format_signal_trader_status_message(status)
-        await message.answer(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"signal_status error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — панель paper-автотрейдера. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 def _format_autotrade_status_embed(risk_summary: dict, status: dict) -> str:
@@ -1966,17 +1970,8 @@ def _format_autotrade_status_embed(risk_summary: dict, status: dict) -> str:
 
 @dp.message(Command("autotrade_status"))
 async def cmd_autotrade_status(message: Message):
-    """Performance summary с Kelly, vol-targeting, drawdown, win-rate."""
-    try:
-        from signal_trader import get_signal_trader_status, _risk_manager
-
-        status = await get_signal_trader_status()
-        risk_summary = _risk_manager.get_risk_summary()
-        msg = _format_autotrade_status_embed(risk_summary, status)
-        await message.answer(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.exception("autotrade_status error")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — performance paper-автотрейда. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("audit"))
@@ -2089,7 +2084,7 @@ async def cmd_provenance(message: Message):
                 f"(score {r.get('score', 0)}, {r['decision_type']})"
             )
         lines.append("")
-        lines.append("Чтобы посмотреть детали: `/provenance <ID>`")
+        lines.append("Чтобы посмотреть д��тали: `/provenance <ID>`")
         await message.answer("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         logger.exception("provenance error")
@@ -2326,7 +2321,7 @@ async def cmd_postmortem(message: Message):
         report = await run_post_mortem(target_date=target_date)
         if report is None:
             await message.answer(
-                "📭 Не нашёл подходящего дайджеста.\n\n"
+                "📭 Не нашёл подходящего дай��жеста.\n\n"
                 "Возможные причины:\n"
                 "• Дайджест публикуется реже 24ч (или DIGEST_CACHE.md пуст).\n"
                 "• Дата `DD.MM.YYYY` не совпадает ни с одной строкой `## 📊`.\n"
@@ -2393,158 +2388,54 @@ async def cmd_usage(message: Message):
         await message.answer(f"Ошибка: {e}")
 
 
+def _autotrade_coming_soon_text() -> str:
+    """Единый текст-заглушка про будущую автоторговлю по API биржи."""
+    return (
+        "🤖 *Автоторговля — скоро*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Скоро ты сможешь подключить *API своей биржи* (только спот, только лонг, "
+        "без права вывода средств) — и бот будет торговать сам по своим сигналам: "
+        "тренд, моментум, DCA.\n\n"
+        "🔧 Функция в *активной разработке*.\n\n"
+        "А пока:\n"
+        "• 🧭 *Тренд* и 📈 *Акции* — смотри, что в аптренде;\n"
+        "• 🎯 *Лучшая сделка* — идея прямо сейчас;\n"
+        "• торгуй на бирже сам по диплинкам из карточек.\n\n"
+        "🔒 Ключи — только с правом спот-торговли, без вывода средств. "
+        "Не инвест-совет."
+    )
+
+
+async def _send_autotrade_coming_soon(message: Message) -> None:
+    text = _autotrade_coming_soon_text()
+    try:
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
 @dp.message(Command("close"))
 async def cmd_close_position(message: Message):
-    """Close a specific position manually: /close BTC"""
-    try:
-        from signal_trader import get_signal_trader_status, fetch_current_prices, _parse_trade_meta
-        from session_manager import session_manager
-
-        args = message.text.split(maxsplit=1)
-        if len(args) < 2:
-            await message.answer("Использование: `/close <SYMBOL>`\nПример: `/close BTC`", parse_mode="Markdown")
-            return
-
-        symbol = args[1].strip().upper()
-
-        signals = await get_backtest_signals()
-        open_positions = [s for s in signals if s.get("status") == "open" and s.get("symbol", "").upper() == symbol]
-
-        if not open_positions:
-            open_list = [s.get("symbol", "") for s in signals if s.get("status") == "open"]
-            await message.answer(
-                f"Нет открытой позиции по {symbol}.\n"
-                f"Открытые: {', '.join(open_list) if open_list else 'нет'}",
-                parse_mode="Markdown"
-            )
-            return
-
-        position = open_positions[0]
-        prices = await fetch_current_prices([symbol])
-        current_price = float(prices.get(symbol) or 0.0)
-
-        if current_price <= 0:
-            await message.answer(f"Не удалось получить цену для {symbol}")
-            return
-
-        meta = _parse_trade_meta(position)
-        direction = position.get("direction", "")
-        entry_price = float(position.get("entry_price") or 0.0)
-        pnl_pct = ((current_price - entry_price) / entry_price * 100) if direction == "BUY" and entry_price > 0 else ((entry_price - current_price) / entry_price * 100) if direction == "SELL" and entry_price > 0 else 0
-
-        result = await close_backtest_signal(position["id"], current_price, reason=f"Manual close by user")
-        if not result:
-            await message.answer("Ошибка при закрытии позиции")
-            return
-
-        session_manager.record_trade({
-            "symbol": symbol,
-            "direction": direction,
-            "entry_price": entry_price,
-            "exit_price": current_price,
-            "pnl": float(result.get("pnl") or 0.0),
-            "pnl_pct": float(result.get("pnl_pct") or 0.0),
-            "reason": "Manual close by user",
-        })
-        session_manager.update_capital(float(result.get("new_capital") or 0.0))
-
-        config = await get_backtest_config()
-        await update_backtest_capital(float(result.get("new_capital") or 0.0))
-
-        emoji = "🟢" if float(result.get("pnl") or 0) >= 0 else "🔴"
-        await message.answer(
-            f"{emoji} *ЗАКРЫТО ВРУЧНУЮ*\n"
-            f"*{symbol}* {direction}\n"
-            f"Вход: `${entry_price:,.2f}`\n"
-            f"Выход: `${current_price:,.2f}`\n"
-            f"PnL: `{float(result.get('pnl') or 0):+,.2f}` (`{pnl_pct:+.1f}%`)\n"
-            f"Баланс: `${float(result.get('new_capital') or 0):,.2f}`",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"close_position error: {e}", exc_info=True)
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — ручное закрытие paper-позиции. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("stop"))
 async def cmd_stop_autotrade(message: Message):
-    """Stop the autotrader: /stop"""
-    try:
-        from database import update_backtest_enabled
-
-        await update_backtest_enabled(False)
-        await message.answer("🛑 *Автотрейдинг ОСТАНОВЛЕН*\n\nБот больше не будет открывать новые позиции.\nВключить: `/starttrade`", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"stop_autotrade error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — стоп автотрейда. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("starttrade"))
 async def cmd_start_autotrade(message: Message):
-    """Start the autotrader: /starttrade"""
-    try:
-        from database import update_backtest_enabled
-
-        await update_backtest_enabled(True)
-        await message.answer("✅ *Автотрейдинг ЗАПУЩЕН*\n\nБот продолжит торговать.", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"start_autotrade error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — старт автотрейда. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("why"))
 async def cmd_why_position(message: Message):
-    """Explain why a position was opened: /why BTC"""
-    try:
-        from signal_trader import get_signal_trader_status, fetch_current_prices, _parse_trade_meta
-        from database import get_backtest_signals
-
-        args = message.text.split(maxsplit=1)
-        if len(args) < 2:
-            await message.answer("Использование: `/why <SYMBOL>`\nПример: `/why BTC`", parse_mode="Markdown")
-            return
-
-        symbol = args[1].strip().upper()
-
-        signals = await get_backtest_signals()
-        open_positions = [s for s in signals if s.get("status") == "open" and s.get("symbol", "").upper() == symbol]
-
-        if not open_positions:
-            await message.answer(f"Нет открытой позиции по {symbol}")
-            return
-
-        position = open_positions[0]
-        meta = _parse_trade_meta(position)
-        direction = position.get("direction", "")
-        entry_price = float(position.get("entry_price") or 0.0)
-        target = float(meta.get("target") or 0.0)
-        stop = float(meta.get("stop") or 0.0)
-        support = meta.get("support", 0)
-        consensus = meta.get("consensus_verdict", "N/A")
-        signal_dir = meta.get("signal_direction", "N/A")
-
-        prices = await fetch_current_prices([symbol])
-        current_price = float(prices.get(symbol) or 0.0)
-        pnl_pct = ((current_price - entry_price) / entry_price * 100) if direction == "BUY" and entry_price > 0 else ((entry_price - current_price) / entry_price * 100) if direction == "SELL" and entry_price > 0 else 0
-
-        emoji = "🟢" if pnl_pct >= 0 else "🔴"
-        await message.answer(
-            f"{emoji} *ПОЧЕМУ {symbol}*\n\n"
-            f"*Направление:* {direction}\n"
-            f"*Вход:* `${entry_price:,.2f}`\n"
-            f"*Текущая:* `${current_price:,.2f}` (`{pnl_pct:+.1f}%`)\n"
-            f"*Тейк:* `${target:,.2f}`\n"
-            f"*Стоп:* `${stop:,.2f}`\n\n"
-            f"*Причина открытия:*\n"
-            f"• Digest consensus: `{consensus}`\n"
-            f"• Поддержка: `{support}` digest(ов)\n"
-            f"• Сигнал рынка: `{signal_dir}`\n"
-            f"• Источник: auto_trader",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"why_position error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше �� объяснение paper-позиции. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("eval"))
@@ -2599,6 +2490,575 @@ async def cmd_screener(message: Message):
         await message.answer(f"Ошибка сканера: {e}")
 
 
+def _halal_card_kb(kind: str, picks: list[str]) -> InlineKeyboardMarkup:
+    """Inline-клавиатура под карточкой /stocks или /trend.
+
+    kind: "stocks" | "trend".
+    picks: топ-тикеры (до 3) — на каждый URL-кнопка «📈 SYM» на график.
+    Плюс ряд действий: 🔄 Обновить, 🔔 Алерты, переход на другую карточку.
+    """
+    import links
+    rows: list[list[InlineKeyboardButton]] = []
+    pick_row: list[InlineKeyboardButton] = []
+    for sym in (picks or [])[:3]:
+        url = links.crypto_chart_url(sym) if kind == "trend" else links.stock_chart_url(sym)
+        pick_row.append(InlineKeyboardButton(text=f"📈 {sym}", url=url))
+    if pick_row:
+        rows.append(pick_row)
+    if kind == "trend":
+        nav = InlineKeyboardButton(text="📊 Акции", callback_data="hsnav:stocks")
+    else:
+        nav = InlineKeyboardButton(text="🧭 Тренд", callback_data="hsnav:trend")
+    rows.append([
+        InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hsref:{kind}"),
+        InlineKeyboardButton(text="🔔 Алерты", callback_data="hsalert"),
+        nav,
+    ])
+    rows.append([
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data=f"explain:{kind}"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _pump_card_kb(picks: list[str]) -> InlineKeyboardMarkup:
+    """Inline-клавиатура под карточкой «🚀 Что разгоняется».
+
+    picks — топ-монеты (до 3) на график. Плюс 🔄 Обновить и переход на 🧭 Тренд.
+    """
+    import links
+    rows: list[list[InlineKeyboardButton]] = []
+    pick_row: list[InlineKeyboardButton] = []
+    for sym in (picks or [])[:3]:
+        pick_row.append(InlineKeyboardButton(text=f"📈 {sym}", url=links.crypto_chart_url(sym)))
+    if pick_row:
+        rows.append(pick_row)
+    rows.append([
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="pumpref"),
+        InlineKeyboardButton(text="🧭 Тренд", callback_data="hsnav:trend"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data="explain:pump"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _build_pump_card():
+    """Собирает карточку «что разгоняется» (text, keyboard). Без сети-краша."""
+    import halal_signals
+    res = await halal_signals.build_pump_card()
+    return res.text, _pump_card_kb(res.picks)
+
+
+async def _build_halal_card(kind: str, sma: int = 50):
+    """Собирает карточку (text, keyboard) для kind=stocks|trend. Без сети-краша."""
+    import halal_signals
+    if kind == "stocks":
+        res = await halal_signals.build_stocks_card(sma=sma)
+    else:
+        res = await halal_signals.build_crypto_trend_card(sma=sma)
+    return res.text, _halal_card_kb(kind, res.picks)
+
+
+async def _send_halal_card(message: Message, text: str, kb):
+    """Шлёт карточку с inline-кнопками, переживая сбой Markdown-парсинга.
+
+    Важно: в тексте карточки есть deeplink-URL с '_' (BTC_USDT) — на legacy
+    Markdown это иногда даёт «can't parse entities» и раньше уводило в fallback
+    БЕЗ клавиатуры (кнопки пропадали). Теперь fallback всегда сохраняет kb.
+    """
+    try:
+        return await message.answer(
+            text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb
+        )
+    except Exception:  # noqa: BLE001 — Markdown подвёл, шлём без разметки, но С кнопками
+        try:
+            return await message.answer(
+                text, disable_web_page_preview=True, reply_markup=kb
+            )
+        except Exception:  # noqa: BLE001 — крайний случай: хотя бы текст
+            return await message.answer(text, reply_markup=kb)
+
+
+@dp.message(Command("stocks"))
+async def cmd_stocks(message: Message):
+    """Скринер акций: курируемый вотчлист + тренд (SMA) и моментум. /stocks [sma]"""
+    parts = (message.text or "").split()
+    sma = 50
+    try:
+        if len(parts) >= 2:
+            sma = max(10, min(200, int(parts[1])))
+    except ValueError:
+        pass
+    wait = await message.answer("📈 Считаю силу акций (тренд + моментум)…")
+    kb = None
+    try:
+        text, kb = await _build_halal_card("stocks", sma)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать акции: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    await _send_halal_card(message, text, kb)
+
+
+@dp.message(Command("trend"))
+async def cmd_trend(message: Message):
+    """Крипто-тренд: кто сейчас в аптренде (price>SMA), равный вес. /trend [sma]"""
+    parts = (message.text or "").split()
+    sma = 50
+    try:
+        if len(parts) >= 2:
+            sma = max(10, min(200, int(parts[1])))
+    except ValueError:
+        pass
+    wait = await message.answer("🧭 Сканирую тренд по крупным спот-монетам…")
+    kb = None
+    try:
+        text, kb = await _build_halal_card("trend", sma)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать тренд: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    await _send_halal_card(message, text, kb)
+
+
+@dp.message(Command("dca"))
+async def cmd_dca(message: Message):
+    """План усреднения (DCA): /dca <депозит> [траншей] [интервал_дней]."""
+    parts = (message.text or "").split()
+    deposit, tranches, days = 1000.0, 6, 5
+    # Аргументы парсим ТОЛЬКО если это реальная команда /dca ...
+    # Тап по кнопке «💰 DCA» присылает текст "💰 DCA" — это не аргументы,
+    # для него отдаём дефолтный план (а не ошибку формата).
+    if parts and parts[0].lstrip().startswith("/"):
+        try:
+            if len(parts) >= 2:
+                deposit = float(parts[1].replace("$", "").replace(",", ""))
+            if len(parts) >= 3:
+                tranches = int(parts[2])
+            if len(parts) >= 4:
+                days = max(1, int(parts[3]))
+        except ValueError:
+            await message.answer("Формат: /dca 5000 6 7  (депозит, траншей, интервал в днях)")
+            return
+    try:
+        import halal_signals
+        text = halal_signals.build_dca_plan(deposit, tranches, days)
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать DCA-план: {e}"
+    dca_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data="explain:dca"),
+    ]])
+    try:
+        await message.answer(text, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=dca_kb)
+    except Exception:  # noqa: BLE001
+        await message.answer(text, reply_markup=dca_kb)
+
+
+@dp.message(F.text == PERSISTENT_BTN_STOCKS)
+async def _kb_stocks(message: Message):
+    await cmd_stocks(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_TREND)
+async def _kb_trend(message: Message):
+    await cmd_trend(message)
+
+
+@dp.message(Command("alerts"))
+async def cmd_alerts(message: Message):
+    """Спот-автоалерты вкл/выкл: пуш при смене режима тренда (/trend, /stocks).
+
+    /alerts        — показать статус и переключить
+    /alerts on     — включить
+    /alerts off    — выключить
+    """
+    from database import get_user_halal_alert_status, set_halal_alert_sub
+    user_id = message.from_user.id
+    parts = (message.text or "").split()
+    arg = parts[1].lower() if len(parts) >= 2 else None
+
+    current = await get_user_halal_alert_status(user_id)
+    if arg in ("on", "вкл", "1"):
+        new = True
+    elif arg in ("off", "выкл", "0"):
+        new = False
+    else:
+        new = not current  # без аргумента — переключаем
+
+    await set_halal_alert_sub(user_id, new)
+    if new:
+        text = (
+            "🔔 *Авто-алерты включены*\n\n"
+            "Я сам пришлю пуш, когда:\n"
+            "• монета входит/выходит из аптренда (по SMA50) — `/trend`;\n"
+            "• акция входит/выходит из топа силы (моментум) — `/stocks`;\n"
+            "• стейблкоин уходит в депег и возможен возврат к $1 — `/depeg`.\n\n"
+            "В каждом алерте — диплинки на биржи, график и кнопка «❓ Что делать». "
+            "Только спот/лонг, без плеча. Выключить: `/alerts off`. Не инвест-совет."
+        )
+    else:
+        text = "🔕 Спот-автоалерты выключены. Включить обратно: `/alerts on`."
+    try:
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
+# ─── Inline-кнопки под карточками /stocks и /trend ────────────────────────────
+@dp.callback_query(F.data.startswith("hsref:"))
+async def _cb_halal_refresh(cb: CallbackQuery):
+    """🔄 Обновить — пересобрать карточку на месте."""
+    kind = (cb.data or "").split(":", 1)[1] if ":" in (cb.data or "") else "trend"
+    if kind not in ("stocks", "trend"):
+        kind = "trend"
+    try:
+        await cb.answer("Обновляю…")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        text, kb = await _build_halal_card(kind, 50)
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Не удалось обновить, попробуй ещё раз", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    # Markdown может упасть на deeplink-URL — тогда правим без разметки, но С кнопками.
+    try:
+        await cb.message.edit_text(
+            text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.message.edit_text(
+                text, disable_web_page_preview=True, reply_markup=kb
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data == "hsalert")
+async def _cb_halal_alert_toggle(cb: CallbackQuery):
+    """🔔 Алерты — переключить подписку на спот-автоалерты."""
+    try:
+        from database import get_user_halal_alert_status, set_halal_alert_sub
+        uid = cb.from_user.id
+        cur = await get_user_halal_alert_status(uid)
+        await set_halal_alert_sub(uid, not cur)
+        await cb.answer(
+            "🔔 Автоалерты включены" if not cur else "🔕 Автоалерты выключены",
+            show_alert=False,
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Не получилось переключить алерты", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data == "halert_keep")
+async def _cb_halal_alert_keep(cb: CallbackQuery):
+    """🔔 Оставить — подтвердить подписку на спот-автоалерты (под алертом)."""
+    try:
+        from database import set_halal_alert_sub
+        await set_halal_alert_sub(cb.from_user.id, True)
+        await cb.answer("🔔 Ок, автоалерты остаются включёнными", show_alert=False)
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Готово", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data == "halert_off")
+async def _cb_halal_alert_off(cb: CallbackQuery):
+    """🔕 Отключить — отписать от спот-автоалертов (под алертом)."""
+    try:
+        from database import set_halal_alert_sub
+        await set_halal_alert_sub(cb.from_user.id, False)
+        await cb.answer("🔕 Автоалерты отключены. Включить обратно: /alerts",
+                        show_alert=True)
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Не получилось отключить", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data.startswith("hsnav:"))
+async def _cb_halal_nav(cb: CallbackQuery):
+    """Переход на соседнюю карточку (Акции ↔ Тренд) новым сообщением."""
+    kind = (cb.data or "").split(":", 1)[1] if ":" in (cb.data or "") else "trend"
+    if kind not in ("stocks", "trend"):
+        kind = "trend"
+    try:
+        await cb.answer()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        text, kb = await _build_halal_card(kind, 50)
+    except Exception:  # noqa: BLE001
+        return
+    await _send_halal_card(cb.message, text, kb)
+
+
+@dp.callback_query(F.data.startswith("explain:"))
+async def _cb_explain(cb: CallbackQuery):
+    """Кнопка «❓ Что это / Как читать» — шлёт простое объяснение фичи.
+
+    Новое сообщение (не редактируем карточку), чтобы юзер видел и карточку,
+    и пояснение рядом. Ключ после двоеточия: trend|stocks|pump|dca|backtest|
+    debate|menu.
+    """
+    import explainers
+    key = (cb.data or "explain:menu").split(":", 1)[1] or "menu"
+    try:
+        await cb.answer()
+    except Exception:  # noqa: BLE001
+        pass
+    text = explainers.get(key)
+    try:
+        await bot.send_message(
+            cb.message.chat.id, text,
+            parse_mode="Markdown", disable_web_page_preview=True,
+        )
+    except Exception:  # noqa: BLE001 — Markdown подвёл → шлём плоским текстом
+        await bot.send_message(cb.message.chat.id, text, disable_web_page_preview=True)
+
+
+def _backtest_caption() -> str:
+    """Короткая подпись к графику бэктеста из docs/backtest_summary.json."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(__file__).resolve().parent / "docs" / "backtest_summary.json"
+    try:
+        m = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return (
+            "*📊 Бэктест спот-стратегии*\n\n"
+            "Дисциплинированный спот-тренд: держим крупные монеты в аптренде, "
+            "уходим в стейбл в медвежке. Только лонг, без плеча и шортов.\n\n"
+            "_Подробности — кнопка ❓ ниже._"
+        )
+    pc = lambda x: f"{x * 100:+.1f}%"
+    base = m.get("base_total")
+    base_line = (
+        f"• 🔵 Простой тренд: {pc(m.get('base_total',0))}, просадка {pc(m.get('base_mdd',0))}, "
+        f"Sharpe {m.get('base_sharpe',0):.2f}\n"
+    ) if base is not None else ""
+    rob_line = ""
+    if m.get("rob_n_configs"):
+        rob_line = (
+            f"\n🧪 Робастность ({m['rob_n_configs']} конфигураций, не одна удачная точка): "
+            f"CAGR медиана {pc(m.get('rob_cagr_med',0))}, просадка медиана {pc(m.get('rob_mdd_med',0))}.\n"
+        )
+    return (
+        "*📊 Бэктест EDGE-стратегии* (полный цикл "
+        f"{m.get('start_day','?')} → {m.get('end_day','?')}, ~{m.get('years',0):.1f} г.: "
+        "бык 2021 → медведь 2022 → 2023-25)\n"
+        "\n"
+        f"Только спот/лонг, без плеча и шортов. Momentum-weight (самым сильным больше) + краш-фильтр (уход в стейбл при развороте BTC).\n"
+        "\n"
+        f"• 🟢 EDGE: *{pc(m.get('strat_total',0))}*, просадка {pc(m.get('strat_mdd',0))}, "
+        f"Sharpe {m.get('strat_sharpe',0):.2f}\n"
+        f"{base_line}"
+        f"• 🟠 BTC «держать»: {pc(m.get('btc_total',0))}, просадка {pc(m.get('btc_mdd',0))}\n"
+        f"• 🔴 Корзина «держать»: {pc(m.get('basket_total',0))}, просадка {pc(m.get('basket_mdd',0))}\n"
+        f"{rob_line}"
+        "\n"
+        f"Главное: за {m.get('years',0):.1f} г. полного цикла EDGE обгоняет простой тренд и "
+        f"«держать» — и по доходности, и по Sharpe. В рынке только {pc(m.get('exposure',0))} времени — "
+        "остальное в стейбле. Цена за рост — просадка глубже, чем у наивного тренда.\n"
+        "\n"
+        "_История, не гарантия будущего. Не инвестсовет._"
+    )
+
+
+@dp.message(Command("backtest"))
+async def cmd_backtest(message: Message):
+    """Бэктест спот-стратегии на реальной истории: /backtest"""
+    from pathlib import Path as _Path
+    png = _Path(__file__).resolve().parent / "docs" / "backtest_equity.png"
+    caption = _backtest_caption()
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data="explain:backtest"),
+    ]])
+    if png.exists():
+        try:
+            await bot.send_photo(
+                message.chat.id,
+                photo=BufferedInputFile(png.read_bytes(), filename="backtest.png"),
+                caption=caption, parse_mode="Markdown", reply_markup=kb,
+            )
+            return
+        except Exception:  # noqa: BLE001 — например подпись слишком длинная
+            pass
+    try:
+        await message.answer(caption, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=kb)
+    except Exception:  # noqa: BLE001
+        await message.answer(caption, reply_markup=kb)
+
+
+# ─── EDGE: профиль стратегии (выбор пресета для /plan) ��───────────────
+def _edge_plan_kb(active: str) -> InlineKeyboardMarkup:
+    """Клавиатура под EDGE-планом: бэктест/пояснение + кнопка смены профиля."""
+    import halal_edge
+    meta = halal_edge.EDGE_PROFILES.get(active, halal_edge.EDGE_PROFILES["base"])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🧪 Бэктест EDGE", callback_data="cmd:backtest"),
+            InlineKeyboardButton(text="❓ Что это", callback_data="explain:edge"),
+        ],
+        [InlineKeyboardButton(text=f"⚙️ Профиль стратегии: {meta['short']}",
+                              callback_data="edgeprof:menu")],
+    ])
+
+
+def _edge_profile_menu_kb(active: str) -> InlineKeyboardMarkup:
+    """Меню выбора профиля EDGE."""
+    import halal_edge
+    rows = []
+    for key, meta in halal_edge.EDGE_PROFILES.items():
+        mark = "✅ " if key == active else ""
+        rows.append([InlineKeyboardButton(text=f"{mark}{meta['label']}",
+                                          callback_data=f"edgeprof:set:{key}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к плану", callback_data="edgeprof:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _build_edge_plan(user_id: int, deposit: float = 100.0):
+    """(text, kb) EDGE-плана под выбранный профиль пользователя."""
+    import halal_edge
+    profile = await get_user_edge_profile(user_id)
+    plan = await asyncio.to_thread(halal_edge.live_plan, None, deposit, profile)
+    text = halal_edge.render_plan_text(plan, deposit)
+    return text, _edge_plan_kb(profile)
+
+
+@dp.message(Command("plan", "edgeplan"))
+async def cmd_edgeplan(message: Message):
+    """EDGE-план на сегодня — ведём за руку: /plan [��епоз��т]
+
+    Та же логика, что в бэктесте (halal_edge.edge_signal): смотрим рынок
+    сейчас и пошагово говорим, что купить, сколько в стейбле, когда выйти.
+    """
+    # депозит из текста: «/plan 1000» → суммы в $; по умолчанию доли на $100
+    deposit = 100.0
+    parts = (message.text or "").split()
+    if len(parts) > 1:
+        try:
+            deposit = max(1.0, float(parts[1].replace(",", ".").replace("$", "")))
+        except ValueError:
+            deposit = 100.0
+
+    try:
+        text, kb = await _build_edge_plan(message.from_user.id, deposit)
+    except Exception as e:  # noqa: BLE001 — сеть/данные подвели
+        logging.warning("cmd_edgeplan failed: %s", e)
+        await message.answer(
+            "⚠️ Не смог получить свежие данные рынка для EDGE-плана. "
+            "Попробуй ещё раз через минуту."
+        )
+        return
+
+    try:
+        await message.answer(text, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=kb)
+    except Exception:  # noqa: BLE001 — Markdown подвёл → плоский текст
+        await message.answer(text, disable_web_page_preview=True, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("edgeprof:"))
+async def handle_edge_profile(callback: CallbackQuery):
+    """Выбор профиля стратегии EDGE: меню, сохранение, пере-рендер плана."""
+    import halal_edge
+    user_id = callback.from_user.id
+    data = callback.data or ""
+
+    if data == "edgeprof:menu":
+        active = await get_user_edge_profile(user_id)
+        lines = [
+            "⚙️ *Профиль стратегии EDGE*",
+            "",
+            "По какой логике /plan подбирает монеты. Все варианты — спот, только лонг.",
+            "",
+        ]
+        for key, meta in halal_edge.EDGE_PROFILES.items():
+            mark = "✅ " if key == active else "• "
+            lines.append(f"{mark}*{meta['label']}*\n   _{meta['desc']}_")
+        try:
+            await callback.message.edit_text(
+                "\n".join(lines), parse_mode="Markdown",
+                disable_web_page_preview=True,
+                reply_markup=_edge_profile_menu_kb(active),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await callback.answer()
+        return
+
+    if data.startswith("edgeprof:set:"):
+        parts = data.split(":")
+        key = parts[2] if len(parts) > 2 else ""
+        if key not in halal_edge.EDGE_PROFILES:
+            await callback.answer("Неизвестный профиль")
+            return
+        await set_user_edge_profile(user_id, key)
+        await callback.answer(f"✅ Профиль: {halal_edge.EDGE_PROFILES[key]['short']}")
+
+    # edgeprof:back или после set → показываем актуальный план
+    try:
+        text, kb = await _build_edge_plan(user_id, 100.0)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("handle_edge_profile render failed: %s", e)
+        await callback.answer("⚠️ Не смог обновить план — попробуй /plan", show_alert=True)
+        return
+    try:
+        await callback.message.edit_text(
+            text, parse_mode="Markdown",
+            disable_web_page_preview=True, reply_markup=kb,
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            await callback.message.answer(
+                text, disable_web_page_preview=True, reply_markup=kb)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.message(Command("depeg"))
+async def cmd_depeg(message: Message):
+    """Монитор депега стейблкоинов: /depeg — текущие цены USDC/TUSD/USDP/FDUSD
+    и есть ли сейчас возможность «возврат к $1». Спот, без шортов/плеча."""
+    try:
+        import depeg_monitor
+        prices = await depeg_monitor.fetch_prices()
+        opps = depeg_monitor.detect_opportunities(prices)
+        text = depeg_monitor.format_status(prices, opps)
+    except Exception as e:  # noqa: BLE001 — сеть/данные подвели
+        logging.warning("cmd_depeg failed: %s", e)
+        await message.answer(
+            "⚠️ Не смог получить свежие цены стейблкоинов. "
+            "Попробуй ещё раз через минуту."
+        )
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❓ Что делать с этим", callback_data="explain:depeg"),
+    ]])
+    try:
+        await message.answer(text, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=kb)
+    except Exception:  # noqa: BLE001 — Markdown подвёл → плоский текст
+        await message.answer(text, disable_web_page_preview=True, reply_markup=kb)
+
+
 @dp.message(Command("instruction"))
 async def cmd_instruction(message: Message):
     """Полнейшая инструкция как для пятилетнего: /instruction"""
@@ -2613,14 +3073,15 @@ async def cmd_newbie(message: Message):
 
 def _main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас", callback_data="cmd:signal")],
+        [InlineKeyboardButton(text="🧭 EDGE-план: что купить сейчас", callback_data="cmd:edgeplan")],
+        [InlineKeyboardButton(text="🎯 Лучшая ��делка сейчас", callback_data="cmd:signal")],
         [
             InlineKeyboardButton(text="📋 Дайджест", callback_data="cmd:daily"),
             InlineKeyboardButton(text="📊 Рынки + сигналы", callback_data="cmd:markets"),
         ],
         [
             InlineKeyboardButton(text="🧪 Скринер", callback_data="cmd:screener"),
-            InlineKeyboardButton(text="📡 Сигнал трейдер", callback_data="cmd:signalstatus"),
+            InlineKeyboardButton(text="🤖 Автоторговля", callback_data="cmd:signalstatus"),
         ],
         [
             InlineKeyboardButton(text="💰 Статус", callback_data="cmd:status"),
@@ -2654,79 +3115,53 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
 
 
 async def _send_bot_guide(chat_id: int) -> None:
+    """Полный гид по командам — спот/лонг, без автотрейда (в разработке)."""
     text = (
-        "📘 *ПОЛНАЯ ИНСТРУКЦИЯ: Dialectic Edge*\n"
-        "═" * 35 + "\n\n"
+        "📘 *DIALECTIC EDGE — ГИД ПО КОМАНДАМ*\n"
+        "━━━━━━━━���━━━━━━━━━━━━━━━━\n\n"
         "🧠 *Что это?*\n"
-        "AI-аналитик рынков с автотрейдингом. 4 нейросети спорят, вырабатывают вердикт и торгуют.\n"
-        "10 элитных модулей: режим рынка, киты, корреляции, RSI, макро, волатильность и др.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📌 *1. НАЧАЛО РАБОТЫ*\n"
-        "• `/profile` — Настрой риск-профиль (сделай ПЕРВЫМ!)\n"
-        "  Выбери: консерватор / умеренный / агрессивный\n"
-        "  Горизонт: скальпинг / свинг / инвест\n"
-        "  Рынок: крипта / акции / всё\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📊 *2. АНАЛИЗ И ДАЙДЖЕСТЫ*\n"
-        "• `/daily` — Главный отчёт. Новости + цифры + вердикт + торговый план.\n"
-        "  Придёт кратко в чат + полный отчёт файлом .txt\n"
-        "• `/daily force` — Принудительный новый прогон (игнорирует кэш)\n"
-        "• `/analyze <текст>` — Разбор конкретной новости/идеи\n"
-        "  Пример: `/analyze Иран закрыл Ормуз`\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📡 *3. РЫНКИ И СИГНАЛЫ*\n"
-        "• `/markets` — Живые цены + MARKET SIGNALS + кнопки управления\n"
-        "  Можно включить/выключить пуши сигналов\n"
-        "• `/status` — Короткий статус рынков (удобно закрепить)\n"
-        "• `/screener` — 🆕 Сканер аномалий! Сканирует ТОП-20 монет:\n"
-        "  Ищет: Volume Spike, RSI экстремумы, аномальный Funding\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💰 *4. АВТОТРЕЙДИНГ (Paper Trading)*\n"
-        "• `/signalstatus` — Полная панель автотрейдера:\n"
-        "  Баланс, открытые позиции, кандидаты, PnL, сессия\n"
-        "• `/starttrade` — Запустить автотрейдинг\n"
-        "• `/stop` — Остановить автотрейдинг (бот перестанет открывать)\n"
-        "• `/close <ТИКЕР>` — Закрыть позицию вручную\n"
-        "  Пример: `/close BTC`\n"
-        "• `/why <ТИКЕР>` — Почему бот открыл эту позицию?\n"
-        "  Пример: `/why ETH` — покажет digest consensus, сигнал, R/R\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🧪 *5. ВАЛИДАЦИЯ И БЕКТЕСТ*\n"
-        "• `/eval` — 🆕 Запуск валидации сигналов!\n"
-        "  Бот берёт прошлые сигналы → проверяет по реальным свечам\n"
-        "  → Считает Winrate, Profit Factor, Total PnL\n"
-        "• `/backtest` — Панель бэктеста (вкл/выкл, история, капитал)\n"
-        "• `/backtest_toggle` — Вкл/выкл бэктест\n"
-        "• `/backtest_capital 500` — Установить капитал\n"
-        "• `/backtest_clear` — Очистить сделки и сбросить капитал\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📈 *6. СТАТИСТИКА*\n"
-        "• `/trackrecord` — Вся статистика точности прогнозов\n"
-        "• `/trackrecordglobal` — Прогнозы Global\n"
-        "• `/trackrecordrussia` — Прогнозы Россия Edge 🇷🇺\n"
-        "• `/weeklyreport` — Отчёт за неделю\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📦 *7. ПОРТФЕЛЬ*\n"
-        "• `/portfolio` — Твои позиции (через инлайн-кнопки)\n"
-        "  Добавить / Удалить / Обновить цены\n"
-        "• `/add BTC 0.5 65000` — Добавить позицию вручную\n"
-        "• `/remove BTC` — Удалить позицию\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔔 *8. ПОДПИСКИ*\n"
-        "• `/subscribe` — Настроить авторассылку дайджеста\n"
-        "  Выбери время: 06:00 / 08:00 / 10:00 / 12:00 UTC\n"
-        "  Или отключить\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🛡️ *КАК РАБОТАЕТ ЗАЩИТА*\n"
-        "• Режим рынка: бот определяет тренд/боковик/волатильность\n"
-        "• Киты: мониторит крупные сделки на Binance\n"
-        "• Корреляции: не открывает BTC+ETH одновременно (риск x2)\n"
-        "• Event Defense: стоп при новостях типа CPI, ФРС, Война\n"
-        "• Kelly Criterion: размер позиции по статистике\n"
-        "• ATR-стопы: стопы по реальной волатильности, не фиксированные\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚠️ _Это аналитика и симуляция. Не финансовый совет._\n"
-        "Рынок непредсказуем. Агенты могут ошибаться."
+        "AI-аналитик рынков. Команда агентов (🐂 Bull · 🐻 Bear · 🔍 Verifier · "
+        "⚖️ Synth) спорит на живых данных и выдаёт понятный план: что происходит "
+        "и куда может пойти рынок. Только спот, только лонг — без плеча и шортов.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚀 *С ЧЕГО НАЧАТЬ*\n"
+        "• `/profile` — настрой риск-профиль и горизонт. Сделай *первым*: агенты "
+        "подстроят анализ под тебя.\n"
+        "• `🆕 Новичок` / `/newbie` — гид + PDF и правила выживания первой недели.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 *АНАЛИЗ РЫНКА*\n"
+        "• `/daily` — главный прогноз: дебаты агентов → вердикт + график + куда "
+        "смотреть. Что делать: читай вывод и направление, дальше решай сам.\n"
+        "• `🎯 Лучшая сделка` / `/signal` — лучшая идея прямо сейчас (спот/лонг).\n"
+        "• `🏛 Рынки` / `/markets` — живые цены + сигналы.\n"
+        "• `📡 Скринер` / `/screener` — сканер аномалий по топ-монетам "
+        "(всплеск объёма, перегретость).\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🧭 *ТРЕНД И МОМЕНТУМ*\n"
+        "• `🧭 Тренд` / `/trend` — крипта в аптренде (по SMA50). Что делать: "
+        "монеты выше линии — в восходящем тренде, ниже — слабые. Кнопки графиков "
+        "и бирж прямо в карточке.\n"
+        "• `📈 Акции` / `/stocks` — топ акций по силе (6-мес моментум).\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💰 *ИНСТРУМЕНТЫ*\n"
+        "• `💰 DCA` / `/dca` — план усреднения: как заходить частями, а не всё "
+        "сразу. Что делать: следуй шагам плана по своему депозиту.\n"
+        "• `🧭 P2P` / `/p2p` — сканер P2P-спреда между площадками.\n"
+        "• `🔔 Алерты` / `/alerts` — пуш при смене режима тренда. `on` / `off`.\n"
+        "• `🧪 Бэктест` / `/backtest` — прогон стратегии на истории.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📈 *СТАТИСТИКА*\n"
+        "• `📊 Трек-рекорд` / `/trackrecord` — точность прошлых прогнозов.\n"
+        "• `💎 VIP` / `💎 Что я умею` — про премиум и возможности бота.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 *АВТОТОРГОВЛЯ — СКОРО*\n"
+        "Скоро: подключаешь API биржи (только спот, только лонг, без права "
+        "вывода средств) — и бот торгует сам по сво��м сигналам. Сейчас функция "
+        "*в активной разработке*. Пока — смотри сигналы и торгуй на бирже сам "
+        "по диплинкам из карточек.\n\n"
+        "━━━━━━━━━━���━━━━━━━━━━━━━━\n\n"
+        "⚠️ _Это аналитика, не финансовый совет. Рынок непредсказуем, "
+        "агенты могут ошибаться. Только спот/лонг._"
     )
     await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=_main_menu_kb())
 
@@ -2744,7 +3179,7 @@ async def _send_detailed_guide(chat_id: int) -> None:
         "📌 *КОМАНДЫ — ПРОСТЫМИ СЛОВАМИ*\n\n"
         "👤 `/profile` — *Настройки*\n"
         "👶 Как 5-летнему: \"Расскажи боту, какой ты смелый\"\n"
-        "• Консерватор = боишься потерять деньги (мало рискуешь)\n"
+        "• Консерватор = боишься пот��рять деньги (мало рискуешь)\n"
         "• Умеренный = средний риск\n"
         "• Агрессивный = готов рисковать ради большой прибыли\n"
         "Сделай это ПЕРВЫМ, иначе бот не знает, как торговать!\n\n"
@@ -2780,26 +3215,13 @@ async def _send_detailed_guide(chat_id: int) -> None:
     part2 = (
         "📖 *ПОДРОБНАЯ ИНСТРУКЦИЯ (ЧАСТЬ 2/2)*\n"
         + "═" * 30 + "\n\n"
-        "💰 *АВТОТРЕЙДИНГ*\n\n"
-        "📊 `/signalstatus` — *Панель трейдера*\n"
-        "👶 Как 5-летнему: \"Приборная доска машины\"\n"
-        "Показывает:\n"
-        "• Сколько денег осталось 💵\n"
-        "• Какие позиции открыты (что купил)\n"
-        "• Какие кандидаты на покупку\n"
-        "• Прибыль или убыток 📈📉\n\n"
-        "▶️ `/starttrade` — *Включить автопилот*\n"
-        "👶 Как 5-летнему: \"Бот, торгуй за меня!\"\n"
-        "Бот сам открывает и закрывает сделки по своей стратегии.\n\n"
-        "⏸️ `/stop` — *Выключить автопилот*\n"
-        "👶 Как 5-летнему: \"Стоп, я сам!\"\n"
-        "Бот перестаёт открывать новые сделки. Старые остаются.\n\n"
-        "❌ `/close BTC` — *Закрыть вручную*\n"
-        "👶 Как 5-летнему: \"Продай это прямо сейчас!\"\n"
-        "Бот закроет позицию по текущей цене, даже если не время.\n\n"
-        "❓ `/why BTC` — *Почему купил?*\n"
-        "👶 Как 5-летнему: \"Объясни, зачем ты это купил?\"\n"
-        "Бот расскажет: \"Я купил BTC потому что: тренд вверх, киты покупают, RSI низкий\"\n\n"
+        "🤖 *АВТОТОРГОВЛЯ — СКОРО*\n\n"
+        "👶 Как 5-летнему: \"Скоро бот сможет сам нажимать кнопки на бирже\"\n"
+        "Скоро ты подключишь *API своей биржи* (только спот, только лонг, без "
+        "права вывода денег), и бот будет торговать сам по своим сигналам — "
+        "тренд, моментум, DCA.\n"
+        "🔧 Сейчас функция *в разработке*. Пока — смотри сигналы (🧭 Тренд, "
+        "📈 Акции, 🎯 Лучшая сделка) и торгуй на бирже сам по диплинкам.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🛡️ *ЗАЩИТНЫЕ СИСТЕМЫ (10 МОДУЛЕЙ)*\n\n"
         "🌊 *1. Режим рынка (Regime Detector)*\n"
@@ -2818,7 +3240,7 @@ async def _send_detailed_guide(chat_id: int) -> None:
         "то покупать оба — это как купить один и тот же товар дважды. "
         "Бот не даст тебе ошибиться!\n\n"
         "🚨 *4. Защита от Событий (Event Defense)*\n"
-        "👶 Как 5-летнему: \"Сирена перед ураганом\"\n"
+        "👶 Как 5-летнему: \"Сирена перед ураг��ном\"\n"
         "Если в новостях: \"ФРС\", \"Война\", \"Запрет крипты\" — "
         "бот кричит: \"ОПАСНО!\" и перестаёт торговать, пока не успокоится.\n\n"
         "📊 *5. Confluence Score* 🆕\n"
@@ -2874,7 +3296,7 @@ async def _send_newbie_guide(chat_id: int) -> None:
       * _send_newbie_guide    — РУКОВОДСТВО ПО ТОРГОВЛЕ для новичков:
                                 когда запускать /daily, что НЕ делать
                                 (Futures!), какой горизонт, правила
-                                выживания первой недели, walkthrough сделки
+                                выживания п��рвой недели, walkthrough сделки
 
     Полная версия лежит в docs/BEGINNER_GUIDE.pdf — отправляется как файл.
     """
@@ -2906,48 +3328,38 @@ async def _send_newbie_guide(chat_id: int) -> None:
         "📌 *В чём наш edge (и чего тут НЕТ)*\n\n"
         "Мы НЕ угадываем, куда пойдёт цена. Бэктест directional-сигналов "
         "(LONG/SHORT) на 2020–2026 показал: на дневках они *робастно убыточны*. "
-        "Поэтому directional-режим из бота удалён.\n\n"
-        "Реальный edge бота — *дельта-нейтральный доход*. Ты не ставишь на "
-        "направление цены, а собираешь структурные выплаты рынка:\n"
-        "• *funding* — плата одной стороны перпа другой\n"
-        "• *спред funding* между биржами\n"
-        "• *базис* — разница спота и квартального фьюча\n\n"
-        "Доходность скромнее иксов, зато *воспроизводима* и не зависит от того, "
-        "вырастет BTC завтра или упадёт.\n\n"
+        "Поэтому угадывание направления из бота удалено.\n\n"
+        "Реальный edge бота — *спот + следование тренду с управлением риском*. "
+        "Держишь актив, только пока он в восходящем тренде (цена выше скользящей "
+        "средней SMA50); ушёл в нисходящий — сидишь в стейбле.\n\n"
+        "*Только спот, без плеча, без шортов, без деривативов.*\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🧲 *Что такое «дельта-нейтрально»*\n\n"
-        "Две ноги гасят движение цены друг друга, а ты остаёшься с «купоном»:\n"
-        "```\nЛОНГ спот BTC  +  ШОРТ перп BTCUSDT (на ту же сумму)\n```\n"
-        "BTC вырос на 5% → спот +5%, шорт-перп −5% → *по цене ноль*.\n"
-        "BTC упал на 5% → спот −5%, шорт-перп +5% → *снова ноль*.\n"
-        "А funding капает тебе каждые 8 часов независимо от цены.\n\n"
-        "Главный враг тут — *не цена, а комиссии*. Тонкие премии не торгуем."
+        "🧲 *Зачем тренд-фильтр*\n\n"
+        "На 5 годах данных это режет просадку почти *вдвое* (−55% против −84% у "
+        "«купи и держи») при близкой доходности. Меньше боли в медвежьем рынке: "
+        "когда актив падает ниже тренда — ты уже в стейбле, а не ловишь нож."
     )
     await bot.send_message(chat_id, part1, parse_mode="Markdown")
 
     part2 = (
         "🆕 *ГИД ДЛЯ НОВИЧКОВ — ЧАСТЬ 2/3*\n"
         + "═" * 28 + "\n\n"
-        "🛠 *ТРИ РАБОЧИХ EDGE'А БОТА*\n\n"
-        "💰 *Carry* — `/carry`\n"
-        "ЛОНГ спот + ШОРТ перп на одной бирже, собираешь funding.\n"
-        "Порог: ниже *~8% годовых* косты двух ног съедают премию.\n\n"
-        "🔀 *Кросс-арбитраж* — `/arb`\n"
-        "ЛОНГ перп там, где funding низкий, ШОРТ перп там, где высокий "
-        "(Binance/Bybit/Gate/Hyperliquid). Зарабатываешь спред.\n"
-        "Порог: спред ниже *~12% годовых* не отбивает косты.\n\n"
-        "🗓 *Calendar basis* — `/basis`\n"
-        "ЛОНГ спот + ШОРТ квартальный фьюч, держишь до экспирации — базис "
-        "сходится к нулю, разница твоя. Доход фиксируется заранее.\n\n"
-        "🧮 *Калькулятор* — `/calc 5000 25` посчитает обе ноги и $/год.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎯 *«Лучшая сделка»* — `/signal`\n\n"
-        "Не хочешь сравнивать три команды? Жми «🎯 Лучшая сделка» — бот в "
-        "реальном времени сканирует carry/арб/базис и показывает *ОДНУ* сделку "
-        "с максимальной чистой доходностью прямо сейчас.\n"
-        "`/signal 5000` — добавь депозит, увидишь оценку $/год.\n\n"
-        "Если ничего не проходит порог костов — бот честно скажет «сегодня edge "
-        "нет, сидим в стейблах». Это валидный ответ, а не ошибка."
+        "🛠 *КАК ЭТО РАБОТАЕТ*\n\n"
+        "📈 *Трендовый сигнал*\n"
+        "Из отфильтрованного списка монет держишь равным весом те, что *сейчас "
+        "��ыше SMA50*; упала ниже — продал в стейбл. Покупаешь силу, выходишь "
+        "из слабости.\n\n"
+        "🧮 *Фильтр активов*\n"
+        "Берём только утилити/платёжные/инфраструктурные монеты. Исключаем "
+        "кредит-протоколы, спекулятивные мем-коины и гемблинг-токены.\n\n"
+        "📊 *Скринер акций*\n"
+        "Крупные компании, прошедшие секторный + балансовый скрин (низкий долг), "
+        "которые сейчас в аптренде.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━��━━━━\n\n"
+        "🎯 *Главное правило*\n\n"
+        "Купить *спот* равным весом то, что выше SMA; ушло ниже — продать. "
+        "Никакого плеча, шортов и деривативов. Если ничего не в тренде — "
+        "сидим в стейблах. Это валидный ответ, а не ошибка."
     )
     await bot.send_message(chat_id, part2, parse_mode="Markdown")
 
@@ -2955,31 +3367,31 @@ async def _send_newbie_guide(chat_id: int) -> None:
         "🆕 *ГИД ДЛЯ НОВИЧКОВ — ЧАСТЬ 3/3*\n"
         + "═" * 28 + "\n\n"
         "💵 *Деньги на биржу*\n"
-        "• `/p2p` → RUB→USDT через P2P (в РФ USDT с премией к курсу). Бери "
-        "мейкеров с большим числом сделок и completion ≥90%, не ведись на "
-        "фейково «дешёвые» заявки.\n"
-        "• Funding-кошелёк → переведи USDT на *Spot* (под спот-ногу) и на "
-        "*Derivatives* (маржа под шорт-перп). Номиналы ног — *равны*.\n\n"
+        "• `/p2p` → RUB→USDT через P2P. Бери мейкеров с большим числом сделок и "
+        "completion ≥90%, не ведись на фейково «дешёвые» заявки.\n"
+        "• Держишь USDT на *Spot* и покупаешь активы спотом — то, чем реально "
+        "владеешь.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🛡 *7 ПРАВИЛ ВЫЖИВАНИЯ ПЕРВОЙ НЕДЕЛИ*\n\n"
-        "*1.* Обе ноги — *равны по номиналу*. Неравные = скрытый риск цены.\n"
-        "*2.* Плечо на перпе *1x–2x*, не больше. Перп тут хедж, не казино. "
-        "Держи запас маржи, чтобы рост не ликвидировал шорт-ногу.\n"
-        "*3.* Не торгуй *тонкую премию* (ниже ≈8% carry / ≈12% арб). Нет "
-        "сделки — это нормальный ответ.\n"
-        "*4.* Размер — *макс 20–30% депо* на сделку первую неделю.\n"
-        "*5.* Закрывай *обе ноги одновременно*. Одна нога = голый в цене.\n"
-        "*6.* Следи за *разворотом funding* — из получателя станешь плательщиком.\n"
-        "*7.* Веди *журнал* с первой сделки: ожидаемое vs факт после костов 0.2%. "
-        "Без журнала не отличишь edge от удачи.\n\n"
+        "🛡 *ПРАВИЛА ВЫЖИВАНИЯ ПЕРВОЙ НЕДЕЛИ*\n\n"
+        "*1.* Только *спот* — что купил, тем и владеешь. Без плеча.\n"
+        "*2.* Размер — *макс 20–30% депо* на актив первую неделю, диверсифицируй "
+        "по списку в тренде.\n"
+        "*3.* Актив ушёл *ниже SMA* — продай, не «усредняйся вниз».\n"
+        "*4.* Не гонись за иксами и мем-коинами — это азарт, не стратегия.\n"
+        "*5.* Ничего не в тренде — сиди в стейбле, это нормальный ответ.\n"
+        "*6.* Веди *журнал* с первой сделки: ожидаемое vs факт после костов.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚫 *ЧЕГО НЕ ДЕЛАТЬ:* directional плечо (10x-лонг «по сигналу» — "
-        "быстрый слив), одна нога без хеджа, гонка за иксами.\n\n"
+        "🔔 *Авто-алерты уже включены* — тебе НЕ нужно сидеть в боте 24/7. "
+        "Я сам напишу, когда сменится тренд, появится лучшая сделка или "
+        "стейблкоин уйдёт в депег (возможен возврат к $1). У каждого алерта "
+        "есть кнопка «❓ Что делать». Выключить: `/alerts off`.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚫 *ЧЕГО НЕ ДЕЛАТЬ:* плечо, шорты, деривативы, гонка за иксами, "
+        "усреднение в падающем активе.\n\n"
         "⚠️ *Disclaimer:* это аналитический инструмент, не финансовый совет. "
-        "Дельта-нейтрал снижает ценовой риск, но не убирает его (ликвидация "
-        "перп-ноги, разворот funding, риск биржи/стейбла). Дисциплина и журнал "
-        "важнее любого сигнала.\n\n"
-        "📘 Полная версия (5 страниц) в PDF ↑"
+        "Тренд-фильтр снижает просадку, но не убирает риск (резкие развороты, "
+        "риск биржи/стейбла). Дисциплина и журнал важнее любого сигнала.\n\n"
+        "📘 Полная версия в PDF ↑"
     )
     await bot.send_message(chat_id, part3, parse_mode="Markdown")
 
@@ -3009,7 +3421,6 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "markets": cmd_markets,
         "status": cmd_status,
         "pitch": cmd_pitch,
-        "pump": cmd_pump,
         "trackrecord": cmd_trackrecord,
         "trackrecordglobal": lambda m: _cmd_trackrecord(m, report_type="global", title="GLOBAL", filter_type="all"),
         "trackrecordrussia": lambda m: _cmd_trackrecord(m, report_type="russia", title="РОССИЯ EDGE", filter_type="all"),
@@ -3018,13 +3429,18 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "premium": cmd_premium,
         "help": cmd_help,
         "signal": cmd_signal,
-        "funding": handle_funding_command,
         "signalstatus": cmd_signal_status,
         "screener": cmd_screener,
+        "pump": cmd_pump,
         "backtest": cmd_backtest,
+        "edgeplan": cmd_edgeplan,
+        "depeg": cmd_depeg,
         "guide": lambda m: _send_bot_guide(m.chat.id),
         "instruction": lambda m: _send_detailed_guide(m.chat.id),
         "newbie": lambda m: _send_newbie_guide(m.chat.id),
+        "dca": cmd_dca,
+        "p2p": handle_p2p_command,
+        "alerts": cmd_alerts,
     }
 
     if cmd == "guide":
@@ -3039,7 +3455,17 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
     if not fn:
         await bot.send_message(callback.from_user.id, "Команда не найдена в меню. Открой `/help`.", parse_mode="Markdown")
         return
-    await fn(proxy)
+    try:
+        await fn(proxy)
+    except Exception as e:  # noqa: BLE001 — одна кнопка не должна валить весь колбэк
+        logger.error(f"inline cmd '{cmd}' failed: {e}")
+        try:
+            await bot.send_message(
+                callback.from_user.id,
+                f"⚠️ Не получилось открыть «{cmd}». Попробуй команду напрямую.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
@@ -3060,20 +3486,50 @@ async def cmd_start(message: Message):
     # по торговой дисциплине (когда запускать /daily, только Spot, какой
     # горизонт, правила выживания первой недели). Опытному пользователю
     # можно сразу идти на «📊 Покажи прогноз сейчас» или ⚙️ Настройки.
+    # Полное inline-меню: все функции бота прямо на /start (тренд, акции,
+    # рынки, скринер, P2P, DCA, алерты, сигнал, бэктест, трек-рекорд и т.д.).
     welcome_inline = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🆕 Я новичок — гид + PDF",  callback_data="cmd:newbie")],
+        [InlineKeyboardButton(text="🤝 Проведи меня за руку (тур)", callback_data="tour:go")],
+        [InlineKeyboardButton(text="🧭 EDGE-план: что купить сейчас", callback_data="cmd:edgeplan")],
         [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас",  callback_data="cmd:signal")],
         [
             InlineKeyboardButton(text="📊 Прогноз",            callback_data="cmd:daily"),
             InlineKeyboardButton(text="🏛 Рынки",              callback_data="cmd:markets"),
         ],
         [
-            InlineKeyboardButton(text="🧪 Скринер",            callback_data="cmd:screener"),
-            InlineKeyboardButton(text="💎 Что я умею",         callback_data="cmd:pitch"),
+            InlineKeyboardButton(text="🧭 Тренд",              callback_data="hsnav:trend"),
+            InlineKeyboardButton(text="📈 Акции",              callback_data="hsnav:stocks"),
         ],
         [
+            InlineKeyboardButton(text="🧪 Скринер",            callback_data="cmd:screener"),
+            InlineKeyboardButton(text="🧭 P2P арбитраж",       callback_data="cmd:p2p"),
+        ],
+        [
+            InlineKeyboardButton(text="💰 DCA-план",           callback_data="cmd:dca"),
+            InlineKeyboardButton(text="🔔 Алерты",             callback_data="cmd:alerts"),
+        ],
+        [
+            InlineKeyboardButton(text="🧮 Калькулятор сделок", callback_data="calc:menu"),
+        ],
+        [
+            InlineKeyboardButton(text="⚖️ Депег стейблов",     callback_data="cmd:depeg"),
+        ],
+        [
+            InlineKeyboardButton(text="🤖 Автоторговля",       callback_data="cmd:signalstatus"),
+            InlineKeyboardButton(text="🧪 Бэктест",            callback_data="cmd:backtest"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Трек-рекорд",        callback_data="cmd:trackrecord"),
+            InlineKeyboardButton(text="💎 VIP",                callback_data="cmd:premium"),
+        ],
+        [
+            InlineKeyboardButton(text="💎 Что я умею",         callback_data="cmd:pitch"),
             InlineKeyboardButton(text="⚙️ Настройки",          callback_data="cmd:profile"),
+        ],
+        [
             InlineKeyboardButton(text="📘 Команды",            callback_data="cmd:guide"),
+            InlineKeyboardButton(text="❓ Помощь",             callback_data="cmd:help"),
         ],
     ])
 
@@ -3091,9 +3547,22 @@ async def cmd_start(message: Message):
         "4 агента спорят на живых данных и выдают понятный план.\n\n"
         "🐂 Bull · 🐻 Bear · 🔍 Verifier · ⚖️ Synth\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🆕 *Никогда не торговал?* Жми «Я новичок» — там PDF-гид + правила выживания первой недели.\n"
-        "📊 *Уже опытный?* Сразу «Покажи прогноз сейчас» → выбери горизонт (swing для большинства).\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎯 *С чего начать — 3 шага:*\n"
+        "1️⃣ Жми «🧭 EDGE-план» — скажу, что купить прямо сейчас (или сидеть в стейбле).\n"
+        "2️⃣ Купи спотом в указанных долях. Не уверен — сначала «🆕 Я новичок» (PDF-гид).\n"
+        "3️⃣ Дальше расслабься — я *сам пришлю авто-алерт*, когда что-то изменится.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔔 *Авто-алерты уже ВКЛючены* (смена тренда, лучшие сделки, депег стейблов) — "
+        "ничего не пропустишь. Выключить: /alerts off.\n\n"
+        "📘 *Команды и что они значат:*\n"
+        "• /plan — что купить сейчас (EDGE-план) + доли. Стратегия меняется в ⚙️.\n"
+        "• /signal — одна лучшая сделка прямо сейчас.\n"
+        "• /daily — полный прогноз: спор 4 агентов.\n"
+        "• /calc — 🧮 калькулятор сделок: записывай покупки/продажи, считаю профит.\n"
+        "• /backtest — как стратегия торговала на истории.\n"
+        "• /alerts — авто-уведомления · /profile — риск и стратегия · /help — всё.\n\n"
+        "🧠 *Как читать:* «risk-on» = можно покупать, «risk-off» = сидим в стейбле. "
+        "Доли (%) — сколько депозита в каждую монету. Всё спот, без плеча и шортов.\n\n"
         "👇 *Тыкни что нужно:*",
         reply_markup=welcome_inline,
         parse_mode="Markdown",
@@ -3111,9 +3580,6 @@ async def _kb_daily(message: Message):
     await cmd_daily(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_PUMP)
-async def _kb_pump(message: Message):
-    await cmd_pump(message)
 
 
 @dp.message(F.text == PERSISTENT_BTN_MARKETS)
@@ -3141,159 +3607,55 @@ async def _kb_help(message: Message):
     await cmd_help(message)
 
 
-# ─── /carry — единственный +edge: режим + carry-сделка по шагам + листинги ──────
-@dp.message(Command("carry"))
-async def cmd_carry(message: Message):
-    """Carry-брифинг по запросу: режим рынка, пошаговая carry-сделка, листинги."""
-    wait = await message.answer("⏳ Собираю carry-брифинг (режим, фандинг, базис, листинги)…")
-    try:
-        from core.carry_briefing import build_briefing
-        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-        text, _ = await asyncio.to_thread(build_briefing, cap)
-    except Exception as e:  # noqa: BLE001
-        text = f"⚠️ Не получилось собрать carry-брифинг: {e}"
-    try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
+# ─── Нижнее меню: остальные функции (зеркало inline-меню /start) ──────────────
+@dp.message(F.text == PERSISTENT_BTN_SIGNAL)
+async def _kb_signal(message: Message):
+    await cmd_signal(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_CARRY)
-async def _kb_carry(message: Message):
-    await cmd_carry(message)
+@dp.message(F.text == PERSISTENT_BTN_DCA)
+async def _kb_dca(message: Message):
+    await cmd_dca(message)
 
 
-# ─── /arb — КРОСС-БИРЖЕВОЙ funding-арбитраж (чего нет на одной бирже) ───────────
-@dp.message(Command("arb"))
-async def cmd_arb(message: Message):
-    """Кросс-биржевой funding-арб: лонг перп где фандинг низкий, шорт где высокий."""
-    wait = await message.answer("⏳ Сканирую фандинг по 4 биржам (Binance/Bybit/Gate/Hyperliquid)…")
-    try:
-        from core.cross_exchange import scan as scan_arb, format_arb_md
-        cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-        opps = await asyncio.to_thread(scan_arb)
-        text = format_arb_md(opps, capital=cap)
-    except Exception as e:  # noqa: BLE001
-        text = f"⚠️ Не получилось собрать кросс-арб: {e}"
-    try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
+@dp.message(F.text == PERSISTENT_BTN_ALERTS)
+async def _kb_alerts(message: Message):
+    await cmd_alerts(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_ARB)
-async def _kb_arb(message: Message):
-    await cmd_arb(message)
+@dp.message(F.text == PERSISTENT_BTN_SIGSTAT)
+async def _kb_sigstatus(message: Message):
+    await cmd_signal_status(message)
 
 
-# ─── /basis — calendar basis carry (cash-and-carry, держим до экспирации) ──────
-@dp.message(Command("basis"))
-async def cmd_basis(message: Message):
-    """Basis carry: ЛОНГ спот + ШОРТ квартальный фьюч, держим до экспирации.
-
-    /basis [депозит] — депозит для расчёта ног (по умолчанию из env).
-    """
-    wait = await message.answer("⏳ Считаю calendar basis по квартальным фьючам Binance…")
-    parts = (message.text or "").split()
-    cap = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-    try:
-        if len(parts) >= 2:
-            cap = float(parts[1].replace("$", "").replace(",", ""))
-    except ValueError:
-        pass
-    try:
-        from core.basis_carry import scan, format_basis_md
-        opps = await asyncio.to_thread(scan)
-        text = format_basis_md(opps, capital=cap)
-    except Exception as e:  # noqa: BLE001
-        text = f"⚠️ Не получилось собрать basis carry: {e}"
-    try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
+@dp.message(F.text == PERSISTENT_BTN_BACKTEST)
+async def _kb_backtest(message: Message):
+    await cmd_backtest(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_BASIS)
-async def _kb_basis(message: Message):
-    await cmd_basis(message)
+@dp.message(F.text == PERSISTENT_BTN_TRACK)
+async def _kb_track(message: Message):
+    await cmd_trackrecord(message)
 
 
-# ─── /calc — калькулятор дельта-нейтральной позиции ────────────────────────────
-@dp.message(Command("calc"))
-async def cmd_calc(message: Message):
-    """Калькулятор позиции: /calc <депозит> [ставка%]. Считает ноги + доход.
-
-    Без аргументов — берёт лучший живой фандинг как пример. С двумя — точный расчёт.
-    """
-    parts = (message.text or "").split()
-    capital = float(os.getenv("CARRY_BRIEFING_CAPITAL", "1000"))
-    rate = None
-    asset = ""
-    # Аргументы парсим ТОЛЬКО если это реально команда /calc. По кнопке текст —
-    # «🧮 Калькулятор», аргументов нет → показываем пример по живому фандингу.
-    is_command = bool(parts) and parts[0].lstrip("/").lower().startswith("calc")
-    try:
-        if is_command and len(parts) >= 2:
-            capital = float(parts[1].replace("$", "").replace(",", ""))
-        if is_command and len(parts) >= 3:
-            rate = float(parts[2].replace("%", ""))
-    except ValueError:
-        await message.answer("Формат: /calc 5000 25  (депозит $5000, ставка 25% год)")
-        return
-    try:
-        from core.position_calc import calc_position, format_calc_md
-        if rate is None:
-            # подставим лучший живой фандинг как пример
-            from core.carry_signal import fetch_funding, scan_carry, THIN
-            pos = [o for o in scan_carry(threshold=THIN, data=await asyncio.to_thread(fetch_funding)) if o.positive]
-            if pos:
-                rate, asset = pos[0].annual_pct, pos[0].asset
-            else:
-                rate = 20.0
-        plan = calc_position(capital, rate, kind="carry")
-        msg = format_calc_md(plan, kind="carry", asset=asset)
-        msg += "\n\n💡 Точный расчёт: /calc 5000 25 (депозит и ставка% год). Для арба — /arb."
-    except Exception as e:  # noqa: BLE001
-        msg = f"⚠️ Калькулятор недоступен: {e}"
-    try:
-        await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        # HTML не распарсился — шлём без тегов, а не сырой разметкой
-        import re as _re
-        await message.answer(_re.sub(r"</?[a-zA-Z][^>]*>", "", msg))
+@dp.message(F.text == PERSISTENT_BTN_VIP)
+async def _kb_vip(message: Message):
+    await cmd_premium(message)
 
 
-@dp.message(F.text == PERSISTENT_BTN_CALC)
-async def _kb_calc(message: Message):
-    await cmd_calc(message)
+@dp.message(F.text == PERSISTENT_BTN_WHATIDO)
+async def _kb_whatido(message: Message):
+    await cmd_pitch(message)
 
 
-# ─── /track — track-record найденных carry/арб-окон ────────────────────────────
-@dp.message(Command("track"))
-async def cmd_track(message: Message):
-    """Честная сводка: сколько edge-окон бот поймал, средняя ставка."""
-    try:
-        from core.track_record import summarize, format_track_md
-        msg = format_track_md(await asyncio.to_thread(summarize))
-    except Exception as e:  # noqa: BLE001
-        msg = f"⚠️ Track-record недоступен: {e}"
-    try:
-        await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await message.answer(msg)
+@dp.message(F.text == PERSISTENT_BTN_NEWBIE)
+async def _kb_newbie(message: Message):
+    await _send_newbie_guide(message.chat.id)
 
+
+@dp.message(F.text == PERSISTENT_BTN_GUIDE)
+async def _kb_guide(message: Message):
+    await _send_bot_guide(message.chat.id)
 
 # ─── /profile ─────────────────────────────────────────────────────────────────
 
@@ -3319,6 +3681,9 @@ async def cmd_profile(message: Message):
             InlineKeyboardButton(text="📈 Акции",     callback_data="profile:mkt:stocks"),
             InlineKeyboardButton(text="🌍 Всё",       callback_data="profile:mkt:all"),
         ],
+        [
+            InlineKeyboardButton(text="🧭 Стратегия EDGE для /plan", callback_data="edgeprof:menu"),
+        ],
     ])
 
     await message.answer(
@@ -3327,7 +3692,8 @@ async def cmd_profile(message: Message):
         f"*Выбери параметры:*\n"
         f"_Строка 1_ — риск-профиль\n"
         f"_Строка 2_ — горизонт торговли\n"
-        f"_Строка 3_ — рынки\n\n"
+        f"_Строка 3_ — рынки\n"
+        f"_Строка 4_ — профиль стратегии EDGE для /plan (EDGE V2: база/баланс/агро/защита)\n\n"
         f"Агенты адаптируют анализ под твои настройки.",
         parse_mode="Markdown",
         reply_markup=risk_kb
@@ -3668,7 +4034,7 @@ async def _send_horizon_picker(
         "🎯 *Выбери горизонт планирования* ⤵️" + note + "\n\n"
         "⚡️ *1–3 дня* — стопы плотные, R/R от 1:1.5, доля депо мелкая.\n"
         "📈 *7–14 дней* — свинг, стандартный режим (по умолчанию).\n"
-        "🏔 *30+ дней* — макро-позиция, R/R от 1:3, входим осторожнее.\n\n"
+        "🏔 *30+ дней* — м��кро-позиция, R/R от 1:3, входим осторожнее.\n\n"
         "Можно сразу командой: `/daily intraday`, `/daily swing`, `/daily position`."
         + force_hint,
         parse_mode="Markdown",
@@ -4108,7 +4474,7 @@ async def cmd_russia(message: Message):
         logger.error(f"Russia error: {e}", exc_info=True)
         try:
             await bot.edit_message_text(
-                f"❌ *Ошибка:* `{str(e)[:200]}`",
+                f"❌ *��шибка:* `{str(e)[:200]}`",
                 chat_id=message.chat.id,
                 message_id=wait_msg.message_id,
                 parse_mode="Markdown"
@@ -4282,7 +4648,7 @@ def _markets_section_keyboard(
         ])
     # Pagination row — показываем только если секция многостраничная.
     # Юзер просил «листать как книжку»: ◀ Prev / i / N / Next ▶ на одном
-    # сообщении (edit_message_text), без рассыпания на 3 портянки.
+    # сооб��ении (edit_message_text), без рассыпания на 3 портянки.
     if total_pages > 1:
         cur = max(0, min(int(current_page), total_pages - 1))
         prev_idx = (cur - 1) % total_pages
@@ -4315,7 +4681,7 @@ def _markets_section_keyboard(
     ])
     # Глоссарий «📖 Что значат эти слова?» — stateless, открывает разбор
     # терминов /markets (S/R, MA-триггеры, σ̂, Hurst, Markov, quant-метрики).
-    # UID в callback_data чтоб чужой клик в групповом чате не выдавал ответ
+    # UID в callback_data чтоб чужой клик в групповом чате не выдавал от��ет
     # (тот же паттерн что у `sigexplain:` в `_signal_explain_keyboard`).
     if user_id is not None:
         rows.append([
@@ -4571,10 +4937,6 @@ def _signal_explain_keyboard(user_id: int, capital: float = 123.0) -> InlineKeyb
             text="📖 Что значат эти слова?",
             callback_data=f"sigexplain:{user_id}",
         ),
-        InlineKeyboardButton(
-            text="🎯 Снайпинг",
-            callback_data=sniping_callback_data(user_id, capital),
-        ),
     ]])
 
 
@@ -4611,7 +4973,7 @@ def _signal_glossary_text() -> str:
         "\n"
         "*Entry / Stop / Target.*\n"
         "• *Entry* — цена входа (открытие позиции на рынке).\n"
-        "• *Stop (SL)* — цена автоматического закрытия с убытком.  Если "
+        "• *Stop (SL)* — цена автоматического закрытия с у��ытком.  Если "
         "рынок дошёл до SL — мы ошиблись, выходим, лосс фиксированный.\n"
         "• *Target (TP)* — цена автоматического закрытия с прибылью.  "
         "Если рынок дошёл до TP — забираем профит.\n"
@@ -4620,7 +4982,7 @@ def _signal_glossary_text() -> str:
         "«насколько актив обычно колеблется за день».  BTC ≈ 1.5%, XRP ≈ "
         "2.0%, мелочь до 5%.\n"
         "• *Stop 1.5σ̂* — стоп поставлен на 1.5 обычных дневных движения "
-        "выше шума.  Достаточно близко чтобы лосс был маленький, "
+        "выше шума.  Достаточно близко чтобы лосс был малень��ий, "
         "достаточно далеко чтобы случайная свеча не выбила.\n"
         "• *Target 3.0σ̂* — цель в 2 раза дальше стопа = R/R 2:1.\n"
         "\n"
@@ -4977,46 +5339,26 @@ def _fmt_signal_message(result: dict) -> str:
 @dp.message(Command("signal"))
 @require_vip
 async def cmd_signal(message: Message):
-    """Команда `/signal` (кнопка «🎯 Лучшая сделка») — лучший ЖИВОЙ edge.
+    """Команда `/signal` (кнопка «🎯 Лучшая сделка») — что РЕАЛЬНО делать сейчас.
 
-    Directional LONG/SHORT price-bet УБРАН (бэктест 2020-26: робастно
-    убыточен). Теперь показываем ОДНУ лучшую delta-neutral сделку с
-    максимальным net annualized % из carry / кросс-арб / базис — или честно
-    «сегодня сидим», если ничего выше порога костов нет.
-
-    Опциональный аргумент: `/signal 5000` — депозит для оценки $/год.
+    Угадывание направления (LONG/SHORT) убрано — бэктест 2020-26 показал, что
+    на дневках это робастно убыточно. Подход системы: спот + следование тренду
+    (держим активы выше SMA, в стейбле когда ниже). Без плеча, шортов, деривативов.
     """
-    user_id = message.from_user.id
-    await upsert_user(user_id, message.from_user.username or "")
-    wait_msg = await message.answer("⏳ Ищу лучший живой edge: carry · арб · базис…")
-
-    # Парсим опциональный депозит. `/signal 5000` → capital=5000.
-    parts = (message.text or "").strip().split()
-    capital = 0.0
-    if len(parts) >= 2:
-        try:
-            capital = max(0.0, float(parts[1].replace("$", "").replace(",", ".")))
-        except ValueError:
-            pass
-
-    try:
-        from core.best_edge import format_best_edge, scan_best_edge
-
-        edge = await scan_best_edge()
-        text = format_best_edge(edge, capital=capital)
-        await bot.edit_message_text(
-            text,
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-    except Exception as e:
-        await bot.edit_message_text(
-            f"❌ Ошибка: {e}",
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-        )
+    await upsert_user(message.from_user.id, message.from_user.username or "")
+    text = (
+        "🎯 *ЧТО ДЕЛАТЬ СЕЙЧАС*\n"
+        + "═" * 22 + "\n\n"
+        "Система не угадывает направление цены (это убыточно на дневках). "
+        "Подход — *спот + следование тренду*:\n\n"
+        "• держим равным весом активы, что *сейчас выше SMA50* (в восходящем тренде);\n"
+        "• ушёл ниже SMA — продаём в стейбл;\n"
+        "• ничего в тренде — сидим в стейбле, это нормальный ответ.\n\n"
+        "📊 Свежий список активов в тренде — в дайджесте `/daily`.\n"
+        "🧪 Аномалии рынка — `/screener`.\n\n"
+        "_Без плеча, шортов и деривативов. Не финансовый совет._"
+    )
+    await message.answer(text, parse_mode="Markdown")
 
 
 async def _freeze_signal_decision(result: dict) -> None:
@@ -5147,7 +5489,7 @@ def _markets_glossary_text() -> str:
         "назад. Чем меньше N, тем «свежее» уровень.\n"
         "• `+X.X% / −X.X%` — расстояние от текущей цены до уровня.\n"
         "\n"
-        "*🎯 LONG / SHORT — план сделки.*  Готовая идея с расчётом риска.\n"
+        "*🎯 LONG / SHORT — план сделки.*  Готовая идея с расчёт��м риска.\n"
         "• `TP` (Target Profit) — цель прибыли. Закрытие позиции в плюс.\n"
         "• `SL` (Stop Loss) — цена закрытия в убыток если идея не сработала.\n"
         "• `R/R 2:1` — Reward/Risk: рискуем $1, цель $2. Безубыточно при "
@@ -5164,7 +5506,7 @@ def _markets_glossary_text() -> str:
         "*📈/📉/↔️ ТРЕНД.*  UPTREND / DOWNTREND / SIDEWAYS — итоговая метка по "
         "HH/HL count + MA + изменению цены за 7д.\n"
         "\n"
-        "*🔄 MEAN-REVERTING / 📈 TRENDING / 🪙 RANDOM WALK.*  Структура ряда:\n"
+        "*🔄 MEAN-REVERTING / 📈 TRENDING / 🪙 RANDOM WALK.*  Стр��ктура ряда:\n"
         "• *TRENDING* — цена держит направление, тренд-стратегии работают.\n"
         "• *MEAN-REVERTING* — рынок «дышит» вокруг средней, скальп возле S/R.\n"
         "• *RANDOM WALK* — направление непредсказуемо, как монетка. Не "
@@ -5209,7 +5551,7 @@ def _markets_glossary_text() -> str:
 
 @dp.callback_query(F.data.startswith("mktexplain:"))
 async def handle_markets_explain_callback(callback: CallbackQuery):
-    """Кнопка «📖 Что значат эти слова?» под /markets.
+    """Кнопка «📖 Что ��начат эти слова?» под /markets.
 
     Отправляет НОВОЕ сообщение с глоссарием — не редактирует исходный
     /markets-выкат (чтобы юзер мог видеть и данные, и пояснение рядом).
@@ -5390,7 +5732,7 @@ async def cb_markets_signals(callback: CallbackQuery):
                 else (
                     "\n\n━━━━━━━━━━━━━━━━━━━━━\n"
                     "Нажми «Включить сигналы» — бот будет присылать при перекосе трейдеров "
-                    "или совпадении с вердиктом из DIGEST_CACHE"
+                    "или ��овпадении с вердиктом из DIGEST_CACHE"
                 )
             )
             if not messages:
@@ -5891,6 +6233,8 @@ async def handle_text_input(message: Message):
     """Handle portfolio input OR time subscription."""
     user_id = message.from_user.id
     text = message.text.strip()
+    if await _handle_trade_text(message, user_id, text):
+        return
     if await handle_portfolio_input(message):
         return
 
@@ -6111,7 +6455,6 @@ async def cmd_help(message: Message):
         "• `/markets` — живой контекст + сигналы, кнопки подписки\n"
         "• `/help markets` — подробный гайд по цифрам в /markets 📊\n"
         "• `/signal [capital]` — auto SL/TP setup на основе нашего scoring 🎯\n"
-        "• `/funding` — funding по top-10 futures + аномалии contango/short squeeze\n"
         "• `/trackrecord` — история точности (всё)\n"
         "• `/trackrecordglobal` — Global\n"
         "• `/trackrecordrussia` — Россия Edge 🇷🇺\n"
@@ -6249,52 +6592,48 @@ PUMP_ONDEMAND_LIMIT = _pump_ondemand_limit()
 @dp.message(Command("pump"))
 @require_vip
 async def cmd_pump(message: Message):
-    """On-demand памп-скан. Гоняет тот же pump_scanner что и авто-алерты
-    (со всеми guard'ами целостности из PR #75: свежесть свечей, single-venue
-    консистентность, anti-collision merge) и отдаёт топ-сигналы прямо сейчас.
+    """🚀 «Что разгоняется» — спот-сканер моментума (лонг-only, без плеча/шортов).
+
+    Раньше тут жил pump-fade (ставка против движения) ��� он удалён. Это новый,
+    честный лонг-моментум: показываем монеты, которые уже растут и держатся
+    выше короткой средней. Сигнал, не приказ.
     """
+    wait = await message.answer("🚀 Сканирую, что разгоняется на споте…")
+    kb = None
     try:
-        from pump_scanner import PumpConfig, format_pump_alert, scan_pumps
+        text, kb = await _build_pump_card()
     except Exception as e:  # noqa: BLE001
-        logger.error("pump: import failed: %s", e)
-        await message.answer("Памп-сканер временно недоступен.")
-        return
-
-    notice = await message.answer("🚀 Сканирую рынок на пампы…")
+        text = f"⚠️ Не получилось собрать сканер: {e}"
     try:
-        signals = await scan_pumps(cfg=PumpConfig.from_env(), max_symbols=0)
-    except Exception as e:  # noqa: BLE001
-        logger.error("pump: scan failed: %s", e)
-        await message.answer(f"Ошибка памп-сканера: {e}")
-        return
-
-    try:
-        if notice is not None:
-            await notice.delete()
-    except Exception:  # noqa: BLE001 — удаление статус-сообщения best-effort
+        await wait.delete()
+    except Exception:  # noqa: BLE001
         pass
+    await _send_halal_card(message, text, kb)
 
-    if not signals:
-        await message.answer(
-            "🚀 *Памп-сканер*\n\nСейчас активных пампов не вижу — рынок спокоен.\n"
-            "_Авто-алерты придут сами, как только что-то поедет._",
-            parse_mode="Markdown",
+
+@dp.message(F.text == PERSISTENT_BTN_PUMP)
+async def _kb_pump(message: Message):
+    await cmd_pump(message)
+
+
+@dp.callback_query(F.data == "pumpref")
+async def _cb_pump_refresh(cb: CallbackQuery):
+    """🔄 Обновить карточку «что разгоняется» (новым сообщением)."""
+    try:
+        await cb.answer("Обновляю…")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        text, kb = await _build_pump_card()
+        await bot.send_message(
+            cb.from_user.id, text, parse_mode="Markdown",
+            disable_web_page_preview=True, reply_markup=kb,
         )
-        return
-
-    top = signals[:PUMP_ONDEMAND_LIMIT]
-    await message.answer(
-        f"🚀 *Памп-сканер* — нашёл *{len(signals)}*, показываю топ-{len(top)}:",
-        parse_mode="Markdown",
-    )
-    for sig in top:
+    except Exception:  # noqa: BLE001
         try:
-            text = format_pump_alert(sig)
-            await message.answer(
-                text, parse_mode="Markdown", disable_web_page_preview=True,
-            )
-        except Exception as e:  # noqa: BLE001 — один битый сигнал не рушит ответ
-            logger.debug("pump: render failed for %s: %s", getattr(sig, "asset", "?"), e)
+            await bot.send_message(cb.from_user.id, "⚠️ Не получилось обновить, попробуй позже.")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ─── /admin ───────────────────────────────────────────────────────────────────
@@ -6353,7 +6692,7 @@ async def cmd_ban(message: Message):
         return
     uid = _parse_target_user_id(message)
     if uid is None:
-        await message.answer("Использование: `/ban <user_id>`", parse_mode="Markdown")
+        await message.answer("Использо��ание: `/ban <user_id>`", parse_mode="Markdown")
         return
     if is_admin(uid):
         await message.answer("🛡 Нельзя забанить админа.")
@@ -6361,7 +6700,7 @@ async def cmd_ban(message: Message):
     from payments.db import block_user
     ok = await block_user(uid)
     await message.answer(
-        f"🚫 Юзер `{uid}` заблокирован (VIP и триал перебиты)." if ok
+        f"🚫 Юзер `{uid}` заб��окирован (VIP и триал перебиты)." if ok
         else f"⚠️ Не удалось заблокировать `{uid}` (БД выключена?).",
         parse_mode="Markdown",
     )
@@ -6483,31 +6822,23 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="trackrecordrussia", description="🇷🇺 Россия Edge"),
         BotCommand(command="trackrecord", description="📊 Вся статистика"),
         BotCommand(command="markets", description="Рынки + сигналы, подписка"),
-        BotCommand(command="funding", description="💸 Funding top-10 futures"),
-        BotCommand(command="carry", description="💱 Carry-сделка по шагам + режим"),
-        BotCommand(command="arb", description="🔀 Кросс-биржевой funding-арбитраж"),
-        BotCommand(command="basis", description="🗓 Calendar basis carry (cash-and-carry)"),
-        BotCommand(command="calc", description="🧮 Калькулятор позиции под депозит"),
-        BotCommand(command="track", description="📊 Track-record найденных окон"),
         BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
         BotCommand(command="status", description="Краткий статус"),
         BotCommand(command="tt", description="🧪 Тест"),
-        BotCommand(command="signalstatus", description="📊 Статус трейдера"),
-        BotCommand(command="eval", description="📈 Валидация сигналов"),
+        BotCommand(command="signalstatus", description="🤖 Автоторговля (скоро)"),
         BotCommand(command="screener", description="📡 Сканер аномалий"),
+        BotCommand(command="pump", description="🚀 Что разгоняется (спот-моментум)"),
+        BotCommand(command="stocks", description="📈 Акции: тренд + моментум"),
+        BotCommand(command="trend", description="🧭 Крипто-тренд (спот/лонг)"),
+        BotCommand(command="dca", description="💧 План усреднения (DCA)"),
+        BotCommand(command="calc", description="🧮 Калькулятор сделок (профит)"),
+        BotCommand(command="alerts", description="🔔 Автоалерты смены тренда"),
         BotCommand(command="newbie", description="🆕 Гид для новичков (PDF + правила)"),
         BotCommand(command="instruction", description="📖 Инструкция для чайников"),
-        BotCommand(command="close", description="Закрыть позицию"),
-        BotCommand(command="why", description="Почему открыта позиция"),
-        BotCommand(command="stop", description="Остановить автотрейд"),
-        BotCommand(command="starttrade", description="Запустить автотрейд"),
         BotCommand(command="russia", description="Анализ РФ 🇷🇺"),
         BotCommand(command="profile", description="Настройки профиля"),
         BotCommand(command="subscribe", description="Авторассылка"),
-        BotCommand(command="autotrade_status", description="🎯 Status: PnL, win-rate, Kelly"),
-        BotCommand(command="audit", description="📊 AI-аудит закрытых сделок"),
         BotCommand(command="usage", description="🔢 Расход токенов"),
-        BotCommand(command="pump", description="🚀 Памп-сканер по запросу"),
     ]
     await bot.set_my_commands(commands)
 
@@ -6584,7 +6915,6 @@ async def main():
     register_p2p_arbitrage_handlers(dp)
     register_postmortem_handlers(dp)
     register_retro_handlers(dp)
-    register_sniping_handlers(dp)
     register_subscription_handlers(dp)
 
     _rate_limiter = RateLimitMiddleware()
@@ -6694,6 +7024,7 @@ async def main():
 # ─── Портфельный трекер ─────────────────────────────────────────────────────────
 
 user_portfolio_state = {}  # user_id: {"symbol": str, "step": str}
+user_trade_state = {}  # user_id: {"step": str, "symbol"?: str, "qty"?: float, "trade_id"?: int}
 
 
 def portfolio_keyboard(has_positions: bool = True) -> InlineKeyboardMarkup:
@@ -6797,6 +7128,428 @@ async def cmd_remove_portfolio(message: Message):
     await remove_portfolio_command(message)
 
 
+# ─── 🤝 Тур «веду за руку»: пошаговый онбординг новичка ───
+def _tour_step(step: int):
+    """Возвращает (текст, клавиатура) для шага тура. step>=99 — финал."""
+    if step <= 1:
+        text = (
+            "🤝 *Веду за руку. Шаг 1 из 4*\n\n"
+            "📊 Сначала поймём, что покупать. Жми «🧭 EDGE-план» — покажу монеты "
+            "и доли депозита (или скажу пересидеть в стейбле).\n\n"
+            "Глянул план — жми «Дальше ➡️»."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧭 Открыть EDGE-план", callback_data="cmd:edgeplan")],
+            [InlineKeyboardButton(text="Дальше ➡️", callback_data="tour:2")],
+        ])
+    elif step == 2:
+        text = (
+            "🤝 *Шаг 2 из 4*\n\n"
+            "🎯 Нужна одна конкретная идея? «Лучшая сделка сейчас» даст один точечный вход.\n\n"
+            "Посмотрел — жми «Дальше ➡️»."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас", callback_data="cmd:signal")],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="tour:1"),
+                InlineKeyboardButton(text="Дальше ➡️", callback_data="tour:3"),
+            ],
+        ])
+    elif step == 3:
+        text = (
+            "🤝 *Шаг 3 из 4 — самое важное*\n\n"
+            "✅ Купил по плану? Сразу запиши покупку в калькулятор — я запомню цену "
+            "и потом сам посчитаю профит.\n\n"
+            "Жми «➕ Записать покупку» и просто отвечай на вопросы бота "
+            "(какая монета → сколько → по какой цене)."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Записать покупку", callback_data="calc:buy")],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="tour:2"),
+                InlineKeyboardButton(text="Дальше ➡️", callback_data="tour:4"),
+            ],
+        ])
+    elif step == 4:
+        text = (
+            "🤝 *Шаг 4 из 4*\n\n"
+            "💰 Продал монету? Закрой сделку — посчитаю профит по этой сделке, "
+            "а ещё винрейт и ROI по всем сделкам.\n\n"
+            "Калькулятор всегда под рукой: /calc или кнопка 🧮 в /start."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➖ Закрыть сделку", callback_data="calc:sell")],
+            [InlineKeyboardButton(text="📊 Моя статистика", callback_data="calc:stats")],
+            [InlineKeyboardButton(text="✅ Завершить тур", callback_data="tour:done")],
+        ])
+    else:
+        text = (
+            "🎉 *Готово, братишка — ты освоился!*\n\n"
+            "Твой маршрут на каждый день:\n"
+            "1️⃣ /plan — что купить сейчас\n"
+            "2️⃣ купил → 🧮 записал покупку в /calc\n"
+            "3️⃣ продал → закрыл сделку, смотрю профит\n"
+            "4️⃣ остальное сам пришлю в авто-алертах\n\n"
+            "Подсказки всегда тут: /start — меню · /calc — калькулятор · /help — всё."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧮 Открыть калькулятор", callback_data="calc:menu")],
+        ])
+    return text, kb
+
+
+@dp.message(Command("tour", "guideme"))
+async def cmd_tour(message: Message):
+    """🤝 Пошаговый тур-онбординг: бот ведёт новичка за руку."""
+    await upsert_user(message.from_user.id)
+    text, kb = _tour_step(1)
+    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("tour:"))
+async def handle_tour_callback(callback: CallbackQuery):
+    """Навигация по туру. tour:go — старт новым сообщением, остальное — редактирование."""
+    data = callback.data or ""
+    arg = data.split(":", 1)[1] if ":" in data else ""
+    if arg in ("go", "start"):
+        text, kb = _tour_step(1)
+        await callback.message.answer(text, parse_mode="Markdown", reply_markup=kb)
+        await callback.answer()
+        return
+    step = 99 if arg == "done" else (int(arg) if arg.isdigit() else 1)
+    text, kb = _tour_step(step)
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, parse_mode="Markdown", reply_markup=kb)
+    await callback.answer()
+
+
+# ─── 🧮 Калькулятор/журнал сделок (покупки/продажи + профит в БД) ───
+def _fmt_money(x) -> str:
+    try:
+        return f"${float(x):,.2f}"
+    except Exception:
+        return "$0.00"
+
+
+def _signed_money(x) -> str:
+    x = float(x or 0)
+    sign = "+" if x >= 0 else "-"
+    return f"{sign}${abs(x):,.2f}"
+
+
+def _calc_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ Купил", callback_data="calc:buy"),
+            InlineKeyboardButton(text="➖ Продал", callback_data="calc:sell"),
+        ],
+        [
+            InlineKeyboardButton(text="📋 История", callback_data="calc:list"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="calc:stats"),
+        ],
+    ])
+
+
+def _render_close_result(t: dict) -> str:
+    pa = t.get("profit_abs", 0) or 0
+    pp = t.get("profit_pct", 0) or 0
+    emoji = "🟢" if pa >= 0 else "🔴"
+    word = "Профит" if pa >= 0 else "Убыток"
+    return (
+        f"{emoji} Закрыл сделку `#{t['id']}` {t['symbol']}\n"
+        f"Куплено: {t['qty']:g} @ {_fmt_money(t['entry_price'])}\n"
+        f"Продано: @ {_fmt_money(t.get('exit_price'))}\n"
+        f"Вложено {_fmt_money(t.get('invested'))} → получено {_fmt_money(t.get('proceeds'))}\n"
+        f"*{word}: {_signed_money(pa)} ({pp:+.2f}%)*"
+    )
+
+
+async def _render_trade_list(user_id: int) -> str:
+    opens = await get_trades(user_id, status="open", limit=30)
+    closed = await get_trades(user_id, status="closed", limit=15)
+    lines = ["📋 *История сделок*", ""]
+    if opens:
+        lines.append("🔵 *Открытые позиции:*")
+        for t in opens:
+            lines.append(
+                f"  `#{t['id']}` {t['symbol']} · {t['qty']:g} @ {_fmt_money(t['entry_price'])} "
+                f"· вложено {_fmt_money(t.get('invested'))}"
+            )
+        lines.append("")
+    if closed:
+        lines.append("✅ *Закрытые:*")
+        for t in closed:
+            pa = t.get("profit_abs", 0) or 0
+            pp = t.get("profit_pct", 0) or 0
+            e = "🟢" if pa >= 0 else "🔴"
+            lines.append(f"  {e} `#{t['id']}` {t['symbol']} · {_signed_money(pa)} ({pp:+.1f}%)")
+    if not opens and not closed:
+        lines.append("Пока пусто. Добавь первую: `/calc buy BTC 0.5 60000`")
+    return "\n".join(lines)
+
+
+async def _render_trade_stats(user_id: int) -> str:
+    st = await get_trade_stats(user_id)
+    lines = ["📊 *Статистика сделок*", ""]
+    lines.append(f"Закрыто сделок: *{st['closed']}*  ·  🟢 {st['wins']} / 🔴 {st['losses']}")
+    lines.append(f"Винрейт: *{st['win_rate']:.0f}%*")
+    lines.append(f"Вложено всего: {_fmt_money(st['total_invested'])}")
+    lines.append(f"Итоговый профит: *{_signed_money(st['total_profit'])}*  ·  ROI *{st['roi']:+.1f}%*")
+    if st['closed']:
+        lines.append(f"Средняя сделка: {st['avg_pct']:+.1f}%")
+        lines.append(f"Лучшая: {st['best_pct']:+.1f}%  ·  Худшая: {st['worst_pct']:+.1f}%")
+    lines.append("")
+    lines.append(f"Сейчас открыто: {st['open']} (вложено {_fmt_money(st['open_invested'])})")
+    return "\n".join(lines)
+
+
+async def _build_calc_summary(user_id: int) -> str:
+    st = await get_trade_stats(user_id)
+    opens = await get_trades(user_id, status="open", limit=20)
+    lines = [
+        "🧮 *Калькулятор сделок*",
+        "",
+        "Записываю каждую покупку и продажу и сам считаю профит. Спот, только лонг.",
+        "",
+    ]
+    if opens:
+        lines.append("🔵 *Открытые позиции:*")
+        for t in opens:
+            lines.append(
+                f"  `#{t['id']}` {t['symbol']} · {t['qty']:g} @ {_fmt_money(t['entry_price'])} "
+                f"· вложено {_fmt_money(t.get('invested'))}"
+            )
+    else:
+        lines.append("📭 Открытых позиций пока нет.")
+    lines.append("")
+    lines.append(
+        f"📊 Закрыто: *{st['closed']}* · винрейт *{st['win_rate']:.0f}%* · "
+        f"профит *{_signed_money(st['total_profit'])}* (ROI {st['roi']:+.1f}%)"
+    )
+    lines.append("")
+    lines.append("*Как пользоваться:*")
+    lines.append("• Кнопки ниже — пошагово, бот сам спросит монету/кол-во/цену.")
+    lines.append("• Или командой: `/calc buy BTC 0.5 60000` — купил 0.5 BTC по $60 000.")
+    lines.append("• `/calc sell 12 65000` — продал сделку #12 по $65 000 (посчитаю профит).")
+    lines.append("• `/calc list` — история · `/calc stats` — статистика · `/calc del 12` — удалить.")
+    return "\n".join(lines)
+
+
+async def show_calc_view(target_message, user_id: int):
+    text = await _build_calc_summary(user_id)
+    await target_message.answer(text, parse_mode="Markdown", reply_markup=_calc_menu_kb())
+
+
+@dp.message(Command("calc", "journal", "trade", "calculator"))
+async def cmd_calc(message: Message):
+    """🧮 Калькулятор/журнал сделок — запись покупок/продаж и подсчёт профита."""
+    user_id = message.from_user.id
+    await upsert_user(user_id)
+    parts = (message.text or "").split()
+    args = parts[1:]
+    if not args:
+        user_trade_state.pop(user_id, None)
+        await show_calc_view(message, user_id)
+        return
+
+    sub = args[0].lower()
+
+    if sub in ("buy", "b", "купил", "куп", "покупка"):
+        if len(args) < 4:
+            await message.answer(
+                "Формат: `/calc buy BTC 0.5 60000`\n(монета, кол-во, цена покупки)",
+                parse_mode="Markdown")
+            return
+        symbol = args[1].upper().lstrip("$")
+        try:
+            qty = float(args[2].replace(",", "."))
+            price = float(args[3].replace(",", "."))
+            assert qty > 0 and price > 0
+        except Exception:
+            await message.answer("Кол-во и цена — положительные числа. Пример: `/calc buy BTC 0.5 60000`", parse_mode="Markdown")
+            return
+        note = " ".join(args[4:]) if len(args) > 4 else ""
+        tid = await add_trade(user_id, symbol, qty, price, note)
+        await message.answer(
+            f"✅ Записал покупку `#{tid}`: {symbol} — {qty:g} @ {_fmt_money(price)}\n"
+            f"Вложено: *{_fmt_money(qty * price)}*\n\n"
+            f"Когда продашь: `/calc sell {tid} <цена>`",
+            parse_mode="Markdown", reply_markup=_calc_menu_kb())
+        return
+
+    if sub in ("sell", "s", "продал", "прод", "продажа"):
+        if len(args) < 3:
+            await message.answer(
+                "Формат: `/calc sell 12 65000`\n(номер сделки из `/calc list` и цена продажи)",
+                parse_mode="Markdown")
+            return
+        target = args[1]
+        try:
+            price = float(args[2].replace(",", "."))
+            assert price > 0
+        except Exception:
+            await message.answer("Цена продажи — положительное число. Пример: `/calc sell 12 65000`", parse_mode="Markdown")
+            return
+        if target.isdigit():
+            t = await close_trade(user_id, int(target), price)
+        else:
+            ot = await get_open_trade_by_symbol(user_id, target.upper().lstrip("$"))
+            t = await close_trade(user_id, ot["id"], price) if ot else None
+        if not t:
+            await message.answer("Не нашёл открытую сделку. Глянь номера в `/calc list`.", parse_mode="Markdown")
+            return
+        await message.answer(_render_close_result(t), parse_mode="Markdown", reply_markup=_calc_menu_kb())
+        return
+
+    if sub in ("list", "l", "история", "ист"):
+        await message.answer(await _render_trade_list(user_id), parse_mode="Markdown", reply_markup=_calc_menu_kb())
+        return
+
+    if sub in ("stats", "stat", "статистика", "стата", "стат"):
+        await message.answer(await _render_trade_stats(user_id), parse_mode="Markdown", reply_markup=_calc_menu_kb())
+        return
+
+    if sub in ("del", "delete", "rm", "remove", "удалить", "удали"):
+        if len(args) < 2 or not args[1].isdigit():
+            await message.answer("Формат: `/calc del 12` (номер сделки из `/calc list`)", parse_mode="Markdown")
+            return
+        await delete_trade(user_id, int(args[1]))
+        await message.answer(f"🗑 Удалил запись `#{args[1]}`.", parse_mode="Markdown")
+        return
+
+    await show_calc_view(message, user_id)
+
+
+@dp.callback_query(F.data.startswith("calc:"))
+async def handle_calc_callback(callback: CallbackQuery):
+    """Кнопки калькулятора сделок (пошаговый ввод через user_trade_state)."""
+    user_id = callback.from_user.id
+    data = callback.data or ""
+
+    if data == "calc:menu":
+        user_trade_state.pop(user_id, None)
+        await show_calc_view(callback.message, user_id)
+        await callback.answer()
+        return
+
+    if data == "calc:buy":
+        user_trade_state[user_id] = {"step": "buy_symbol"}
+        await callback.message.answer(
+            "➕ *Новая покупка*\nКакую монету купил? Напиши тике��, например `BTC`.\n\n(отмена — /calc)",
+            parse_mode="Markdown")
+        await callback.answer()
+        return
+
+    if data == "calc:sell":
+        opens = await get_trades(user_id, status="open", limit=20)
+        if not opens:
+            await callback.answer("Нет открытых позиций для продажи", show_alert=True)
+            return
+        rows = [[InlineKeyboardButton(
+            text=f"#{t['id']} {t['symbol']} {t['qty']:g} @ ${t['entry_price']:,.0f}",
+            callback_data=f"calc:sellpick:{t['id']}")] for t in opens]
+        await callback.message.answer(
+            "➖ Какую позицию закрываешь?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await callback.answer()
+        return
+
+    if data.startswith("calc:sellpick:"):
+        sp = data.split(":")
+        tid = sp[2] if len(sp) > 2 else ""
+        opens = await get_trades(user_id, status="open", limit=50)
+        t = next((x for x in opens if str(x["id"]) == tid), None)
+        if not t:
+            await callback.answer("Сделка не найдена", show_alert=True)
+            return
+        user_trade_state[user_id] = {"step": "sell_price", "trade_id": int(tid)}
+        await callback.message.answer(
+            f"По какой цене продал {t['symbol']} (`#{tid}`)?\nВведи число, например `65000`.",
+            parse_mode="Markdown")
+        await callback.answer()
+        return
+
+    if data == "calc:list":
+        await callback.message.answer(await _render_trade_list(user_id), parse_mode="Markdown")
+        await callback.answer()
+        return
+
+    if data == "calc:stats":
+        await callback.message.answer(await _render_trade_stats(user_id), parse_mode="Markdown")
+        await callback.answer()
+        return
+
+    await callback.answer()
+
+
+async def _handle_trade_text(message: Message, user_id: int, text: str) -> bool:
+    """Пошаговый ввод калькулятора сделок. True — если сообщение поглощено."""
+    state = user_trade_state.get(user_id)
+    if not state:
+        return False
+    step = state.get("step")
+
+    if step == "buy_symbol":
+        sym = text.strip().upper().lstrip("$")
+        if not sym.isalnum() or len(sym) > 12:
+            await message.answer("Это не похоже на тикер. Напиши, например, `BTC`.", parse_mode="Markdown")
+            return True
+        state["symbol"] = sym
+        state["step"] = "buy_qty"
+        await message.answer(f"Сколько {sym} купил? Введи количество монет, например `0.5`.", parse_mode="Markdown")
+        return True
+
+    if step == "buy_qty":
+        try:
+            qty = float(text.replace(",", "."))
+            assert qty > 0
+        except Exception:
+            await message.answer("Введи количество числом, например `0.5`.", parse_mode="Markdown")
+            return True
+        state["qty"] = qty
+        state["step"] = "buy_price"
+        await message.answer(f"По какой цене за 1 {state['symbol']}? Например `60000`.", parse_mode="Markdown")
+        return True
+
+    if step == "buy_price":
+        try:
+            price = float(text.replace(",", "."))
+            assert price > 0
+        except Exception:
+            await message.answer("Введи цену числом, например `60000`.", parse_mode="Markdown")
+            return True
+        sym = state["symbol"]
+        qty = state["qty"]
+        tid = await add_trade(user_id, sym, qty, price)
+        user_trade_state.pop(user_id, None)
+        await message.answer(
+            f"✅ Записал покупку `#{tid}`: {sym} — {qty:g} @ {_fmt_money(price)}\n"
+            f"Вложено: *{_fmt_money(qty * price)}*\n\n"
+            f"Когда продашь — жми ➖ Продал.",
+            parse_mode="Markdown", reply_markup=_calc_menu_kb())
+        return True
+
+    if step == "sell_price":
+        try:
+            price = float(text.replace(",", "."))
+            assert price > 0
+        except Exception:
+            await message.answer("Введи цену продажи числом, например `65000`.", parse_mode="Markdown")
+            return True
+        tid = state.get("trade_id")
+        t = await close_trade(user_id, tid, price)
+        user_trade_state.pop(user_id, None)
+        if not t:
+            await message.answer("Не нашёл эту сделку — возможно, она уже закрыта. Глянь /calc list.")
+            return True
+        await message.answer(_render_close_result(t), parse_mode="Markdown", reply_markup=_calc_menu_kb())
+        return True
+
+    return False
+
+
 # ─── Backtest ───────────────────────────────────────────────────────────────────
 
 backtest_enabled = True  # Global toggle for backtest recording
@@ -6813,10 +7566,15 @@ def backtest_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-@dp.message(Command("backtest"))
+@dp.message(Command("papertrader"))
 @require_vip
-async def cmd_backtest(message: Message):
-    """Show backtest results with nice formatting and keyboard."""
+async def cmd_papertrader(message: Message):
+    """Бумажный трейдер (paper-trading), админ/диагностика: /papertrader.
+
+    Раньше висел на /backtest, но /backtest теперь = исторический бэктест
+    спот-стратегии (cmd_backtest выше). Эту фичу убрали из пользовательского
+    меню (спот-онли, без автоторговли), но команду оставили для диагностики.
+    """
     signals = await get_backtest_signals()
     stats = await get_backtest_stats()
     config = await get_backtest_config()

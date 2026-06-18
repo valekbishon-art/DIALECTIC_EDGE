@@ -51,6 +51,46 @@ async def init_db():
         except Exception:
             pass
 
+        # Подписка на спот-автоалерты (/trend и /stocks: смена режима тренда).
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN halal_alert_sub INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
+        # Per-user выбор профиля EDGE (/plan): base|balanced|aggressive|conservative.
+        # NULL/'base' = текущая рабочая логика (back-compat для существующих юзеров).
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN edge_profile TEXT DEFAULT 'base'")
+        except Exception:
+            pass
+
+        # Универсальное key-value хранилище (состояние автоалертов и пр.).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS app_kv (
+                key   TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Одноразовая миграция: автоалерты ВКЛ по умолчанию для всех текущих
+        # юзеров. Гейтим флагом в app_kv, чтобы НЕ переподписывать тех, кто
+        # позже сам отключит (opt-out). Запускается один раз на инстанс БД.
+        try:
+            async with db.execute(
+                "SELECT value FROM app_kv WHERE key = 'halal_alert_default_on_v1'"
+            ) as cur:
+                done = await cur.fetchone()
+            if not done:
+                await db.execute("UPDATE users SET halal_alert_sub = 1")
+                await db.execute(
+                    "INSERT INTO app_kv (key, value, updated_at) "
+                    "VALUES ('halal_alert_default_on_v1', '1', datetime('now')) "
+                    "ON CONFLICT(key) DO NOTHING"
+                )
+        except Exception:
+            pass
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,6 +155,30 @@ async def init_db():
                 UNIQUE(user_id, symbol)
             )
         """)
+
+        # Журнал/калькулятор сделок: каждая покупка/продажа + посчитанный профит.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS trade_journal (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                symbol      TEXT NOT NULL,
+                qty         REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                exit_price  REAL,
+                invested    REAL,
+                proceeds    REAL,
+                profit_abs  REAL,
+                profit_pct  REAL,
+                status      TEXT NOT NULL DEFAULT 'open',  -- open / closed
+                note        TEXT DEFAULT '',
+                opened_at   TEXT DEFAULT (datetime('now')),
+                closed_at   TEXT
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_journal_user "
+            "ON trade_journal (user_id, status, id DESC)"
+        )
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS backtest_signals (
@@ -259,7 +323,7 @@ async def init_db():
 
         # ─── agent_predictions: per-agent probabilistic forecast tracking ────
         # Хранит probabilistic forecast'ы Bull/Bear/Verifier/Synth (а также
-        # любых других ролей в будущем) после каждого дебата. Через `horizon_h`
+        # любых других рол��й в будущем) после каждого дебата. Через `horizon_h`
         # часов фоновая задача в scheduler.py резолвит прогноз: фетчит
         # реализованную цену, считает Brier score. По истории считается
         # калибровка агента — см. core/agent_calibration.py.
@@ -307,7 +371,7 @@ async def init_db():
         # ─── microstructure_snapshots: cross-exchange L2 depth metrics ───────
         # Каждый snapshot — это уже агрегированная сводка по всем venue
         # (Binance/Bybit/OKX/Bitget/Hyperliquid). Сырые per-venue стаканы
-        # не сохраняем — они слишком объёмные. Здесь только финальные метрики.
+        # не сохраняем — они слишком объёмные. Здесь только финальные метр��ки.
         await db.execute("""
             CREATE TABLE IF NOT EXISTS microstructure_snapshots (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -657,9 +721,11 @@ async def init_db():
 
 async def upsert_user(user_id: int, username: str = "", first_name: str = ""):
     async with aiosqlite.connect(DB_PATH) as db:
+        # Новый юзер: автоалерты ВКЛ по умолчанию (halal_alert_sub = 1).
+        # ON CONFLICT НЕ трогает halal_alert_sub — сохраняем выбор юзера (opt-out).
         await db.execute("""
-            INSERT INTO users (user_id, username, first_name, last_active, signals_sub)
-            VALUES (?, ?, ?, datetime('now'), 1)
+            INSERT INTO users (user_id, username, first_name, last_active, signals_sub, halal_alert_sub)
+            VALUES (?, ?, ?, datetime('now'), 1, 1)
             ON CONFLICT(user_id) DO UPDATE SET
                 username = excluded.username,
                 first_name = excluded.first_name,
@@ -779,6 +845,81 @@ async def get_user_signals_status(user_id: int) -> bool:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] == 1 if row else False
+
+
+# ─── Спот-автоалерты (смена режима тренда по /trend и /stocks) ────────────────
+async def get_halal_alert_subscribers() -> list[dict]:
+    """Пользователи с включёнными спот-автоалертами."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users WHERE halal_alert_sub = 1"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def set_halal_alert_sub(user_id: int, enabled: bool):
+    """Вкл/выкл спот-автоалерты для пользователя."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET halal_alert_sub = ? WHERE user_id = ?",
+            (1 if enabled else 0, user_id),
+        )
+        await db.commit()
+
+
+async def get_user_halal_alert_status(user_id: int) -> bool:
+    """Статус подписки на спот-автоалерты."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT halal_alert_sub FROM users WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] == 1 if row else False
+
+
+# ─── Профиль EDGE (выбор стратегии для /plan) ─────────────────────────────────
+async def get_user_edge_profile(user_id: int) -> str:
+    """Выбранный пользователем профиль EDGE; по умолчанию 'base'."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT edge_profile FROM users WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return (row[0] or "base") if row else "base"
+
+
+async def set_user_edge_profile(user_id: int, profile: str):
+    """Сохранить выбранный профиль EDGE."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET edge_profile = ? WHERE user_id = ?",
+            (profile, user_id),
+        )
+        await db.commit()
+
+
+# ─── Универсальное key-value (состояние автоалертов и пр.) ────────────────────
+async def kv_get(key: str) -> Optional[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT value FROM app_kv WHERE key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def kv_set(key: str, value: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO app_kv (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+            (key, value),
+        )
+        await db.commit()
 
 
 def _parse_signals_assets(raw: Optional[str]) -> Optional[list[str]]:
@@ -1056,7 +1197,7 @@ async def save_agent_prediction(
     ref_price: float,
     resolve_at: str,
 ) -> int:
-    """Сохранить probabilistic forecast агента. Возвращает id строки.
+    """Сохранить probabilistic forecast агента. Возвращает id строк��.
 
     resolve_at — ISO-timestamp когда прогноз должен быть резолвнут (created_at + horizon).
     """
@@ -1154,7 +1295,7 @@ async def get_agent_calibration_history(
             return [dict(r) for r in rows]
 
 
-# ─── Microstructure snapshots (cross-exchange L2 depth) ──────────────────────
+# ─��─ Microstructure snapshots (cross-exchange L2 depth) ──────────────────────
 #
 # См. market_indicators/microstructure.py для смысла полей. Здесь — голые
 # CRUD-обёртки. Хранятся уже agregated по venue метрики; сырые стаканы не
@@ -1436,7 +1577,7 @@ async def get_active_narratives(*, limit: int = 10) -> list[dict]:
 
 
 async def cleanup_old_narrative_data(*, retention_days: int = 180) -> int:
-    """Удалить документы и snapshot'ы старше retention_days. Возвращает
+    """Удалить документы и snapshot'ы с��арше retention_days. Возвращает
     общее число удалённых строк."""
     async with aiosqlite.connect(DB_PATH) as db:
         cur1 = await db.execute(
@@ -1785,7 +1926,7 @@ async def log_report(user_id: int, report_type: str, news_used: str, summary: st
         await db.commit()
 
 
-# ─── Статистика для админа ────────────────────────────────────────────────────
+# ─── Статистика для админа ───────────────────────────────────��────────────────
 
 async def get_admin_stats() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1850,6 +1991,135 @@ async def remove_portfolio_position(user_id: int, symbol: str) -> bool:
                         (user_id, symbol.upper()))
         await db.commit()
     return True
+
+
+# ─── 🧮 Калькулятор/журнал сделок (покупки/продажи + профит) ──────────
+async def add_trade(user_id: int, symbol: str, qty: float, entry_price: float, note: str = "") -> int:
+    """Записать покупку (открытая сделка). Возвращает id записи."""
+    invested = qty * entry_price
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            INSERT INTO trade_journal (user_id, symbol, qty, entry_price, invested, status, note)
+            VALUES (?, ?, ?, ?, ?, 'open', ?)
+        """, (user_id, symbol.upper(), qty, entry_price, invested, note or ""))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def close_trade(user_id: int, trade_id: int, exit_price: float):
+    """Закрыть сделку по цене продажи и посчитать профит. None — если не найдена."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM trade_journal WHERE id = ? AND user_id = ?",
+            (trade_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        t = _row_to_dict(row)
+        if t.get("status") == "closed":
+            return t
+        qty = t["qty"]
+        entry = t["entry_price"]
+        proceeds = qty * exit_price
+        invested = t.get("invested") or (qty * entry)
+        profit_abs = proceeds - invested
+        profit_pct = ((exit_price / entry) - 1.0) * 100.0 if entry else 0.0
+        await db.execute("""
+            UPDATE trade_journal
+               SET exit_price = ?, proceeds = ?, profit_abs = ?, profit_pct = ?,
+                   status = 'closed', closed_at = datetime('now')
+             WHERE id = ? AND user_id = ?
+        """, (exit_price, proceeds, profit_abs, profit_pct, trade_id, user_id))
+        await db.commit()
+        t.update({
+            "exit_price": exit_price, "proceeds": proceeds,
+            "profit_abs": profit_abs, "profit_pct": profit_pct, "status": "closed",
+        })
+        return t
+
+
+async def get_trades(user_id: int, status=None, limit: int = 50) -> list[dict]:
+    """Список сделок пользователя (открытые сверху, потом по дате)."""
+    query = "SELECT * FROM trade_journal WHERE user_id = ?"
+    params = [user_id]
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY (status = 'open') DESC, COALESCE(closed_at, opened_at) DESC, id DESC LIMIT ?"
+    params.append(limit)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_dict(r) for r in rows]
+
+
+async def get_open_trade_by_symbol(user_id: int, symbol: str):
+    """Последняя открытая сделка по тикеру (для /calc sell BTC ...)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT * FROM trade_journal
+             WHERE user_id = ? AND symbol = ? AND status = 'open'
+             ORDER BY id DESC LIMIT 1
+        """, (user_id, symbol.upper())) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_dict(row) if row else None
+
+
+async def delete_trade(user_id: int, trade_id: int) -> bool:
+    """Удалить запись сделки."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM trade_journal WHERE id = ? AND user_id = ?",
+            (trade_id, user_id))
+        await db.commit()
+    return True
+
+
+async def get_trade_stats(user_id: int) -> dict:
+    """Сводная статистика по закрытым сделкам + открытые позиции."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT
+                COUNT(*) AS closed_cnt,
+                SUM(CASE WHEN profit_abs > 0 THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN profit_abs <= 0 THEN 1 ELSE 0 END) AS losses,
+                COALESCE(SUM(profit_abs), 0) AS total_profit,
+                COALESCE(SUM(invested), 0) AS total_invested,
+                COALESCE(AVG(profit_pct), 0) AS avg_pct,
+                MAX(profit_pct) AS best_pct,
+                MIN(profit_pct) AS worst_pct
+            FROM trade_journal WHERE user_id = ? AND status = 'closed'
+        """, (user_id,)) as cursor:
+            row = await cursor.fetchone()
+        stats = _row_to_dict(row) if row else {}
+        async with db.execute("""
+            SELECT COUNT(*) AS open_cnt, COALESCE(SUM(invested), 0) AS open_invested
+            FROM trade_journal WHERE user_id = ? AND status = 'open'
+        """, (user_id,)) as cursor:
+            row2 = await cursor.fetchone()
+        opens = _row_to_dict(row2) if row2 else {}
+    closed_cnt = stats.get("closed_cnt", 0) or 0
+    wins = stats.get("wins", 0) or 0
+    losses = stats.get("losses", 0) or 0
+    total_profit = stats.get("total_profit", 0) or 0
+    total_invested = stats.get("total_invested", 0) or 0
+    win_rate = (wins / closed_cnt * 100.0) if closed_cnt else 0.0
+    roi = (total_profit / total_invested * 100.0) if total_invested else 0.0
+    return {
+        "closed": closed_cnt, "wins": wins, "losses": losses,
+        "win_rate": win_rate, "total_profit": total_profit,
+        "total_invested": total_invested, "roi": roi,
+        "avg_pct": stats.get("avg_pct", 0) or 0,
+        "best_pct": stats.get("best_pct") or 0,
+        "worst_pct": stats.get("worst_pct") or 0,
+        "open": opens.get("open_cnt", 0) or 0,
+        "open_invested": opens.get("open_invested", 0) or 0,
+    }
 
 
 # ─── Backtest Signals ─────────────────────────────────────────────────────────────
@@ -2109,7 +2379,7 @@ async def clear_backtest_signals(reset_capital: float = 500.0) -> None:
         await db.commit()
 
 
-# ─── Daily Context ─────────────────────────────────────────────────────────────
+# ─── Daily Context ──────────────────────────────────────���──────────────────────
 
 def _decode_daily_context_row(row) -> dict | None:
     import json

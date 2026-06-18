@@ -1206,8 +1206,13 @@ def _sl_tp_lines(
     asset: str,
     indent: str = "    ",
     prefix: str = "$",
+    spot_only: bool = False,
 ) -> list[str]:
-    """Две строки SL/TP — для LONG и для SHORT — от текущей цены, по σ̂.
+    """Строки SL/TP от текущей цены, по σ̂.
+
+    spot_only=True (для /markets юзера) — только спот/лонг-уровень, без SHORT
+    (деривативы/шорт вне проекта). spot_only=False (для AI-агентов) — обе
+    стороны LONG+SHORT как контекст для рассуждения.
 
     Формат::
 
@@ -1262,10 +1267,14 @@ def _sl_tp_lines(
     short_tp = _round_to_tick(price_f * (1.0 - tp_pct), tick)
     short_sl = _round_to_tick(price_f * (1.0 + sl_pct), tick)
 
+    long_label = "Спот" if spot_only else "LONG "
     long_line = (
-        f"{indent}🎯 LONG  TP {_fmt_money(long_tp, prefix=prefix)} ({_fmt_pct(tp_pct * 100)})  "
+        f"{indent}🎯 {long_label} TP {_fmt_money(long_tp, prefix=prefix)} ({_fmt_pct(tp_pct * 100)})  "
         f"SL {_fmt_money(long_sl, prefix=prefix)} ({_fmt_pct(-sl_pct * 100)})  R/R 2:1"
     )
+    if spot_only:
+        # Только спот/лонг: SHORT-строка убрана для пользователя.
+        return [long_line]
     short_line = (
         f"{indent}🎯 SHORT TP {_fmt_money(short_tp, prefix=prefix)} ({_fmt_pct(-tp_pct * 100)})  "
         f"SL {_fmt_money(short_sl, prefix=prefix)} ({_fmt_pct(sl_pct * 100)})  R/R 2:1"
@@ -1273,7 +1282,7 @@ def _sl_tp_lines(
     return [long_line, short_line]
 
 
-def _quant_verdict_line(p: dict, indent: str = "    ") -> str | None:
+def _quant_verdict_line(p: dict, indent: str = "    ", spot_only: bool = False) -> str | None:
     """Одна строка с вердиктом квант-фильтра (BB+Donchian+RSI + BTC gate).
 
     Формат::
@@ -1293,6 +1302,18 @@ def _quant_verdict_line(p: dict, indent: str = "    ") -> str | None:
         return None
     confidence = p.get("quant_confidence", 0)
     reason = p.get("quant_reason", "")
+    if spot_only:
+        # Спот/лонг-фрейминг для юзера: вместо «LONG/SHORT» — действие по споту.
+        # LONG → в тренде (держим спот), SHORT → в стейбл (выходим). Технический
+        # reason (с directional-жаргоном) опускаем, чтобы не светить шорт.
+        if verdict == "LONG":
+            emoji, label = "🟢", "в тренде"
+        elif verdict == "SHORT":
+            emoji, label = "🔴", "в стейбл"
+        else:
+            emoji, label = "⚪️", "нейтрально"
+        return f"{indent}{emoji} Quant: {label} ({confidence}%)"
+    # Агенты: сырой directional-вердикт LONG/SHORT/NEUTRAL с reason.
     if verdict == "LONG":
         emoji = "🟢"
     elif verdict == "SHORT":
@@ -1309,8 +1330,12 @@ def _trigger_lines(
     p: dict,
     indent: str = "    ",
     prefix: str = "$",
+    spot_only: bool = False,
 ) -> list[str]:
-    """Две строки с MA-триггерами LONG / SHORT для одного актива.
+    """Две строки с MA-триггерами для одного актива.
+
+    spot_only=True (юзер) — «покупка спот» / «выход в стейбл» (без шорта).
+    spot_only=False (агенты) — классические LONG / SHORT метки.
 
     Формат::
 
@@ -1342,6 +1367,12 @@ def _trigger_lines(
         dn_level, dn_tag = ma200, "MA200"
     up = _fmt_money(up_level, prefix=prefix)
     dn = _fmt_money(dn_level, prefix=prefix)
+    if spot_only:
+        # Спот/лонг: выше тренда → покупка спот; ниже → выход в стейбл (не шорт).
+        return [
+            f"{indent}▲ выше {up} ({up_tag}) → покупка спот",
+            f"{indent}▼ ниже {dn} ({dn_tag}) → выход в стейбл",
+        ]
     return [
         f"{indent}▲ выше {up} ({up_tag}) → LONG",
         f"{indent}▼ ниже {dn} ({dn_tag}) → SHORT",
@@ -1500,7 +1531,7 @@ def format_prices_for_agents(
             # визуально приклеивает per-asset план («▲ выше $X → LONG; ▼ ниже
             # $Y → SHORT») к цене, не дожидаясь дайджеста. Совпадает с
             # форматом, который генерит Synth-агент в `plans[].trigger`.
-            for t in _trigger_lines(p):
+            for t in _trigger_lines(p, spot_only=for_user):
                 lines.append(t)
 
             # S/R-уровни: 2 сопротивления выше цены + 2 поддержки ниже.
@@ -1512,14 +1543,14 @@ def format_prices_for_agents(
             # сразу видел, куда ставить стоп и тейк, без ручного счёта
             # `price × (1 ± k·σ̂)`. Появляется только если σ̂ посчиталась
             # (вместе со строкой `🔄 ... σ̂=...%`).
-            for t in _sl_tp_lines(p, asset=k):
+            for t in _sl_tp_lines(p, asset=k, spot_only=for_user):
                 lines.append(t)
 
             # Квант-фильтр (BB+Donchian+RSI ансамбль + BTC regime gate).
             # На бэктесте 65.9% hit-rate vs 49.6% MA50/200. Появляется
             # только если есть достаточно истории (60+ дневок); см.
             # ``quant_filter.py`` и ``docs/quant_research_v2.md``.
-            ql = _quant_verdict_line(p)
+            ql = _quant_verdict_line(p, spot_only=for_user)
             if ql:
                 lines.append(ql)
 

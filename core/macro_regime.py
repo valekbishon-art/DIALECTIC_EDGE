@@ -223,45 +223,47 @@ async def detect_macro_regime() -> MacroRegime:
     elif dxy_trend == "RISING":
         bear_votes += 1
 
+    # СПОТ-ОНЛИ: шорты выключены всегда. В медвежьем фоне мы не шортим,
+    # а уходим в стейбл/кэш (allow_longs=False) — это и есть «защита».
     if bull_votes >= 3 and bear_votes == 0:
         regime = "RISK_ON"
         position_size_mult = 1.0
         allow_longs, allow_shorts = True, False
         recommendation = (
             "RISK_ON: S&P в восходящем тренде, breadth здоровый, доллар не давит. "
-            "Разрешены LONG, размер обычный. Шорты — нет."
+            "Покупаем спот равным весом, размер обычный."
         )
     elif bear_votes >= 3 and bull_votes == 0:
         regime = "RISK_OFF"
         position_size_mult = 0.4
-        allow_longs, allow_shorts = False, True
+        allow_longs, allow_shorts = False, False
         recommendation = (
             "RISK_OFF: S&P в нисходящем тренде, breadth слабый, доллар вверх. "
-            "LONG запрещены. Можно только шорты, размер ×0.4."
+            "Новые покупки на паузе — сидим в стейбле/кэше, ждём разворота вверх."
         )
     elif bear_votes >= 2 and bear_votes > bull_votes:
         regime = "RISK_OFF"
         position_size_mult = 0.5
-        allow_longs, allow_shorts = False, True
+        allow_longs, allow_shorts = False, False
         recommendation = (
-            "RISK_OFF (умеренный): большинство фильтров против лонгов. "
-            "LONG не открываем, шорты — размер ×0.5."
+            "RISK_OFF (умеренный): большинство фильтров против покупок. "
+            "Спот не докупаем, держим стейбл и ждём улучшения фона."
         )
     elif bull_votes >= 2 and bull_votes > bear_votes:
         regime = "RISK_ON"
         position_size_mult = 0.85
         allow_longs, allow_shorts = True, False
         recommendation = (
-            "RISK_ON (умеренный): большинство фильтров за лонги. "
-            "Лонги ×0.85, шорты не открываем."
+            "RISK_ON (умеренный): большинство фильтров за рост. "
+            "Покупаем спот размером ×0.85."
         )
     else:
         regime = "NEUTRAL"
         position_size_mult = 0.6
-        allow_longs, allow_shorts = True, True
+        allow_longs, allow_shorts = True, False
         recommendation = (
             "NEUTRAL: фильтры противоречат друг другу. "
-            "Любая сторона — размер ×0.6, готовь короткие стопы."
+            "Покупки спота уменьшенным размером ×0.6, короткие стопы; без шортов."
         )
 
     macro = MacroRegime(
@@ -321,8 +323,8 @@ async def get_macro_regime(force_refresh: bool = False) -> MacroRegime:
             breadth_source="unknown",
             position_size_mult=0.6,
             allow_longs=True,
-            allow_shorts=True,
-            recommendation="Макро-данные недоступны — режим NEUTRAL по умолчанию.",
+            allow_shorts=False,
+            recommendation="Макро-данные недоступны — режим NEUTRAL по умолчанию (только спот, без шортов).",
         )
 
 

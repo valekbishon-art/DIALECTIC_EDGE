@@ -1,708 +1,532 @@
 # Dialectic Edge — AI Trading System
 
-> Autonomous AI trading system на **smart-money signals + adaptive Kelly + self-audit**. Не retail sentiment как у конкурентов.
+> Автономная AI-система анализа крипто/макро-рынка на **smart-money signals + multi-agent debate + adaptive Kelly + vol-targeting + self-audit**. Не retail-sentiment, как у конкурентов.
 
-[![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/) [![License](https://img.shields.io/badge/License-Private-red)]() [![Status](https://img.shields.io/badge/Status-Production-success)]() [![Deploy](https://img.shields.io/badge/Deploy-Railway-purple)](https://railway.app/) [![Telegram](https://img.shields.io/badge/Frontend-Telegram-blue)](https://telegram.org/)
+[![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/) [![Frontend](https://img.shields.io/badge/Frontend-Telegram%20(aiogram%203)-blue)](https://telegram.org/) [![Deploy](https://img.shields.io/badge/Deploy-Railway-purple)](https://railway.app/) [![Tests](https://img.shields.io/badge/Tests-74%20suites-success)]() [![License](https://img.shields.io/badge/License-Private-red)]() [![Status](https://img.shields.io/badge/Status-Production-success)]()
+
+> **Ветка `spot-only`.** Это рабочая ветка проекта. Документ описывает фактическое состояние кода в этой ветке.
 
 ---
+
+## 📑 Содержание
+
+- [Что это](#-что-это)
+- [Quick start](#-quick-start)
+- [Команды Telegram](#-команды-telegram)
+- [Архитектура](#-архитектура)
+- [Поток данных (5 уровней)](#-поток-данных-5-уровней)
+- [Автотрейдер](#-автотрейдер-signal_traderpy)
+- [Advisor (планы сделок)](#-advisor--портфель-планов)
+- [P2P-арбитраж](#-p2p-арбитраж-сканер)
+- [Killer-фичи за фичефлагами](#-killer-фичи-за-фичефлагами)
+- [Alert-движок и авто-алерты](#-alert-движок-и-авто-алерты)
+- [Подписки и пейволл](#-подписки-и-пейволл)
+- [Структура репозитория](#-структура-репозитория)
+- [Tech stack](#-tech-stack)
+- [Хранение состояния](#-хранение-состояния)
+- [Конфигурация (env)](#-конфигурация-env)
+- [Деплой](#-деплой)
+- [Разработка, тесты, CI](#-разработка-тесты-ci)
+- [Словарь терминов](#-словарь-терминов)
+- [Disclaimer](#-disclaimer)
+
+---
+
 ## 🎯 Что это
 
-**Dialectic Edge** — автономная торговая система, которая работает на принципах системного фонда, а не retail-трейдера:
+**Dialectic Edge** — single-tenant Telegram-бот (один владелец = один инстанс), который работает по принципам системного фонда, а не retail-трейдера:
 
 | Слой | Источники / методы |
 |------|--------------------|
-| **🏛️ Smart-money signals** *(NEW)* | Top-trader L/S ratio, Coinbase Premium, CME basis, Funding dispersion |
-| **📊 Multi-agent AI debate** | 4 агента (Bull / Bear / Verifier / Synth) на разных моделях через OpenRouter |
-| **⚖️ Adaptive risk** *(NEW)* | Vol-targeting (CTA-стиль) + dynamic Kelly на real win-rate, persistent state |
-| **🛡️ Macro regime** | S&P EMA200 / SMA50, breadth, DXY, VIX → blocks trades against trend |
-| **🔄 On-chain** | MVRV, SOPR, Exchange Reserves, Whale Detection |
-| **🔍 AI self-audit** *(NEW)* | LLM пишет performance review закрытых сделок раз в неделю |
-| **📡 Signal trader** | 5-мин loop, vol-target sizing, ATR stops, Split TP, Trailing |
+| **🏛️ Smart-money signals** | Top-trader L/S ratio, Coinbase premium, CME basis, funding dispersion, on-chain ETH-потоки институциональных кошельков |
+| **📊 Multi-agent AI debate** | 5 ролей (Bull / Bear / Verifier / Synth / Speechwriter), каждая на оптимальной модели, маршрутизация через мульти-провайдерный роутер |
+| **⚖️ Adaptive risk** | Vol-targeting (CTA-стиль) + dynamic Kelly на реальном win-rate, persistent state в `risk_state.json` / `sizing_state.json` |
+| **🛡️ Macro regime** | S&P EMA200/SMA50, breadth, DXY, VIX, QE/QT, yield curve → блокирует сделки против тренда |
+| **🔄 On-chain** | MVRV, SOPR, Exchange Reserves, Whale Detection, stablecoin supply flows |
+| **🔍 AI self-audit** | LLM пишет performance-review закрытых сделок и выдаёт правило на неделю (`/audit`) |
+| **📡 Signal trader** | Бумажный автотрейдер: цикл по таймеру, vol-target sizing, ATR-стопы, Split TP, trailing, anti-whiplash |
+| **🧮 Quant-слой** | Калибровка агентов (Brier), walk-forward бэктест, BOCPD/Markov regime, support/resistance, volatility forecast |
 
-**Pitch line:** *«мы — vol-targeted CTA-фонд + Kelly на реальных метриках, а не retail trader с 2% от капитала на каждой сделке»*.
-
-## 🚀 Quick demo
-
-| Команда | Что показывает |
-|---------|----------------|
-| `/daily` | Полный AI-анализ рынка с дебатами, smart-money сигналами, торговый план |
-| `/markets` | Real-time контекст + сигналы + цены |
-| `/p2p [ASSET] [FIAT] [payments]` | P2P arbitrage scanner: net spread, лимиты, payment overlap, риск контрагентов |
-| `/autotrade_status` | Performance: PnL, win-rate, R-ratio, Kelly, vol-target, drawdown |
-| `/audit [N дней]` | AI-аудит закрытых сделок: «что работает / что нет / правило на завтра» |
-| `/usage` | Расход AI-токенов по провайдерам |
-| `/why BTC` | Почему открыта позиция: входной отчёт + текущее состояние |
-
-## 🏆 Что отличает от конкурентов
-
-1. **Smart-money first**: 4 institutional indicator'а (top-trader, Coinbase premium, CME basis, funding dispersion) применяются к scoring **до** retail sentiment'а. Большинство retail-ботов начинают с Twitter / Reddit sentiment.
-
-2. **Adaptive Kelly на реальной истории**: размер позиции считается из `wins / losses / avg_win / avg_loss` собственной торговой истории, persisted в `risk_state.json`. Не статичные «2% риска».
-
-3. **Vol-targeting** *(институциональный стандарт)*: размер позиции обратно пропорционален реализованной волатильности. Quiet day → 2x, panic day → 0.37x. Это ровно то что делают AQR / Renaissance / vol-targeted CTA.
-
-4. **AI self-audit**: LLM раз в неделю смотрит на закрытые сделки, выдаёт performance review с конкретным правилом на следующую неделю. «AI которая учится на своих ошибках».
-
-5. **Multi-provider AI router**: 6 провайдеров (Cerebras, Groq, Mistral, OpenRouter, Together, Gemini), per-role routing — Bull/Bear/Verifier/Synth каждый на оптимальной для его задачи модели. Если один падает — fallback цепочка.
-
-6. **Honest UX**: `/audit` без воды («сегодня винрейт 38% — это плохо, причина X, правило Y»), `/usage` показывает сколько токенов реально потратили, графики с реальными цифрами без cherry-picking.
-
-## ⚙️ Tech stack
-
-| Слой | Технология |
-|------|-----------|
-| Backend | Python 3.12, asyncio, aiohttp, aiosqlite |
-| AI | OpenRouter, Cerebras, Groq, Mistral, Together, Gemini |
-| Frontend | Telegram Bot API (aiogram 3) |
-| Хранение | SQLite (state) + GitHub Markdown (BACKTEST.md, DIGEST_CACHE.md) |
-| Charting | matplotlib (DejaVu Sans) |
-| Deployment | Railway (worker dyno + cron) |
-| ML/NLP | FinBERT (sentiment classification) |
+**Pitch:** *«мы — vol-targeted CTA-фонд + Kelly на реальных метриках, а не retail-трейдер с фиксированными 2% риска на сделку».*
 
 ---
 
-*English version below Russian*
-
----
-
-## 🇷🇺 РУССКАЯ ВЕРСИЯ
-
-### Описание
-
-**Dialectic Edge** — это полностью автономная торговая система, которая:
-
-1. **Анализирует рынок** через мультиагентные AI-дебаты (Bull vs Bear vs Verifier vs Synth)
-2. **Следит за сигналами** от профессиональных трейдеров (Bybit Markets Signals)
-3. **Адаптируется к режиму рынка** (UPTREND / SIDEWAYS / HIGH_VOL / DOWNTREND)
-4. **Управляет рисками** через Kelly Criterion, ATR, Trailing Stop, Split TP
-5. **Торгует виртуально** на Railway (paper trading) с автосохранением состояния на GitHub
-
-### Архитектура — как работает система
-
-```
- ПОЛЬЗОВАТЕЛЬ (Telegram)
-        │
-        ▼
-    ┌─────────┐
-    │ main.py │  ← 3512 строк, точка входа
-    │ Telegram│     все команды: /daily /analyze /starttrade /screener
-    └────┬────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-    │  analysis_service.py                              │
-    │  • Собирает данные: news + prices + market_data │
-    │  • Запускает AI-дебаты                           │
-    │  • Формирует отчёт + торговый план               │
-    └────┬──────────────────────────────────────────────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-│  agents.py — МУЛЬТИАГЕНТНЫЕ ДЕБАТЫ               │
-     │                                                │
-     │  🐂 Bull Researcher   — ищет бычьи аргументы   │
-     │  🐻 Bear Skeptic       — ищет медвежьи аргументы│
-     │  🔍 Data Verifier     — ловит галлюцинации     │
-     │  ⚖️ Consensus Synth    — вердикт (JSON)        │
-     │  ✍️ Speechwriter       — форматирует JSON в    │
-     │                        читаемый план          │
-    └────┬──────────────────────────────────────────────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-    │  ai_provider.py — РОУТЕР МОДЕЛЕЙ                 │
-    │                                                │
-    │  Cerebras → Groq → Mistral → OpenRouter →       │
-    │  Together → Gemini → Free models fallback        │
-    │  (все бесплатные, 4+ провайдера)                │
-    └────┬──────────────────────────────────────────────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-    │  web_search.py — СБОРЩИК ДАННЫХ                 │
-    │                                                │
-    │  • Binance: BTC, ETH, SOL цены + объёмы        │
-    │  • Yahoo Finance: SPX, NDX, VIX, DXY, GOLD    │
-    │  • Alternative.me: Fear & Greed index          │
-    │  • FRED (Federal Reserve): Fed Rate, CPI,       │
-    │    Yield Curve, Fed Balance                     │
-    │  • CoinGecko: BTC on-chain (MVRV, SOPR)        │
-    │  • GDELT: геополитические события              │
-    │  • Finnhub: market sentiment (опционально)       │
-    └────┬──────────────────────────────────────────────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-    │  market_indicators/ — СИСТЕМА БАЛЛОВ             │
-    │                                                │
-    │  • onchain.py: MVRV, SOPR, Exchange Reserves   │
-    │  • macro_extended.py: QE/QT, Yield Curve,     │
-    │    Credit Spreads                               │
-    │  • scorer.py: Market Score (0-100),             │
-    │    критические стоп-факторы                    │
-    │  • aggregator.py: всё вместе → контекст для AI │
-    └────┬──────────────────────────────────────────────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-    │  signal_trader.py — АВТОТРЕЙДЕР (5 мин цикл)   │
-    │                                                │
-    │  ИСТОЧНИКИ СИГНАЛОВ:                           │
-    │  1. Markets Signals (Bybit) — funding, OI, whales│
-    │  2. Наши дайджесты (digest_score)              │
-    │                                                │
-    │  ФИЛЬТРЫ:                                      │
-    │  • MVRV > 3.5 → не открываем LONG             │
-    │  • MVRV < 1.0 → не открываем SHORT            │
-    │  • Defense Mode → стоп всех позиций            │
-    │  • Correlation Matrix → не дублируем риск    │
-    │  • Adaptive thresholds (ChatGPT):              │
-    │    HIGH_VOL → порог выше, позиция меньше     │
-    │    SIDEWAYS → порог ещё выше                 │
-    │    UPTREND → порог ниже (легче открыть)     │
-    │                                                │
-    │  ВЫХОД:                                       │
-    │  • Split TP: 50% при +2% → full TP           │
-    │  • Trailing Stop: активируется при +3%,      │
-    │    движется за ценой (1.5%)                  │
-    │  • Hard Stop: SL по ATR × regime              │
-    └────┬──────────────────────────────────────────────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-    │  TELEGRAM АЛЕРТЫ (автоматические)              │
-    │                                                │
-    │  • 🚨 MVRV > 4.0 — переоценён               │
-    │  • 🔵 MVRV < 1.0 — историческое дно          │
-    │  • 🛡️ Defense Mode активирован                 │
-    │  • 📊 QE → QT смена                           │
-    │  • 📈 Market Score ±8                          │
-    │  • 🎯 Позиция открыта / закрыта              │
-    └────────────────────────────────────────────────┘
-
-### Конфигурация (Environment Variables)
-
-Скопируй `.env.example` → `.env` и заполни ключи:
-
-```env
-# AI Модели (бесплатные)
-GROQ_API_KEY=gsk_...
-OPENROUTER_API_KEY=sk-or-v1-...
-TOGETHER_API_KEY=tgp_v1_...
-GEMINI_API_KEY=AIza...
-CEREBRAS_API_KEY=csk-...
-
-# Данные
-FINNHUB_API_KEY=...
-FRED_API_KEY=3b3477...
-ALPHA_VANTAGE_API_KEY=...
-TAVILY_API_KEY=tvly-...
-
-# Telegram
-BOT_TOKEN=123456:ABC-...
-
-# GitHub (для state persistence)
-GITHUB_TOKEN=ghp_...
-GITHUB_REPO=ANAEHY/dialectic_edge
-```
-
-### Запуск
+## 🚀 Quick start
 
 ```bash
-# Локально
-python main.py
+# 1. Python 3.12 (важно: НЕ 3.13 — см. nixpacks.toml / runtime.txt)
+python --version   # 3.12.x
 
-# Railway (автоматически)
-# просто push → deploy
+# 2. Зависимости
+pip install -r requirements.txt
+
+# 3. Конфиг
+cp .env.example .env
+# заполни как минимум BOT_TOKEN и ADMIN_IDS, плюс хотя бы один AI-ключ
+# (GEMINI_API_KEY / GROQ_API_KEY / ...). Остальное опционально.
+
+# 4. Запуск
+python main.py
 ```
 
-### Команды Telegram
+Точка входа — `async def main()` в нижней части `main.py`. Она поднимает `dp.start_polling(bot)` параллельно с `Scheduler` и (если `FEATURE_AUTOTRADE=1`) циклом автотрейдера.
 
+Минимум для старта: `BOT_TOKEN`, `ADMIN_IDS` и один AI-ключ. Без `TAVILY_API_KEY`/`FRED_API_KEY`/`FINNHUB_API_KEY` соответствующие источники просто деградируют на fallback.
+
+---
+
+## 💬 Команды Telegram
+
+### Анализ и рынок
 | Команда | Описание |
 |---------|----------|
-| `/daily` | Полный AI-анализ рынка с дебатами |
-| `/analyze <текст>` | Анализ конкретной новости |
-| `/starttrade` | Запуск автотрейдера |
+| `/daily` | Полный AI-анализ рынка: дебаты + smart-money + торговый план (кэш по TTL) |
+| `/analyze <текст>` | Анализ конкретной новости/тезиса через дебаты |
+| `/markets`, `/market` | Real-time контекст: цены, сигналы, режим, scoring |
+| `/btc`, `/bitcoin` | BTC outlook: вердикт + confidence |
+| `/screener` | Сканер аномалий TOP-монет (volume spike, RSI extremes, funding) |
+| `/signal`, `/signals` | Текущие сигналы Bybit/Binance (funding, OI, L/S, whales) |
+| `/trend` | Трендовые сигналы |
+| `/stocks` | Скринер акций |
+| `/why <SYMBOL>` | Почему открыта позиция: входной отчёт + текущее состояние |
+| `/pump` | Памп-радар (факт движения, НЕ торговый сигнал) |
+| `/depeg` | Монитор депега стейблов |
+
+### Торговля и план
+| Команда | Описание |
+|---------|----------|
+| `/starttrade` | Запуск бумажного автотрейдера |
 | `/stop` | Остановка автотрейдера |
-| `/screener` | Сканер аномалий TOP-15 монет |
-| `/p2p [ASSET] [FIAT] [payments]` | P2P-арбитраж: buy→sell spread после buffer + фильтры качества |
-| `/why <SYMBOL>` | Почему открыта эта позиция |
+| `/papertrader` | Статус бумажного трейдера |
+| `/autotrade_status` | PnL, win-rate, R-ratio, Kelly, vol-target, drawdown |
+| `/autotrade_reset` | Сброс состояния автотрейда |
 | `/close <SYMBOL>` | Закрыть позицию вручную |
+| `/portfolio` | Портфель позиций |
+| `/advise [ASSET] [CAPITAL]` | Конкретный план: вход / стоп / split TP / размер |
+| `/myplans` | Виртуальный портфель advisor-планов с live-PnL |
+| `/plan` | Текущий торговый план |
+| `/dca` | DCA-помощник |
+
+### Бэктест и аналитика
+| Команда | Описание |
+|---------|----------|
+| `/backtest`, `/backtest_capital`, `/backtest_toggle`, `/backtest_clear` | Управление бэктестом |
+| `/wfbacktest` | Walk-forward бэктест |
+| `/calibration` | Калибровка прогнозов агентов (Brier) |
+| `/edge` | Edge ledger (журнал эджа) |
+| `/eval` | Оценка точности прогнозов |
+| `/provenance` | Происхождение данных в отчёте |
+| `/audit [N]` | AI-аудит закрытых сделок за N дней |
+| `/postmortem [id\|date]` | Разбор каскадных ликвидаций |
+| `/trackrecord`, `/trackrecordglobal`, `/trackrecordrussia` | Track record прогнозов |
+| `/weeklyreport` | Еженедельный отчёт |
+| `/usage` | Расход AI-токенов по провайдерам |
+| `/retro` | Ретро-анализ |
+
+### P2P / арбитраж
+| Команда | Описание |
+|---------|----------|
+| `/p2p [ASSET] [FIAT] [payments]`, `/p2parb` | P2P-арбитраж: net spread, лимиты, payment overlap, риск контрагента |
+| `/p2paudit` | Self-audit журнал P2P-окон + рекомендация по порогу |
+
+### Подписки и сервис
+| Команда | Описание |
+|---------|----------|
+| `/subscribe`, `/premium`, `/vipinfo` | Подписка (CryptoBot Crypto Pay) |
+| `/profile`, `/newbie` | Профиль пользователя / гайд новичка |
+| `/russia` | Russia Edge — доп. агенты и данные |
+| `/pitch` | Питч системы |
 | `/health` | Health check (БД + GitHub + uptime) |
-| `/stats` | Статистика бота |
+| `/stats`, `/status`, `/sysinfo`, `/logs` | Статистика и диагностика |
+| `/alerts` | Управление алертами |
+| `/start`, `/help` | Старт / справка |
+
+### Админ
+`/admin`, `/ban`, `/unban`, `/revoke`, `/add`, `/remove`, `/instruction` — управление доступом и инстансом (только `ADMIN_IDS`).
+
+> Часть хендлеров (advisor, btc, p2p, retro, подписки) уже вынесена в `refactor/handlers/*` и регистрируется через `register(dp)`. Остальные ~70 `@dp.message(...)` пока живут в `main.py` (идёт миграция).
 
 ---
 
-## 📁 Структура файлов (подробно)
-
-### Корневые файлы (точка входа)
-
-| Файл | Строк | Назначение |
-|------|-------|-----------|
-| `main.py` | 3512 | Telegram bot, все handlers, диспетчер команд |
-| `config.py` | — | Загрузка environment variables |
-| `analysis_service.py` | 286 | Оркестратор: собирает данные → запускает дебаты → формирует отчёт |
-| `ai_provider.py` | 765 | Роутер AI-моделей с fallback на 6 провайдеров |
-| `agents.py` | 661 | 4 агента + Speechwriter + DebateOrchestrator |
-
-### Торговля
-
-| Файл | Назначение |
-|------|------------|
-| `signal_trader.py` | Автотрейдер: 5-мин цикл, открытие/закрытие позиций, trailing stop, split TP |
-| `backtester.py` | Бэктест на исторических свечах (OHLC) |
-| `signals.py` | Markets Signals API (Bybit): funding, OI, account ratio |
-| `database.py` | SQLite: trade history, predictions, track record, backtest config |
-| `session_manager.py` | Persistence виртуального капитала |
-| `github_export.py` | Экспорт BACKTEST.md, FORECASTS.md, DIGEST_CACHE.md, MARKET_CACHE.md |
-
-### AI и данные
-
-| Файл | Назначение | Источники / API |
-|------|------------|-----------------|
-| `web_search.py` | Realtime prices (Binance, Yahoo), Fear & Greed, макро с FRED | Binance, Yahoo Finance, Alternative.me, FRED |
-| `data_sources.py` | Геополитика (GDELT), CPI YoY, Fear & Greed, сырьё, глобальные рынки, Finnhub, Alpha Vantage | GDELT, Investing.com RSS, Finnhub, Alpha Vantage |
-| `cot_data.py` | Commitments of Traders (COT) от CFTC — недельные данные | CFTC.gov (disagg + fin datasets, zip archives) |
-| `etf_flows.py` | ETF flows (SPY, QQQ, GLD) + market breadth | Yahoo Finance chart API |
-| `chart_generator.py` | Генерация изображений графиков | matplotlib / PIL |
-| `pipeline.py` | Валидация сигналов, конвертация ideas → signals | — |
-| `market_data.py` | OHLCV candles fetcher для всех символов | Binance klines API |
-| `sentiment.py` | Новостной сентимент (Finnhub) | Finnhub news-sentiment API |
-| `news_fetcher.py` | Новостной фетчер | Tavily / GDELT |
-
-### Модули `core/` (бизнес-логика)
-
-| Файл | Назначение | Ключевая логика |
-|------|------------|-----------------|
-| `regime_detector.py` | Определяет режим: UPTREND / SIDEWAYS / HIGH_VOL / DOWNTREND | MA50/MA200, ADX, ATR, RSI, Volume trend |
-| `dynamic_risk.py` | Kelly Criterion + ATR-based position sizing | Kelly %, ATR стопы, drawdown protection, correlation penalty |
-| `confluence.py` | Confluence Score (0-100) из 10 источников | Factor-weighted scoring: Regime 30%, RSI 20%, Whales 20%, Macro 15%, TF 15% |
-| `whale_detector.py` | Whale order detection (Binance recent trades) | > $500k сделки, buy/sell объём, sentiment (BULLISH/NEUTRAL/BEARISH) |
-| `correlation.py` | Correlation Matrix — блокирует дублирующие позиции | Pearson correlation на returns, threshold > 0.85 |
-| `event_defense.py` | Event Defense: стоп торговли перед high-impact новостями | Regex триггеры: CRITICAL (rate hike, ban crypto, hack, war), HIGH (recession, sanctions), MEDIUM (volatility, inflation) |
-| `screener.py` | Market Screener: TOP-20 монет на аномалии | Volume Spike > 200%, RSI extremes, Funding anomaly |
-| `multi_tf.py` | Multi-timeframe analysis (1h, 4h, 1D) | MA alignment, RSI, Volume confirmation, alignment score |
-| `data_enricher.py` | Обогащение candles техническими индикаторами | Funding Rate, OI, Liquidations, DXY/US10Y/SPX, Fear & Greed |
-| `economic_calendar.py` | Календарь макро-событий (FOMC, CPI, NFP) | Keyword scan из новостей, 24h risk window |
-| `digest_context.py` | Контекст прошлых дайджестов для сравнения | История дайджестов (последние 14) |
-| `analysis_ideas_adapter.py` | Нормализация идей из отчётов в структуру | — |
-| `signal.py` | Конвертация идей в Signal объекты | — |
-| `decision_engine.py` | Сигнальный фильтр и ранжирование | Confidence + R/R ratio filtering |
-
-### Модули `market_indicators/` (система баллов)
-
-| Файл | Назначение | Данные |
-|------|------------|--------|
-| `onchain.py` | BTC MVRV, SOPR, Exchange Reserves, Active Addresses | CoinGecko API (free) |
-| `macro_extended.py` | Fed Balance Sheet, QE/QT, Yield Curve, Credit Spreads | FRED API (WALCL, DGS10, DGS2, HYCD) |
-| `scorer.py` | Market Score (0-100): макро + ончейн + техника + сентимент; стоп-факторы | MVRV>3.5, VIX>40, F&G<25, MVRV<1.0 |
-| `aggregator.py` | Собирает всё → контекст для AI | build_enriched_context(), enrich_prices_with_scores() |
-
-### Поддержка
-
-| Файл | Назначение |
-|------|------------|
-| `scheduler.py` | Планировщик daily отчётов |
-| `debate_storage.py` | Хранилище дебатов для листания |
-| `learning.py` | Feedback система — улучшение моделей |
-| `user_profile.py` | Профили пользователей |
-| `alert_system.py` | Система алертов |
-| `streamlit_app.py` | Web dashboard (PnL, trades, charts) |
-| `weekly_report.py` | Еженедельный отчёт |
-| `russia_agents.py` | Russia Edge — дополнительные агенты |
-| `meta_analyst.py` | Мета-анализ точности прогнозов |
-| `results_export.py` | Экспорт результатов бэктестов |
-| `russia_data.py` | Данные для Russia Edge агентов |
-| `prompt_versions.py` | Управление версиями промптов |
-| `report_sanitizer.py` | Санитизация отчётов |
-| `cpi_config.py` | Конфигурация CPI данных |
-| `decision_engine.py` (root) | Risk/reward filtering для сигналов |
-
-### Папки
-
-| Папка | Назначение |
-|-------|------------|
-| `core/` | 15 модулей бизнес-логики |
-| `market_indicators/` | 5 файлов on-chain + macro + scoring |
-| `refactor/` | Рефакторинг: handlers/, interfaces/, prompts/, providers/ |
-| `trading_system/` | CLI утилиты, batch runner, risk tools, dashboard |
-| `scripts/` | run_quick_backtest.py — быстрый бэктест |
-
----
-
-## 🔑 Словарь терминов
-
-### Режимы рынка
-
-| Режим | Описание | Поведение автотрейдера |
-|-------|---------|----------------------|
-| **UPTREND** | Бычий тренд, MA50 > MA200 | Порог открытия ниже, позиции крупнее |
-| **SIDEWAYS** | Консолидация, низкая волатильность | Порог выше, entry уже, позиции меньше |
-| **HIGH_VOL** | Высокая волатильность (>5%) | Порог +4×conf + volatility penalty, entry шире, позиция -50% |
-| **DOWNTREND** | Медвежий тренд | Порог выше, только SHORT или CASH |
-
-### Индикаторы
-
-| Индикатор | Источник | Описание |
-|-----------|----------|----------|
-| **MVRV** | CoinGecko (估算) | Market/Realized Value — переоценён > 3.5, дно < 1.0 |
-| **SOPR** | CoinGecko | Spent Output Profit Ratio — фиксация > 1.05 |
-| **Funding Rate** | Bybit | > 0.1% = быки платят медведям |
-| **OI (Open Interest)** | Bybit | Рост OI + рост цены = подтверждение тренда |
-| **VIX** | Yahoo (`^VIX`) | > 40 = кризис, < 15 = крайний оптимизм |
-| **QE / QT** | FRED (WALCL) | QE = ликвидность растёт (бычий), QT = уходит (медвежий) |
-| **Yield Curve** | FRED (DGS10-DGS2) | Инверсия < -0.5% = рецессия risk |
-| **HY Spread** | FRED (HYCD) | > 5% = стресс на рынке |
-| **Fear & Greed** | Alternative.me | < 25 = экстремальный страх (бычий), > 75 = жадность |
-| **COT (Commitments of Traders)** | CFTC | Позиции крупных спекулянтов |
-
-### Стратегия выхода
-
-| Механизм | Описание |
-|----------|----------|
-| **Split TP** | 50% позиции закрывается при +2% profit |
-| **Trailing Stop** | Активируется при +3% profit, движется за ценой (1.5% буфер) |
-| **Hard Stop** | SL по ATR × regime multiplier |
-| **Signal Reversal** | Закрытие при смене сигнала на противоположный |
-
-### AI Агенты (дебаты)
-
-| Агент | Промпт | Задача |
-|-------|--------|--------|
-| **Bull** | `BULL_SYSTEM` | Найти бычьи аргументы с цифрами из данных |
-| **Bear** | `BEAR_SYSTEM` | Найти медвежьи аргументы с цифрами |
-| **Verifier** | `VERIFIER_SYSTEM` | Удалить галлюцинации (статистика без источника) |
-| **Synth** | `SYNTH_SYSTEM` | Итоговый вердикт (compact JSON) + планы |
-| **Speechwriter** | `SPEECHWRITER_SYSTEM` | Превращает JSON в читаемый торговый план |
-
----
-
-## 📊 Как работает каждый цикл автотрейдера
+## 🏗️ Архитектура
 
 ```
-КАЖДЫЕ 5 МИНУТ:
-
-1. build_consensus()
-   → Markets Signals (funding, OI, whales) → candidates
-   → Дайджесты (digest_score, regime, volatility) → candidates
-   → MVRV + Fed Balance + Yield → candidates
-   → Итог: список отранжированных кандидатов
-
-2. _close_position_if_needed()
-   → Проверяет: TP hit? SL hit? Trailing stop? Partial TP?
-   → Сохраняет в БД, пишет BACKTEST.md, шлёт алерт в Telegram
-
-3. rank_trade_candidates()
-   → _score_candidate() с адаптивными порогами
-   → HIGH_VOL → threshold +4×conf + volatility penalty
-   → SIDEWAYS → threshold +3×conf
-   → UPTREND → threshold -2×conf
-
-4. MVRV hard-stop
-   → MVRV > 3.5 + LONG → пропускаем
-   → MVRV < 1.0 + SHORT → пропускаем
-
-5. Open positions (до 5)
-   → quantity_pct safety check (< 1e-4 → skip)
-   → Volatility > 5% → size × 0.5
-   → R/R < 1.5 → skip
-   → Correlation conflict → skip
-   → Defense mode → skip
-
-6. save_market_cache()
-   → MARKET_CACHE.md на GitHub (20 мин TTL)
+                         ПОЛЬЗОВАТЕЛЬ (Telegram)
+                                  │
+                                  ▼
+                            ┌───────────┐
+                            │  main.py  │  ~7274 строк — bootstrap + хендлеры (god-object)
+                            └─────┬─────┘
+            ┌─────────────────────┼───────────────────────┐
+            ▼                     ▼                         ▼
+   ┌─────────────────┐   ┌────────────────┐        ┌───────────────┐
+   │ analysis_service│   │ signal_trader  │        │   scheduler   │
+   │   (/daily)      │   │  (автотрейдер) │        │ (cron-задачи) │
+   └───────┬─────────┘   └───────┬────────┘        └───────┬───────┘
+           ▼                     │                         │
+   ┌─────────────────┐           │                         │
+   │    agents.py    │  Bull / Bear / Verifier / Synth / Speechwriter
+   └───────┬─────────┘           │                         │
+           ▼                     │                         │
+   ┌─────────────────┐           │                         │
+   │  ai_provider.py │  Cerebras → Groq → Mistral → OpenRouter → Together → Gemini → local
+   └───────┬─────────┘           │                         │
+           ▼                     ▼                         ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  ДАННЫЕ: web_search.py · data_sources.py · signals.py ·        │
+   │  cot_data.py · etf_flows.py · market_data.py · news_fetcher.py │
+   │  market_indicators/ (onchain · macro · scorer · aggregator)    │
+   └──────────────────────────────────────────────────────────────┘
+           │                     │                         │
+           ▼                     ▼                         ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  STATE: SQLite (dialectic_edge.db) + risk_state.json +        │
+   │  sizing_state.json + git-markdown (DIGEST_CACHE / FORECASTS /  │
+   │  AUTO_TRACK / BACKTEST / MARKET_CACHE) + опц. Postgres/Redis    │
+   └──────────────────────────────────────────────────────────────┘
+           │
+           ▼
+   📡 TELEGRAM АЛЕРТЫ (MVRV, Defense Mode, QE→QT, Score±8, открытие/закрытие)
 ```
 
 ---
 
-## 🌍 ETF, COT, Funding Rate — зачем они нужны
+## 🔗 Поток данных (5 уровней)
 
-### ETF (Exchange-Traded Funds)
+```
+СЫРЫЕ ДАННЫЕ → ОБОГАЩЕНИЕ → СИСТЕМА БАЛЛОВ → AI-ДЕБАТЫ → ВЕРДИКТ/СДЕЛКА
+```
 
-ETF — это фонд который торгуется как акция. Важные ETF для крипто-трейдинга:
+**Уровень 1 — сырые данные (публичные/free API):** Binance (цены, объёмы, funding, OI), Yahoo Finance (SPX/NDX/VIX/DXY/GOLD/нефть), Alternative.me (Fear & Greed), CoinGecko (MVRV/SOPR/reserves), FRED (Fed rate, CPI, баланс ФРС, кривая, HY spread), CFTC (COT), GDELT (геополитика), Finnhub (sentiment), Alpha Vantage (RSI/MACD), Etherscan/Tron (stablecoin supply, smart-money кошельки), Deribit (IV/skew), Tavily (новости).
 
-| ETF | Тикер | Что показывает |
-|-----|-------|---------------|
-| S&P 500 | SPY / ^GSPC | Здоровье экономики США |
-| Nasdaq 100 | QQQ / ^NDX | Технологический сектор |
-| Золото | GLD | Safe haven / инфляция |
-| Нефть | USO / CL=F | Сырьё / геополитика |
-| 20+ лет облигации | TLT | Процентные ставки |
-| High Yield облигации | HYG | Кредитный риск / стресс |
-| Russell 2000 | IWM | Малые компании (риск-аппетит) |
+**Уровень 2 — обогащение:** `market_indicators/onchain.py`, `macro_extended.py`, `core/data_enricher.py`, `core/confluence.py`, `core/regime_detector.py` → derivatives-контекст, режим рынка, confluence score.
 
-**Как использовать:** когда SPY падает — крипта тоже падает (корреляция). Когда золото растёт — может означать risk-off. Когда TLT растёт — ставки падают (бычий для риска). ETF данные берём из Yahoo Finance.
+**Уровень 3 — система баллов:** `market_indicators/scorer.py` собирает macro + onchain + technical + sentiment в единый Market Score (0–100) и считает стоп-факторы (MVRV>3.5, VIX>40, F&G<25, MVRV<1.0). `aggregator.py` упаковывает всё в контекст для AI.
 
-`etf_flows.py` отслеживает: SPY, QQQ, IWM, GLD, SLV, USO, VWO, EFA, TLT, HYG. 5-дневные изменения объёма и цены → институциональные потоки.
+**Уровень 4 — AI-дебаты:** Bull → бычьи аргументы, Bear → медвежьи, Verifier → удаляет галлюцинации, Synth → итоговый compact-JSON вердикт, Speechwriter → читаемый план.
 
-### COT (Commitments of Traders)
-
-COT — еженедельный отчёт от CFTC (Commodity Futures Trading Commission). Показывает позиции трейдеров на фьючерсных рынках.
-
-| Группа | Кто | Что показывает |
-|--------|-----|---------------|
-| **Commercial** | Хеджеры (банки, компании) | Страхуют свой бизнес |
-| **Non-Commercial** | Крупные спекулянты | Большие деньги ставят |
-| **Non-Reportable** | Мелкие | Обычно против тренда |
-
-`cot_data.py` загружает COT для: Bitcoin (fin dataset, код 133741), Gold (disagg, код 088691), Silver (084691), Crude Oil (067651), S&P 500 (fin, код 13874A), DXY (fin, код 098662), Euro (fin, код 099741). Данные берутся из zip-архивов CFTC (fut_disagg_txt_{year}.zip, fut_fin_txt_{year}.zip). Если крупные спекулянты NET SHORT — медвежий сигнал.
-
-### Funding Rate (Bybit/Binance)
-
-Funding rate — это плата которую трейдеры платят друг другу каждые 8 часов. Если ставка **положительная** — длинные платят коротим → быки агрессивны. Если **отрицательная** — наоборот.
-
-| Funding | Значение | Сигнал |
-|---------|----------|--------|
-| > +0.1% | Быки доминируют | Вероятность сброса |
-| < -0.1% | Медведи доминируют | Сжимание шортов |
-
-`signals.py` получает funding rate с Binance Futures API. `core/data_enricher.py` обогащает контекст: funding rate + статус (Overheated/Normal/Negative).
-
-### Open Interest (OI)
-
-Open Interest — общее количество открытых фьючерсных контрактов. Рост OI + рост цены = подтверждение тренда. Рост OI + падение цены = дивергенция (пузырь). `signals.py` получает OI с Binance Futures `/fapi/v1/openInterest`. `core/data_enricher.py` показывает recent liquidations (longs vs shorts).
-
-### Global Markets Breadth
-
-`data_sources.py` сканирует мировые индексы: Nikkei 225, Hang Seng, FTSE 100, DAX, RTS (Россия). Если большинство в зелёном — глобальный риск-аппетит позитивный. Если красные — бегство от риска.
+**Уровень 5 — автотрейдер:** `signal_trader.py` строит consensus из сигналов + дайджестов + macro, применяет адаптивные пороги, MVRV hard-stop, vol-target sizing, открывает/закрывает позиции, шлёт алерты.
 
 ---
 
-## 🔗 Взаимосвязь файлов (dependency graph)
+## 📡 Автотрейдер (`signal_trader.py`)
 
-```
-ДАННЫЕ → ПРЕДПРОЦЕССИНГ → СИСТЕМА БАЛЛОВ → AI АГЕНТЫ → ВЕРДИКТ
-```
+Бумажный (paper) трейдер, цикл по `AUTOTRADE_INTERVAL_SEC`. Логика каждого тика:
 
-### Уровень 1: Сырые данные (real-time, бесплатные API)
+1. **build_consensus()** — Markets Signals (funding/OI/whales) + AI-дайджест + MVRV/Fed/Yield → ранжированные кандидаты.
+2. **_close_position_if_needed()** — самая горячая функция: проверка TP/SL, Split TP (+2%), Trailing (активация +3%, буфер 1.5%), signal reversal. Пишет `BACKTEST.md`, шлёт алерт.
+3. **rank_trade_candidates()** — адаптивные пороги по режиму: HIGH_VOL → порог +4×conf + vol penalty; SIDEWAYS → +3×conf; UPTREND → −2×conf.
+4. **MVRV hard-stop** — MVRV>3.5 блокирует LONG, MVRV<1.0 блокирует SHORT.
+5. **Open positions** — Kelly + vol-target sizing, ATR-стоп, correlation check, defense mode, R/R≥1.5.
+6. **save_market_cache()** — `MARKET_CACHE.md` (TTL).
 
-| Источник | Данные | Файл | Период |
-|----------|--------|------|--------|
-| **Binance** | Цены BTC/ETH/SOL, объёмы, funding rate, OI | `signals.py`, `web_search.py` | 15 мин |
-| **Yahoo Finance** | SPX, NDX, VIX, DXY, GOLD, нефть, медь, газ | `web_search.py` | real-time |
-| **Alternative.me** | Fear & Greed Index | `web_search.py`, `data_sources.py` | daily |
-| **CoinGecko** | MVRV, SOPR, Exchange Reserves, Active Addresses | `market_indicators/onchain.py` | 10 мин |
-| **FRED (St. Louis Fed)** | Fed Rate, CPI, Fed Balance, 10Y/2Y Yield, HY Spread | `market_indicators/macro_extended.py` | real-time |
-| **CFTC** | COT: позиции хеджеров и спекулянтов (BTC, Gold, Oil) | `cot_data.py` | weekly |
-| **GDELT** | Геополитические события (война, санкции, торговля) | `data_sources.py` | 24h |
-| **Finnhub** | Новостной сентимент, earnings calendar, insider trades | `data_sources.py` | real-time |
-| **Alpha Vantage** | RSI, MACD (BTC, SPY) | `data_sources.py` | daily |
-| **ETF.com/Yahoo** | SPY, QQQ, GLD, TLT, HYG объёмы и изменения | `etf_flows.py` | 5d |
-| **Etherscan** | ETH Gas Price (Gwei) | `data_sources.py` | real-time |
-| **Blockchain.info** | BTC транзакции, hash rate, mempool | `data_sources.py` | real-time |
-| **CoinGecko Trends** | Trending крипта | `data_sources.py` | daily |
-| **Investing.com RSS** | Экономический календарь (FOMC, CPI, NFP) | `data_sources.py` | daily |
-| **SEC / OpenInsider** | Инсайдерские сделки | `data_sources.py` | weekly |
-
-### Уровень 2: Обогащение и агрегация
-
-| Модуль | Что делает | Выход |
-|--------|-----------|-------|
-| `market_indicators/onchain.py` | MVRV, SOPR → сигнальныйInterpretation | "ПЕРЕОЦЕНЁН", "ИСТОРИЧЕСКОЕ ДНО", "HODLing" |
-| `market_indicators/macro_extended.py` | Fed Balance → QE/QT режим, Yield → рецессия risk | "QE", "QT", "Инверсия кривой" |
-| `market_indicators/scorer.py` | Все метрики → единый Market Score (0-100) | Баллы + стоп-факторы |
-| `market_indicators/aggregator.py` | Объединяет on-chain + macro + prices → контекст для AI | `EnrichedData` dataclass |
-| `core/data_enricher.py` | Funding, OI, Liquidations → derivatives контекст | "Overheated", "Normal", "Negative" |
-| `core/confluence.py` | 5 факторов → Confluence Score (0-100) | "STRONG BUY", "SELL", "NEUTRAL" |
-| `core/regime_detector.py` | MA50/MA200, ADX, ATR, RSI → режим | "UPTREND", "HIGH_VOL", "DOWNTREND" |
-
-### Уровень 3: Система баллов (scorer.py)
-
-Каждый индикатор получает **баллы**:
-
-```
-total_score = macro_score + onchain_score + technical_score + sentiment_score
-
-БЫЧЬИ сигналы:
-  • VIX < 15              → +2
-  • Fed Rate ↓            → +2
-  • QE mode               → +2
-  • MVRV < 1.0            → +3
-  • RSI < 35              → +2
-  • F&G < 25              → +2
-  • Whale buy pressure >70% → +2
-
-МЕДВЕЖИЙ сигналы:
-  • VIX > 30              → -2
-  • QT mode               → -2
-  • Yield инверсия        → -2
-  • MVRV > 3.5            → -3
-  • RSI > 75              → -2
-  • F&G > 70 (пузырь)     → -2
-```
-
-**Стоп-факторы** (автоматический вердикт):
-- MVRV > 3.5 → 🚨 МЕДВЕЖИЙ СТОП (не открывать LONG)
-- MVRV < 1.0 → 🔵 БЫЧИЙ СТОП (не открывать SHORT)
-- VIX > 40 → 🚨 КРИЗИС
-- VIX < 15 + F&G > 70 → 🚨 ПУЗЫРЬ
-
-### Уровень 4: AI-агенты (дебаты)
-
-```
-Bull Agent → находит бычьи аргументы из данных
-Bear Agent → находит медвежьи аргументы из данных  
-Verifier   → удаляет галлюцинации
-Synth      → итоговый вердикт (compact JSON)
-Speechwriter → форматирует JSON в читаемый план
-
-Каждый агент получает:
-  1. Рыночные цены (web_search.py)
-  2. Макро данные (FRED)
-  3. Ончейн метрики (CoinGecko)
-  4. СИГНАЛЫ ДЛЯ ДЕБАТОВ (scorer.py — структурированный блок)
-  5. СИСТЕМА БАЛЛОВ (scorer.py — категории)
-```
-
-### Уровень 5: Автотрейдер (signal_trader.py)
-
-```
-Цикл 5 мин:
-  1. build_consensus()
-       → Markets Signals (funding, OI, whales)      [signals.py]
-       → AI Digest вердикт                           [github_export.py]
-       → MVRV + Fed Balance + Yield                 [market_indicators/]
-  2. _close_position_if_needed()
-       → Trailing stop (активируется +3%), Split TP (+2%)
-  3. rank_trade_candidates()
-       → Адаптивные пороги (ChatGPT):
-         HIGH_VOL  → threshold +4×conf + vol penalty
-         SIDEWAYS  → threshold +3×conf
-         UPTREND   → threshold -2×conf
-  4. MVRV hard-stop
-       → MVRV>3.5 блокирует LONG
-       → MVRV<1.0 блокирует SHORT
-  5. Открытие позиций
-       → Max 5, Kelly sizing, ATR stop, correlation check
-  6. Telegram алерты
-       → MVRV>4, MVRV<1, Defense Mode, QE→QT, Score±8
-```
-
-### Ключевые файлы данных
-
-| Файл | Роль в системе |
-|------|---------------|
-| `signals.py` | Bybit/Binance данные для UI и автотрейдера |
-| `cot_data.py` | COT — позиции хеджеров vs спекулянтов (weekly) |
-| `etf_flows.py` | ETF — институциональные потоки (SPY, QQQ, GLD, TLT) |
-| `web_search.py` | Цены, Fear & Greed, макро FRED |
-| `market_indicators/onchain.py` | MVRV, SOPR, Reserves — фундаментальные метрики |
-| `market_indicators/macro_extended.py` | QE/QT, Yield, Credit Spreads — макро режим |
-| `data_sources.py` | Геополитика, Finnhub, Alpha Vantage, commodities |
-
----
-
-## 🔗 Взаимосвязь файлов (dependency graph)
-
-```
-main.py
-  ├── analysis_service.py
-  │     ├── agents.py (DebateOrchestrator)
-  │     │     └── ai_provider.py
-  │     ├── web_search.py (get_full_realtime_context)
-  │     ├── market_indicators/ (build_enriched_context)
-  │     │     ├── onchain.py (fetch_btc_onchain)
-  │     │     ├── macro_extended.py (fetch_extended_macro)
-  │     │     └── scorer.py (calculate_market_score)
-  │     └── data_sources.py
-  │
-  ├── signal_trader.py
-  │     ├── signals.py (build_signal_bias_map)
-  │     ├── core/regime_detector.py
-  │     ├── core/whale_detector.py
-  │     ├── core/correlation.py
-  │     ├── core/event_defense.py
-  │     └── github_export.py (MARKET_CACHE.md)
-  │
-  ├── database.py
-  │     ├── init_db()
-  │     ├── get_backtest_signals()
-  │     └── append_trade_decision_log()
-  │
-  └── scheduler.py
-        └── github_export.py (DIGEST_CACHE.md, FORECASTS.md)
-```
-
----
-
-## ⚙️ Адаптивные параметры автотрейдера
+**Anti-whiplash защита капитала:** `AUTOTRADE_MIN_HOLD_MINUTES`, `AUTOTRADE_REVERSAL_STRENGTH_DELTA`, `AUTOTRADE_REENTRY_COOLDOWN_MIN`. Состояние Kelly/sizing персистится между рестартами.
 
 | Параметр | Базовое | UPTREND | SIDEWAYS | HIGH_VOL |
 |----------|---------|---------|----------|----------|
 | `OPEN_SCORE_THRESHOLD` | 12.0 | 10.4 | 16.5 | 18+ |
 | `ENTRY_TOLERANCE_PCT` | 2% | 2% | 1.2% | 3% |
-| Позиция при vol>5% | 100% | 100% | 100% | 50% |
+| Размер при vol>5% | 100% | 100% | 100% | 50% |
 
 ---
 
-## 📦 GitHub файлы (автообновляемые)
+## 🧭 Advisor — портфель планов
 
-| Файл | Обновляется | Содержит |
-|------|-------------|----------|
-| `BACKTEST.md` | Каждая закрытая сделка | История P&L |
-| `FORECASTS.md` | После /daily | Track record всех прогнозов |
-| `DIGEST_CACHE.md` | После /daily | Последние 14 дайджестов |
-| `MARKET_CACHE.md` | Каждый цикл | MVRV, QE/QT, VIX, Score |
+- **`/advise [ASSET] [CAPITAL]`** (`core/advisor.py`) — pure-logic (без LLM) план: вход, стоп, split TP 30/40/30, размер под капитал. BTC outlook работает как veto для альтов при конфликте и confidence ≥ 65.
+- **AI-narrative** (`core/advisor_narrative.py`, флаг `FEATURE_ADVISOR_NARRATIVE`) — кнопка «💬 Объяснить» зовёт LLM и кэширует объяснение.
+- **Виртуальный портфель** (`FEATURE_ADVISOR_PORTFOLIO`) — кнопка «📥 В портфель», watcher в scheduler следит за SL/TP и шлёт алерт при закрытии. `/myplans` — открытые позиции с live-PnL. Реальные деньги не двигаются.
 
 ---
 
-## 🇬🇧 ENGLISH VERSION
+## 💱 P2P-арбитраж (сканер)
 
-### Dialectic Edge — AI Trading System
+`p2p_arbitrage.py` + `refactor/handlers/p2p_arbitrage_handler.py`. Сканирует публичные P2P-стаканы **Binance и Bybit** (read-only), считает net spread после buffer/fee-модели, фильтрует по качеству контрагента и payment overlap.
 
-**What it does:**
-1. **Analyzes market** via multi-agent AI debates
-2. **Monitors** Bybit Markets Signals (funding, OI, whales)
-3. **Adapts** to market regime (UPTREND / SIDEWAYS / HIGH_VOL)
-4. **Manages risk** via Kelly Criterion, ATR, Trailing Stop, Split TP
-5. **Paper trades** on Railway with GitHub state persistence
+- Включён по умолчанию (`FEATURE_P2P_ARBITRAGE=1`) — осознанное отступление от правила «фичи OFF по умолчанию».
+- Глобальное покрытие: ~10 активов × ~55 фиатов (CIS / LATAM / ASIA / MENA / AFRICA / EUROPE / majors).
+- Защита от фейков: внешний forex-anchor (open.er-api.com), outlier-band, hard-cap на спред, price-aware dedup.
+- Risk scoring по completion rate / orders / account age / TIER-1 банкам.
+- **Self-audit** (`p2p_audit.py`, `FEATURE_P2P_SELF_AUDIT`): логирует показанные окна, через N минут перечитывает стакан и сверяет realised vs shown spread → `/p2paudit` + рекомендация по `P2P_ARBITRAGE_MIN_SPREAD_PCT`.
+- Авто-алерты прибыльных окон (`FEATURE_P2P_ARBITRAGE_ALERTS`).
 
-### Architecture
+Реальную сделку юзер делает руками после проверки мерчанта/банка/лимитов.
+
+---
+
+## 🧪 Killer-фичи за фичефлагами
+
+Все по умолчанию **OFF** (кроме помеченных). Включаются через env, требуют 1–6 недель накопления baseline. Каждая пишет снапшоты в SQLite.
+
+| Флаг | Модуль | Что делает |
+|------|--------|-----------|
+| `FEATURE_AGENT_CALIBRATION` | `core/agent_calibration*.py` | Per-agent probabilistic forecast'ы → Brier score → калибровка каждого голоса |
+| `FEATURE_MICROSTRUCTURE` | `market_indicators/microstructure*.py` | L2-стаканы Binance/Bybit/OKX/Bitget/Hyperliquid → depth, asymmetry, spread, liquidity vacuum |
+| `FEATURE_NARRATIVE_DRIFT` | `market_indicators/narratives*.py` | Эмбеддинги новостей (Gemini/Mistral) → онлайн-кластеризация → velocity/reach/drift |
+| `FEATURE_FUNDING_TERM` | (funding term snapshots) | Perp funding + 30d/90d basis carry → slope, contango↔backwardation inversion |
+| `FEATURE_CARRY_BRIEFING` *(ON)* | `CARRY_SCANNER.md` логика | Мониторинг carry/арб-позиций (быстрый тик) + полный брифинг (6ч) |
+| `FEATURE_PUMP_SCANNER` | (pump radar) | Радар движений (честно: НЕ эдж, только факт) |
+| `FEATURE_OPTIONS_SKEW` | (Deribit) | ATM IV, 25Δ risk reversal, term slope (Black-Scholes без r) |
+| `FEATURE_STABLECOIN_FLOWS` | `market_indicators/stablecoin_flows*.py` | totalSupply USDT/USDC (Ethereum+Tron) → mint/redeem классификация |
+| `FEATURE_REGIME_CLASSIFIER` | `market_indicators/regime*.py`, `core/markov_regime.py` | BOCPD (Adams & MacKay) над BTC log-returns → trending/ranging/volatile/crisis |
+| `FEATURE_SMART_MONEY_WALLETS` | `market_indicators/smart_money_wallets*.py` | Net ETH flow по институциональным кошелькам (Etherscan v2) |
+| `FEATURE_LIQUIDATION_MAGNET` | (Binance/Bybit OI+L/S) | Контрарианский «магнит» к ценам массовой ликвидации |
+| `FEATURE_CASCADE_POST_MORTEM` | `core/post_mortem.py` | WS-listener ликвидаций → авто-разбор каскадов в TG → `/postmortem` |
+| `FEATURE_ADVISOR` *(ON)* | `core/advisor.py` | План сделки `/advise` |
+| `FEATURE_BTC_OUTLOOK_ALERTS` *(ON)* | `core/btc_alerts.py`, `core/btc_outlook.py` | Авто-алерты при смене lean / скачке confidence |
+
+---
+
+## 🔔 Alert-движок и авто-алерты
+
+`refactor/services/alert_engine.py` (`FEATURE_ALERT_ENGINE`) — generic-фреймворк правил по расписанию, cooldown через `JsonAlertStore`:
+
+- **screener anomaly** (`FEATURE_ALERT_SCREENER`) — RSI extremes + volume spikes + funding anomalies.
+- **BTC ETF outflow** (`FEATURE_ALERT_BTC_ETF`) — IBIT/FBTC/BITB/ARKB/BTCO basket, streak/big-drop детект.
+- **liquidation magnet** (`FEATURE_ALERT_LIQUIDATION_CLUSTER`) — OI buildup + L/S extreme.
+
+Отдельно: P2P-алерты, BTC-outlook-алерты, депег-монитор (`depeg_monitor.py`).
+
+---
+
+## 💳 Подписки и пейволл
+
+`payments/` (CryptoBot Crypto Pay) + `refactor/handlers/subscription_handler.py` + `refactor/middleware/subscription_guard.py`. Без `CRYPTOBOT_API_TOKEN` платёжка отключена и пейволл не работает. Опциональный VIP-кеш дайджестов — через `DATABASE_URL` (Postgres). Rate-limiter — `refactor/middleware/rate_limiter.py`.
+
+---
+
+## 📁 Структура репозитория
 
 ```
-User → main.py (Telegram)
-         ↓
-  analysis_service.py
-         ↓
-  agents.py (Bull/Bear/Verifier/Synth)
-         ↓
-  ai_provider.py (Cerebras/Groq/Mistral/OpenRouter/Together/Gemini)
-         ↓
-  web_search.py (Binance/Yahoo/FRED/CoinGecko/GDELT)
-         ↓
-  market_indicators/ (on-chain + macro + scoring)
-         ↓
-  signal_trader.py (auto-trader, 5-min cycle)
-         ↓
-  GitHub (BACKTEST.md / FORECASTS.md / MARKET_CACHE.md)
+.
+├── main.py                 # bootstrap + ~70 @dp.message хендлеров (god-object, ~7274 строк)
+├── analysis_service.py     # pipeline /daily: данные → дебаты → план
+├── agents.py               # multi-agent debate (Bull/Bear/Verifier/Synth/Speechwriter)
+├── ai_provider.py          # роутер LLM-провайдеров с fallback
+├── signal_trader.py        # бумажный автотрейдер (vol-target, ATR, Split TP, trailing)
+├── signals.py              # Bybit/Binance: funding, OI, top-trader L/S, whales
+├── web_search.py           # сборщик: Yahoo, FRED, CoinGecko, GDELT, Tavily
+├── data_sources.py         # геополитика, Finnhub, Alpha Vantage, commodities, breadth
+├── cot_data.py             # CFTC Commitments of Traders (weekly)
+├── etf_flows.py            # ETF потоки + market breadth
+├── market_data.py          # OHLCV свечи (Binance klines)
+├── news_fetcher.py         # новости (Tavily/GDELT)
+├── sentiment.py            # новостной сентимент (Finnhub / FinBERT)
+├── database.py             # SQLite-обёртка (позиции, trade_decision_log, digest)
+├── session_manager.py      # persistence виртуального капитала
+├── github_export.py        # экспорт md-кэшей в git через GitHub API
+├── scheduler.py            # cron: daily digest, audit, carry, watchers
+├── chart_generator.py      # графики (matplotlib)
+├── backtester.py           # бэктест на OHLC (заготовка)
+├── depeg_monitor.py        # монитор депега стейблов
+├── p2p_arbitrage.py        # P2P-сканер (Binance + Bybit)
+├── p2p_audit.py / p2p_audit_io.py  # self-audit P2P
+├── halal_edge.py / halal_signals.py / halal_alerts.py / halal_strategies  # Halal Edge
+├── russia_agents.py / russia_data.py                                       # Russia Edge
+├── stock_screener.py / trend_signals.py / trading_signal.py / quant_filter.py
+│
+├── core/                   # ~50 модулей бизнес-логики
+│   ├── advisor.py / advisor_narrative.py      # планы сделок
+│   ├── dynamic_risk.py / sizing_state.py / position_calc.py   # Kelly + vol-target
+│   ├── regime_detector.py / markov_regime.py / macro_regime.py / regime_radar.py
+│   ├── confluence.py / correlation.py / multi_tf.py / support_resistance.py
+│   ├── whale_detector.py / event_defense.py / screener.py / decision_engine.py
+│   ├── agent_calibration*.py / calibration*.py / recalibration.py / ai_metrics.py
+│   ├── walk_forward.py / backtest_engine.py / backtest_validate.py / volatility_forecast.py
+│   ├── btc_outlook.py / btc_regime.py / btc_alerts.py / horizons.py
+│   ├── post_mortem.py / edge_ledger.py / provenance.py / retro_analysis.py
+│   ├── track_record.py / market_complexity.py / economic_calendar.py / digest_context.py
+│   └── healthz.py / audit.py / signal.py / signal_scorer.py / data_enricher.py
+│
+├── market_indicators/      # on-chain + macro + scoring + killer-фичи I/O
+│   ├── onchain.py / macro_extended.py / scorer.py / aggregator.py / smart_money.py
+│   ├── microstructure*.py / narratives*.py / regime*.py
+│   ├── stablecoin_flows*.py / smart_money_wallets*.py / btc_etf_flows.py / fiat_fx.py
+│
+├── refactor/               # целевая модульная архитектура
+│   ├── handlers/           # advisor, btc, p2p, retro, market, portfolio, profile, admin, subscription
+│   ├── providers/          # ai / cache / database / market / news / storage / advisor_storage
+│   ├── interfaces/ models.py utils.py examples.py
+│   ├── middleware/         # rate_limiter, subscription_guard
+│   ├── observability/      # logging_setup, sentry_setup
+│   ├── prompts/            # market, russia
+│   └── services/           # alert_engine + alert_rules (screener_anomaly, btc_etf_outflow) + alert_store_json
+│
+├── payments/               # CryptoBot Crypto Pay (crypto_pay.py, db.py)
+├── trading_system/         # CLI + dashboard + risk + batch_runner + equity_metrics
+├── scripts/                # fetch_klines, run_quick_backtest, spot_arb_scanner, preflight_guards и др.
+├── research/               # halal_edge_backtest, predict_regime_backtest
+├── docs/                   # BEGINNER_GUIDE, BACKTEST_RESULTS, quant_research
+├── tests/                  # 74 файла тестов (unittest), + fixtures
+├── config.py               # центральная конфигурация (env)
+├── config/trading_config.json
+│
+├── .github/workflows/      # lint.yml, tests.yml, digest_cron.yml
+├── pyproject.toml          # ruff (soft E/F), mypy (soft), pytest (asyncio strict)
+├── .pre-commit-config.yaml
+├── requirements.txt        # aiogram 3.13.1, aiohttp, aiosqlite, matplotlib, ...
+├── runtime.txt / .python-version / nixpacks.toml   # Python 3.12
+│
+└── *.md (state в git — НЕ править руками):
+    DIGEST_CACHE.md · FORECASTS.md · AUTO_TRACK.md · BACKTEST.md · MARKET_CACHE.md · AUDIT_REPORT.md
 ```
 
-### Key Features
+---
 
-- **10 elite core modules** (regime, risk, confluence, whale, correlation, etc.)
-- **100% free AI models** (Cerebras, Groq, Mistral, OpenRouter, Together, Gemini)
-- **Adaptive thresholds** based on market regime + volatility
-- **Trailing stop** + **Split TP** for optimal exits
-- **MVRV hard-stops** (no LONG when >3.5, no SHORT when <1.0)
-- **Event Defense** blocks trades before high-impact macro events
-- **GitHub persistence** survives Railway redeployments
-- **Telegram alerts** on MVRV, Defense Mode, QE/QT changes
+## 🧰 Tech stack
 
-### Setup
+| Слой | Технология |
+|------|-----------|
+| Backend | Python 3.12, asyncio, aiohttp, aiosqlite |
+| Frontend | Telegram Bot API (aiogram 3.13.1) |
+| AI | Gemini · Groq · Mistral · OpenRouter · Together · Cerebras · локальные (Ollama / OpenAI-compat) |
+| ML/NLP | FinBERT (sentiment), эмбеддинги Gemini/Mistral (narrative drift) |
+| Хранение | SQLite (state) + JSON (risk/sizing/alerts) + git-markdown кэш; опц. Postgres (asyncpg + SQLAlchemy), Redis |
+| Платежи | CryptoBot Crypto Pay |
+| Charting | matplotlib |
+| Dashboard | Streamlit (`streamlit_app.py`, `trading_system/dashboard_app.py`) |
+| Observability | structured logging, опц. Sentry |
+| Deploy | Railway (worker + cron), Nixpacks (Python 3.12) |
+| Quality | ruff, mypy, pre-commit, pytest/unittest, GitHub Actions |
+
+---
+
+## 💾 Хранение состояния
+
+| Хранилище | Содержит |
+|-----------|----------|
+| `dialectic_edge.db` (SQLite) | Позиции, trade_decision_log, дайджесты, snapshot'ы killer-фич, калибровка |
+| `risk_state.json` / `sizing_state.json` | Adaptive Kelly + vol-target калибровка |
+| `carry_monitor_state.json` | Открытые carry/арб-позиции |
+| Git-markdown (через GitHub API) | `DIGEST_CACHE.md`, `FORECASTS.md`, `AUTO_TRACK.md`, `BACKTEST.md`, `MARKET_CACHE.md` |
+| Redis *(опц.)* | Снапшоты дебатов (кнопка «листать») при >1 воркера / рестартах |
+| Postgres *(опц.)* | VIP-подписки, кеш дайджестов |
+
+На Railway монтируется Volume — путь приходит из `RAILWAY_VOLUME_MOUNT_PATH`, и SQLite/cache ложатся туда. ⚠️ Без тома файлы эфемерны и теряются при деплое.
+
+---
+
+## ⚙️ Конфигурация (env)
+
+Полный список с комментариями — в [`.env.example`](.env.example). Ключевые группы:
+
+```env
+# Telegram
+BOT_TOKEN=123456:ABC-...
+ADMIN_IDS=0
+
+# AI provider routing (хватит одного ключа, остальные — fallback)
+AI_PROVIDER=gemini
+GEMINI_API_KEY=
+GROQ_API_KEY=
+OPENROUTER_API_KEY=
+TOGETHER_API_KEY=
+CEREBRAS_API_KEY=
+MISTRAL_API_KEY=
+DEBATE_ROUNDS=3
+MAX_TOKENS=1500
+AGENT_TEMP=0.7
+
+# Источники данных (free tier)
+FINNHUB_API_KEY=
+ALPHA_VANTAGE_API_KEY=
+FRED_API_KEY=
+TAVILY_API_KEY=
+ETHERSCAN_API_KEY=
+
+# State persistence в git
+GITHUB_TOKEN=
+GITHUB_REPO=valekbishon-art/DIALECTIC_EDGE
+GITHUB_DEFAULT_BRANCH=master
+
+# Хранилище
+DATA_DIR=
+DB_PATH=dialectic_edge.db
+REDIS_URL=
+DATABASE_URL=
+
+# Платежи
+CRYPTOBOT_API_TOKEN=
+
+# Автотрейд
+FEATURE_AUTOTRADE=1
+AUTOTRADE_START_CAPITAL=500.0
+AUTOTRADE_INTERVAL_SEC=60
+AUTOTRADE_MIN_HOLD_MINUTES=15
+AUTOTRADE_REENTRY_COOLDOWN_MIN=30
+```
+
+Все фичи — за флагом `FEATURE_XXX` (по умолчанию OFF, кроме P2P/Advisor/BTC-alerts/Carry). Полный перечень флагов killer-фич — в разделе [выше](#-killer-фичи-за-фичефлагами) и в `.env.example`.
+
+---
+
+## 🚢 Деплой
+
+**Railway (рекомендуется):**
+1. Подключи репозиторий, выбери ветку `spot-only`.
+2. Создай Volume (Ctrl/⌘+K → «Volume»), привяжи к сервису бота → `RAILWAY_VOLUME_MOUNT_PATH` подхватится автоматически.
+3. Задай переменные в Settings → Variables (минимум `BOT_TOKEN`, `ADMIN_IDS`, один AI-ключ).
+4. (опц.) Redis / Postgres через New → Database, прокинь `REDIS_URL` / `DATABASE_URL` через Reference.
+5. Push → деплой. Nixpacks ставит Python 3.12 (НЕ 3.13 — `nixpacks.toml`).
+
+Cron-дайджест — `.github/workflows/digest_cron.yml` (+ `cron_digest.py`).
+
+---
+
+## 🛠️ Разработка, тесты, CI
 
 ```bash
-cp .env.example .env
-# fill in API keys
-python main.py
+# Тесты (252+ кейса в 74 файлах)
+python -m unittest discover -s tests -p "test_*.py"
+# или pytest
+pytest
+
+# Линт/типы (soft)
+ruff check .
+mypy refactor/
+
+# Pre-commit
+pre-commit run --all-files
 ```
 
-### Commands
+**CI (GitHub Actions):**
+- `lint.yml` — ruff + mypy (по `refactor/`), non-blocking.
+- `tests.yml` — два job'а: `unit-fast` (minimal deps, ~30с) и `unit-full` (полный `requirements.txt` + smoke-import 13 модулей + все тесты, ~1.5–2 мин).
+- `digest_cron.yml` — плановый дайджест.
 
-| Command | Description |
-|---------|-------------|
-| `/daily` | Full AI market analysis |
-| `/starttrade` | Start autotrader |
-| `/screener` | Anomaly scanner TOP-15 |
-| `/health` | Health check |
+**Правила (см. [`AGENTS.md`](AGENTS.md) и [`CONTRIBUTING.md`](CONTRIBUTING.md)):**
+- ❌ Не трогать торговую логику (`signal_trader.py`, `signals.py`, `core/dynamic_risk.py`, `auto_tracker.py`) без тестов.
+- ❌ Не править md-кэши руками (их пишет бот через GitHub API).
+- ❌ Не добавлять `@dp.message` в `main.py` — новые хендлеры в `refactor/handlers/*` через `register(dp)`.
+- ❌ Не вводить новые зависимости без обсуждения; не force-push в master; не коммитить секреты.
+- ✅ Любая фича — за `FEATURE_XXX` (default OFF). Один PR — одна тема.
+
+---
+
+## 📖 Словарь терминов
+
+**Режимы рынка:** `UPTREND` (MA50>MA200, порог ниже), `SIDEWAYS` (порог выше, entry уже), `HIGH_VOL` (>5% vol, позиция −50%), `DOWNTREND` (только SHORT/CASH).
+
+**Индикаторы:** MVRV (>3.5 переоценён, <1.0 дно), SOPR (>1.05 фиксация), Funding (>0.1% быки платят), OI (рост+цена = тренд), VIX (>40 кризис, <15 оптимизм), QE/QT (FRED WALCL), Yield Curve (инверсия <−0.5%), HY Spread (>5% стресс), Fear & Greed (<25 страх, >75 жадность), COT (позиции спекулянтов).
+
+**Стратегия выхода:** Split TP (50% при +2%), Trailing Stop (активация +3%, буфер 1.5%), Hard Stop (ATR × regime), Signal Reversal.
+
+**AI-агенты:** Bull (`BULL_SYSTEM`), Bear (`BEAR_SYSTEM`), Verifier (`VERIFIER_SYSTEM`, чистит галлюцинации), Synth (`SYNTH_SYSTEM`, compact-JSON вердикт), Speechwriter (`SPEECHWRITER_SYSTEM`, читаемый план).
 
 ---
 
 ## 📜 Disclaimer
 
-⚠️ **This is a paper trading / educational project.**  
-All trades are simulated. Nothing here is financial advice.  
-Past performance does not guarantee future results.  
-DYOR (Do Your Own Research).
+⚠️ **Это paper-trading / образовательный проект.**
+Все сделки симулированы. Ничего здесь не является финансовым советом.
+Прошлые результаты не гарантируют будущих. Рынок непредсказуем, агенты могут ошибаться.
+Используй как один из инструментов мышления, не как сигнал к действию. **DYOR.**
+
+---
+
+## 🔗 Ссылки
+
+- Репозиторий: <https://github.com/valekbishon-art/DIALECTIC_EDGE> (ветка `spot-only`)
+- Карта для AI-агентов: [AGENTS.md](AGENTS.md)
+- Переменные окружения: [.env.example](.env.example)
+- Контрибуция: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Гайд новичка: [docs/BEGINNER_GUIDE.md](docs/BEGINNER_GUIDE.md)
