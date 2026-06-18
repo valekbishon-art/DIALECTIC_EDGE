@@ -270,6 +270,16 @@ PERSISTENT_BTN_ARB      = "🔀 Кросс-арб"
 PERSISTENT_BTN_BASIS    = "🗓 Базис"
 PERSISTENT_BTN_CALC     = "🧮 Калькулятор"
 PERSISTENT_BTN_HELP     = "❓ Помощь"
+# Полный набор для нижнего меню (зеркало inline-меню /start)
+PERSISTENT_BTN_DCA      = "💰 DCA"
+PERSISTENT_BTN_ALERTS   = "🔔 Алерты"
+PERSISTENT_BTN_SIGSTAT  = "📡 Сигнал-статус"
+PERSISTENT_BTN_BACKTEST = "🧪 Бэктест"
+PERSISTENT_BTN_TRACK    = "📊 Трек-рекорд"
+PERSISTENT_BTN_VIP      = "💎 VIP"
+PERSISTENT_BTN_WHATIDO  = "💎 Что я умею"
+PERSISTENT_BTN_NEWBIE   = "🆕 Новичок"
+PERSISTENT_BTN_GUIDE    = "📘 Команды"
 
 
 def persistent_kb() -> ReplyKeyboardMarkup:
@@ -278,16 +288,32 @@ def persistent_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
+                KeyboardButton(text=PERSISTENT_BTN_SIGNAL),
                 KeyboardButton(text=PERSISTENT_BTN_DAILY),
                 KeyboardButton(text=PERSISTENT_BTN_MARKETS),
+            ],
+            [
+                KeyboardButton(text=PERSISTENT_BTN_TREND),
+                KeyboardButton(text=PERSISTENT_BTN_STOCKS),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
             ],
             [
-                KeyboardButton(text=PERSISTENT_BTN_STOCKS),
-                KeyboardButton(text=PERSISTENT_BTN_TREND),
                 KeyboardButton(text=PERSISTENT_BTN_P2P),
+                KeyboardButton(text=PERSISTENT_BTN_DCA),
+                KeyboardButton(text=PERSISTENT_BTN_ALERTS),
             ],
             [
+                KeyboardButton(text=PERSISTENT_BTN_SIGSTAT),
+                KeyboardButton(text=PERSISTENT_BTN_BACKTEST),
+                KeyboardButton(text=PERSISTENT_BTN_TRACK),
+            ],
+            [
+                KeyboardButton(text=PERSISTENT_BTN_VIP),
+                KeyboardButton(text=PERSISTENT_BTN_WHATIDO),
+                KeyboardButton(text=PERSISTENT_BTN_NEWBIE),
+            ],
+            [
+                KeyboardButton(text=PERSISTENT_BTN_GUIDE),
                 KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
                 KeyboardButton(text=PERSISTENT_BTN_HELP),
             ],
@@ -3384,6 +3410,57 @@ async def _kb_p2p(message: Message):
 @dp.message(F.text == PERSISTENT_BTN_HELP)
 async def _kb_help(message: Message):
     await cmd_help(message)
+
+
+# ─── Нижнее меню: остальные функции (зеркало inline-меню /start) ──────────────
+@dp.message(F.text == PERSISTENT_BTN_SIGNAL)
+async def _kb_signal(message: Message):
+    await cmd_signal(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_DCA)
+async def _kb_dca(message: Message):
+    await cmd_dca(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_ALERTS)
+async def _kb_alerts(message: Message):
+    await cmd_alerts(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_SIGSTAT)
+async def _kb_sigstatus(message: Message):
+    await cmd_signal_status(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_BACKTEST)
+async def _kb_backtest(message: Message):
+    await cmd_backtest(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_TRACK)
+async def _kb_track(message: Message):
+    await cmd_trackrecord(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_VIP)
+async def _kb_vip(message: Message):
+    await cmd_premium(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_WHATIDO)
+async def _kb_whatido(message: Message):
+    await cmd_pitch(message)
+
+
+@dp.message(F.text == PERSISTENT_BTN_NEWBIE)
+async def _kb_newbie(message: Message):
+    await _send_newbie_guide(message.chat.id)
+
+
+@dp.message(F.text == PERSISTENT_BTN_GUIDE)
+async def _kb_guide(message: Message):
+    await _send_bot_guide(message.chat.id)
 
 # ─── /profile ─────────────────────────────────────────────────────────────────
 
