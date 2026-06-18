@@ -513,7 +513,7 @@ class Scheduler:
                 name for name, ok in (
                     ("screener", _alert_screener_enabled()),
                     ("btc_etf", _alert_btc_etf_enabled()),
-                    ("liquidation", _alert_liq_enabled()),
+                    # [HALAL] liquidation rule удалён (деривативы/ликвидации = харам).
                 ) if ok
             ]
             logger.info(
