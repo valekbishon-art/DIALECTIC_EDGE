@@ -3255,6 +3255,10 @@ async def cmd_start(message: Message):
         [InlineKeyboardButton(text="🆕 Я новичок — гид + PDF",  callback_data="cmd:newbie")],
         [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас",  callback_data="cmd:signal")],
         [
+            InlineKeyboardButton(text="🧭 Тренд",              callback_data="hsnav:trend"),
+            InlineKeyboardButton(text="📈 Акции",              callback_data="hsnav:stocks"),
+        ],
+        [
             InlineKeyboardButton(text="📊 Прогноз",            callback_data="cmd:daily"),
             InlineKeyboardButton(text="🏛 Рынки",              callback_data="cmd:markets"),
         ],
