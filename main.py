@@ -2595,16 +2595,20 @@ async def cmd_dca(message: Message):
     """План усреднения (DCA): /dca <депозит> [траншей] [интервал_дней]."""
     parts = (message.text or "").split()
     deposit, tranches, days = 1000.0, 6, 5
-    try:
-        if len(parts) >= 2:
-            deposit = float(parts[1].replace("$", "").replace(",", ""))
-        if len(parts) >= 3:
-            tranches = int(parts[2])
-        if len(parts) >= 4:
-            days = max(1, int(parts[3]))
-    except ValueError:
-        await message.answer("Формат: /dca 5000 6 7  (депозит, траншей, интервал в днях)")
-        return
+    # Аргументы парсим ТОЛЬКО если это реальная команда /dca ...
+    # Тап по кнопке «💰 DCA» присылает текст "💰 DCA" — это не аргументы,
+    # для него отдаём дефолтный план (а не ошибку формата).
+    if parts and parts[0].lstrip().startswith("/"):
+        try:
+            if len(parts) >= 2:
+                deposit = float(parts[1].replace("$", "").replace(",", ""))
+            if len(parts) >= 3:
+                tranches = int(parts[2])
+            if len(parts) >= 4:
+                days = max(1, int(parts[3]))
+        except ValueError:
+            await message.answer("Формат: /dca 5000 6 7  (депозит, траншей, интервал в днях)")
+            return
     try:
         import halal_signals
         text = halal_signals.build_dca_plan(deposit, tranches, days)
@@ -2713,6 +2717,35 @@ async def _cb_halal_alert_toggle(cb: CallbackQuery):
     except Exception:  # noqa: BLE001
         try:
             await cb.answer("Не получилось переключить алерты", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data == "halert_keep")
+async def _cb_halal_alert_keep(cb: CallbackQuery):
+    """🔔 Оставить — подтвердить подписку на спот-автоалерты (под алертом)."""
+    try:
+        from database import set_halal_alert_sub
+        await set_halal_alert_sub(cb.from_user.id, True)
+        await cb.answer("🔔 Ок, автоалерты остаются включёнными", show_alert=False)
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Готово", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data == "halert_off")
+async def _cb_halal_alert_off(cb: CallbackQuery):
+    """🔕 Отключить — отписать от спот-автоалертов (под алертом)."""
+    try:
+        from database import set_halal_alert_sub
+        await set_halal_alert_sub(cb.from_user.id, False)
+        await cb.answer("🔕 Автоалерты отключены. Включить обратно: /alerts",
+                        show_alert=True)
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Не получилось отключить", show_alert=False)
         except Exception:  # noqa: BLE001
             pass
 

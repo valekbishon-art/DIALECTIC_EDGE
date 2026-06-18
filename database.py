@@ -53,7 +53,7 @@ async def init_db():
 
         # Подписка на спот-автоалерты (/trend и /stocks: смена режима тренда).
         try:
-            await db.execute("ALTER TABLE users ADD COLUMN halal_alert_sub INTEGER DEFAULT 0")
+            await db.execute("ALTER TABLE users ADD COLUMN halal_alert_sub INTEGER DEFAULT 1")
         except Exception:
             pass
 
@@ -65,6 +65,24 @@ async def init_db():
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
+
+        # Одноразовая миграция: автоалерты ВКЛ по умолчанию для всех текущих
+        # юзеров. Гейтим флагом в app_kv, чтобы НЕ переподписывать тех, кто
+        # позже сам отключит (opt-out). Запускается один раз на инстанс БД.
+        try:
+            async with db.execute(
+                "SELECT value FROM app_kv WHERE key = 'halal_alert_default_on_v1'"
+            ) as cur:
+                done = await cur.fetchone()
+            if not done:
+                await db.execute("UPDATE users SET halal_alert_sub = 1")
+                await db.execute(
+                    "INSERT INTO app_kv (key, value, updated_at) "
+                    "VALUES ('halal_alert_default_on_v1', '1', datetime('now')) "
+                    "ON CONFLICT(key) DO NOTHING"
+                )
+        except Exception:
+            pass
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
@@ -672,9 +690,11 @@ async def init_db():
 
 async def upsert_user(user_id: int, username: str = "", first_name: str = ""):
     async with aiosqlite.connect(DB_PATH) as db:
+        # Новый юзер: автоалерты ВКЛ по умолчанию (halal_alert_sub = 1).
+        # ON CONFLICT НЕ трогает halal_alert_sub — сохраняем выбор юзера (opt-out).
         await db.execute("""
-            INSERT INTO users (user_id, username, first_name, last_active, signals_sub)
-            VALUES (?, ?, ?, datetime('now'), 1)
+            INSERT INTO users (user_id, username, first_name, last_active, signals_sub, halal_alert_sub)
+            VALUES (?, ?, ?, datetime('now'), 1, 1)
             ON CONFLICT(user_id) DO UPDATE SET
                 username = excluded.username,
                 first_name = excluded.first_name,

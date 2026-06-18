@@ -123,7 +123,13 @@ async def build_stocks_card(sma: int = 50, top: int = 8) -> CardResult:
     holds = [r for r in rows_data if r[2]]
     pick = (holds or rows_data)[:top]
 
-    rows = []
+    rows = [
+        "ℹ️ *Что это:* акции, отсортированные по силе — полугодовой рост "
+        "(моментум) среди тех, кто торгуется выше средней за 50 дней (SMA50).",
+        "🎯 *Что делать:* верх списка = самые сильные в аптренде. Спот/лонг, "
+        "равный вес. Жми кнопки графиков под карточкой.",
+        "",
+    ]
     for i, (sym, closes, up, ext, mom) in enumerate(pick, 1):
         name = WATCHLIST.get(sym, (sym,))[0] if WATCHLIST else sym
         rows.append(
@@ -165,7 +171,13 @@ async def build_crypto_trend_card(sma: int = 50, universe: Sequence[str] | None 
             "Попробуй позже.", [])
 
     hold.sort(key=lambda x: x[1], reverse=True)
-    rows = []
+    rows = [
+        "ℹ️ *Что это:* крупные спот-монеты, которые сейчас в восходящем тренде "
+        "(цена выше средней за 50 дней, SMA50).",
+        "🎯 *Что делать:* что выше линии — держи в споте равным весом; что ниже "
+        "— жди в стейбле. Без плеча и шортов.",
+        "",
+    ]
     if hold:
         w = 100.0 / len(hold)
         rows.append(f"*Держать (спот, равный вес {w:.0f}%):*")
@@ -186,8 +198,13 @@ def build_dca_plan(deposit: float, tranches: int = 6, days: int = 5) -> str:
     """План усреднения (DCA): равные транши с интервалом. Чистый расчёт, без сети."""
     tranches = max(2, min(24, int(tranches)))
     per = deposit / tranches
-    rows = [f"*Депозит:* {ui_kit.money(deposit)} → *{tranches}* транша(ей) "
-            f"по {ui_kit.money(per)} каждые *{days} дн.*", ""]
+    rows = [
+        "ℹ️ *Что это:* DCA — заход в позицию частями, а не всё сразу.",
+        "🎯 *Что делать:* покупай спот по этому графику — равные суммы через "
+        "равные интервалы. Так усредняешь цену входа и не «ловишь пик».",
+        "",
+        f"*Депозит:* {ui_kit.money(deposit)} → *{tranches}* транша(ей) "
+        f"по {ui_kit.money(per)} каждые *{days} дн.*", ""]
     acc = 0.0
     for i in range(1, tranches + 1):
         acc += per

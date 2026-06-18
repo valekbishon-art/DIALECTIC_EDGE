@@ -14,6 +14,8 @@ import asyncio
 import json
 import logging
 
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 import halal_signals as hs
 import links
 from database import kv_get, kv_set
@@ -22,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 _KEY_CRYPTO = "halal_alert_crypto_hold"
 _KEY_STOCKS = "halal_alert_stock_top"
+
+
+def _alert_kb() -> InlineKeyboardMarkup:
+    """Кнопки под алертом: оставить подписку или отключить автоалерты."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔔 Оставить", callback_data="halert_keep"),
+        InlineKeyboardButton(text="🔕 Отключить", callback_data="halert_off"),
+    ]])
 
 
 async def _current_crypto_hold(sma: int = 50) -> set[str]:
@@ -105,6 +115,9 @@ def build_alert_text(c_new: set[str], c_old: set[str],
         parts.append("")
     parts.append("_Правило: выше SMA → держим спот равным весом; ниже → в стейбл. "
                  "Без плеча. Не инвест-совет. Команды: /trend, /stocks._")
+    parts.append("")
+    parts.append("🔔 *Нужны такие автоалерты?* Оставь или отключи кнопкой ниже "
+                 "(включить обратно: /alerts).")
     return "\n".join(parts)
 
 
@@ -144,7 +157,8 @@ class HalalAlertSystem:
                 continue
             try:
                 await self.bot.send_message(
-                    uid, text, parse_mode="Markdown", disable_web_page_preview=True
+                    uid, text, parse_mode="Markdown", disable_web_page_preview=True,
+                    reply_markup=_alert_kb(),
                 )
                 sent += 1
                 await asyncio.sleep(0.05)
