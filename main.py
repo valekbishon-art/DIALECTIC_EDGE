@@ -273,7 +273,7 @@ PERSISTENT_BTN_HELP     = "❓ Помощь"
 # Полный набор для нижнего меню (зеркало inline-меню /start)
 PERSISTENT_BTN_DCA      = "💰 DCA"
 PERSISTENT_BTN_ALERTS   = "🔔 Алерты"
-PERSISTENT_BTN_SIGSTAT  = "📡 Сигнал-статус"
+PERSISTENT_BTN_SIGSTAT  = "🤖 Автоторговля"
 PERSISTENT_BTN_BACKTEST = "🧪 Бэктест"
 PERSISTENT_BTN_TRACK    = "📊 Трек-рекорд"
 PERSISTENT_BTN_VIP      = "💎 VIP"
@@ -1891,16 +1891,8 @@ def format_signal_trader_status_message(status: dict) -> str:
 
 @dp.message(F.text.startswith("/signalstatus"))
 async def cmd_signal_status(message: Message):
-    """Check signal trader status with entry prices."""
-    try:
-        from signal_trader import get_signal_trader_status
-
-        status = await get_signal_trader_status()
-        msg = format_signal_trader_status_message(status)
-        await message.answer(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"signal_status error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — панель paper-автотрейдера. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 def _format_autotrade_status_embed(risk_summary: dict, status: dict) -> str:
@@ -1975,17 +1967,8 @@ def _format_autotrade_status_embed(risk_summary: dict, status: dict) -> str:
 
 @dp.message(Command("autotrade_status"))
 async def cmd_autotrade_status(message: Message):
-    """Performance summary с Kelly, vol-targeting, drawdown, win-rate."""
-    try:
-        from signal_trader import get_signal_trader_status, _risk_manager
-
-        status = await get_signal_trader_status()
-        risk_summary = _risk_manager.get_risk_summary()
-        msg = _format_autotrade_status_embed(risk_summary, status)
-        await message.answer(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.exception("autotrade_status error")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — performance paper-автотрейда. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("audit"))
@@ -2402,158 +2385,54 @@ async def cmd_usage(message: Message):
         await message.answer(f"Ошибка: {e}")
 
 
+def _autotrade_coming_soon_text() -> str:
+    """Единый текст-заглушка про будущую автоторговлю по API биржи."""
+    return (
+        "🤖 *Автоторговля — скоро*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Скоро ты сможешь подключить *API своей биржи* (только спот, только лонг, "
+        "без права вывода средств) — и бот будет торговать сам по своим сигналам: "
+        "тренд, моментум, DCA.\n\n"
+        "🔧 Функция в *активной разработке*.\n\n"
+        "А пока:\n"
+        "• 🧭 *Тренд* и 📈 *Акции* — смотри, что в аптренде;\n"
+        "• 🎯 *Лучшая сделка* — идея прямо сейчас;\n"
+        "• торгуй на бирже сам по диплинкам из карточек.\n\n"
+        "🔒 Ключи — только с правом спот-торговли, без вывода средств. "
+        "Не инвест-совет."
+    )
+
+
+async def _send_autotrade_coming_soon(message: Message) -> None:
+    text = _autotrade_coming_soon_text()
+    try:
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await message.answer(text)
+
+
 @dp.message(Command("close"))
 async def cmd_close_position(message: Message):
-    """Close a specific position manually: /close BTC"""
-    try:
-        from signal_trader import get_signal_trader_status, fetch_current_prices, _parse_trade_meta
-        from session_manager import session_manager
-
-        args = message.text.split(maxsplit=1)
-        if len(args) < 2:
-            await message.answer("Использование: `/close <SYMBOL>`\nПример: `/close BTC`", parse_mode="Markdown")
-            return
-
-        symbol = args[1].strip().upper()
-
-        signals = await get_backtest_signals()
-        open_positions = [s for s in signals if s.get("status") == "open" and s.get("symbol", "").upper() == symbol]
-
-        if not open_positions:
-            open_list = [s.get("symbol", "") for s in signals if s.get("status") == "open"]
-            await message.answer(
-                f"Нет открытой позиции по {symbol}.\n"
-                f"Открытые: {', '.join(open_list) if open_list else 'нет'}",
-                parse_mode="Markdown"
-            )
-            return
-
-        position = open_positions[0]
-        prices = await fetch_current_prices([symbol])
-        current_price = float(prices.get(symbol) or 0.0)
-
-        if current_price <= 0:
-            await message.answer(f"Не удалось получить цену для {symbol}")
-            return
-
-        meta = _parse_trade_meta(position)
-        direction = position.get("direction", "")
-        entry_price = float(position.get("entry_price") or 0.0)
-        pnl_pct = ((current_price - entry_price) / entry_price * 100) if direction == "BUY" and entry_price > 0 else ((entry_price - current_price) / entry_price * 100) if direction == "SELL" and entry_price > 0 else 0
-
-        result = await close_backtest_signal(position["id"], current_price, reason=f"Manual close by user")
-        if not result:
-            await message.answer("Ошибка при закрытии позиции")
-            return
-
-        session_manager.record_trade({
-            "symbol": symbol,
-            "direction": direction,
-            "entry_price": entry_price,
-            "exit_price": current_price,
-            "pnl": float(result.get("pnl") or 0.0),
-            "pnl_pct": float(result.get("pnl_pct") or 0.0),
-            "reason": "Manual close by user",
-        })
-        session_manager.update_capital(float(result.get("new_capital") or 0.0))
-
-        config = await get_backtest_config()
-        await update_backtest_capital(float(result.get("new_capital") or 0.0))
-
-        emoji = "🟢" if float(result.get("pnl") or 0) >= 0 else "🔴"
-        await message.answer(
-            f"{emoji} *ЗАКРЫТО ВРУЧНУЮ*\n"
-            f"*{symbol}* {direction}\n"
-            f"Вход: `${entry_price:,.2f}`\n"
-            f"Выход: `${current_price:,.2f}`\n"
-            f"PnL: `{float(result.get('pnl') or 0):+,.2f}` (`{pnl_pct:+.1f}%`)\n"
-            f"Баланс: `${float(result.get('new_capital') or 0):,.2f}`",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"close_position error: {e}", exc_info=True)
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — ручное закрытие paper-позиции. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("stop"))
 async def cmd_stop_autotrade(message: Message):
-    """Stop the autotrader: /stop"""
-    try:
-        from database import update_backtest_enabled
-
-        await update_backtest_enabled(False)
-        await message.answer("🛑 *Автотрейдинг ОСТАНОВЛЕН*\n\nБот больше не будет открывать новые позиции.\nВключить: `/starttrade`", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"stop_autotrade error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — стоп автотрейда. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("starttrade"))
 async def cmd_start_autotrade(message: Message):
-    """Start the autotrader: /starttrade"""
-    try:
-        from database import update_backtest_enabled
-
-        await update_backtest_enabled(True)
-        await message.answer("✅ *Автотрейдинг ЗАПУЩЕН*\n\nБот продолжит торговать.", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"start_autotrade error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — старт автотрейда. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("why"))
 async def cmd_why_position(message: Message):
-    """Explain why a position was opened: /why BTC"""
-    try:
-        from signal_trader import get_signal_trader_status, fetch_current_prices, _parse_trade_meta
-        from database import get_backtest_signals
-
-        args = message.text.split(maxsplit=1)
-        if len(args) < 2:
-            await message.answer("Использование: `/why <SYMBOL>`\nПример: `/why BTC`", parse_mode="Markdown")
-            return
-
-        symbol = args[1].strip().upper()
-
-        signals = await get_backtest_signals()
-        open_positions = [s for s in signals if s.get("status") == "open" and s.get("symbol", "").upper() == symbol]
-
-        if not open_positions:
-            await message.answer(f"Нет открытой позиции по {symbol}")
-            return
-
-        position = open_positions[0]
-        meta = _parse_trade_meta(position)
-        direction = position.get("direction", "")
-        entry_price = float(position.get("entry_price") or 0.0)
-        target = float(meta.get("target") or 0.0)
-        stop = float(meta.get("stop") or 0.0)
-        support = meta.get("support", 0)
-        consensus = meta.get("consensus_verdict", "N/A")
-        signal_dir = meta.get("signal_direction", "N/A")
-
-        prices = await fetch_current_prices([symbol])
-        current_price = float(prices.get(symbol) or 0.0)
-        pnl_pct = ((current_price - entry_price) / entry_price * 100) if direction == "BUY" and entry_price > 0 else ((entry_price - current_price) / entry_price * 100) if direction == "SELL" and entry_price > 0 else 0
-
-        emoji = "🟢" if pnl_pct >= 0 else "🔴"
-        await message.answer(
-            f"{emoji} *ПОЧЕМУ {symbol}*\n\n"
-            f"*Направление:* {direction}\n"
-            f"*Вход:* `${entry_price:,.2f}`\n"
-            f"*Текущая:* `${current_price:,.2f}` (`{pnl_pct:+.1f}%`)\n"
-            f"*Тейк:* `${target:,.2f}`\n"
-            f"*Стоп:* `${stop:,.2f}`\n\n"
-            f"*Причина открытия:*\n"
-            f"• Digest consensus: `{consensus}`\n"
-            f"• Поддержка: `{support}` digest(ов)\n"
-            f"• Сигнал рынка: `{signal_dir}`\n"
-            f"• Источник: auto_trader",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"why_position error: {e}")
-        await message.answer(f"Ошибка: {e}")
+    """[в разработке] Раньше — объяснение paper-позиции. Теперь заглушка."""
+    await _send_autotrade_coming_soon(message)
 
 
 @dp.message(Command("eval"))
@@ -2876,7 +2755,7 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🧪 Скринер", callback_data="cmd:screener"),
-            InlineKeyboardButton(text="📡 Сигнал трейдер", callback_data="cmd:signalstatus"),
+            InlineKeyboardButton(text="🤖 Автоторговля", callback_data="cmd:signalstatus"),
         ],
         [
             InlineKeyboardButton(text="💰 Статус", callback_data="cmd:status"),
@@ -2910,79 +2789,53 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
 
 
 async def _send_bot_guide(chat_id: int) -> None:
+    """Полный гид по командам — спот/лонг, без автотрейда (в разработке)."""
     text = (
-        "📘 *ПОЛНАЯ ИНСТРУКЦИЯ: Dialectic Edge*\n"
-        "═" * 35 + "\n\n"
+        "📘 *DIALECTIC EDGE — ГИД ПО КОМАНДАМ*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🧠 *Что это?*\n"
-        "AI-аналитик рынков с автотрейдингом. 4 нейросети спорят, вырабатывают вердикт и торгуют.\n"
-        "10 элитных модулей: режим рынка, киты, корреляции, RSI, макро, волатильность и др.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📌 *1. НАЧАЛО РАБОТЫ*\n"
-        "• `/profile` — Настрой риск-профиль (сделай ПЕРВЫМ!)\n"
-        "  Выбери: консерватор / умеренный / агрессивный\n"
-        "  Горизонт: скальпинг / свинг / инвест\n"
-        "  Рынок: крипта / акции / всё\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📊 *2. АНАЛИЗ И ДАЙДЖЕСТЫ*\n"
-        "• `/daily` — Главный отчёт. Новости + цифры + вердикт + торговый план.\n"
-        "  Придёт кратко в чат + полный отчёт файлом .txt\n"
-        "• `/daily force` — Принудительный новый прогон (игнорирует кэш)\n"
-        "• `/analyze <текст>` — Разбор конкретной новости/идеи\n"
-        "  Пример: `/analyze Иран закрыл Ормуз`\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📡 *3. РЫНКИ И СИГНАЛЫ*\n"
-        "• `/markets` — Живые цены + MARKET SIGNALS + кнопки управления\n"
-        "  Можно включить/выключить пуши сигналов\n"
-        "• `/status` — Короткий статус рынков (удобно закрепить)\n"
-        "• `/screener` — 🆕 Сканер аномалий! Сканирует ТОП-20 монет:\n"
-        "  Ищет: Volume Spike, RSI экстремумы, аномальный Funding\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💰 *4. АВТОТРЕЙДИНГ (Paper Trading)*\n"
-        "• `/signalstatus` — Полная панель автотрейдера:\n"
-        "  Баланс, открытые позиции, кандидаты, PnL, сессия\n"
-        "• `/starttrade` — Запустить автотрейдинг\n"
-        "• `/stop` — Остановить автотрейдинг (бот перестанет открывать)\n"
-        "• `/close <ТИКЕР>` — Закрыть позицию вручную\n"
-        "  Пример: `/close BTC`\n"
-        "• `/why <ТИКЕР>` — Почему бот открыл эту позицию?\n"
-        "  Пример: `/why ETH` — покажет digest consensus, сигнал, R/R\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🧪 *5. ВАЛИДАЦИЯ И БЕКТЕСТ*\n"
-        "• `/eval` — 🆕 Запуск валидации сигналов!\n"
-        "  Бот берёт прошлые сигналы → проверяет по реальным свечам\n"
-        "  → Считает Winrate, Profit Factor, Total PnL\n"
-        "• `/backtest` — Панель бэктеста (вкл/выкл, история, капитал)\n"
-        "• `/backtest_toggle` — Вкл/выкл бэктест\n"
-        "• `/backtest_capital 500` — Установить капитал\n"
-        "• `/backtest_clear` — Очистить сделки и сбросить капитал\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📈 *6. СТАТИСТИКА*\n"
-        "• `/trackrecord` — Вся статистика точности прогнозов\n"
-        "• `/trackrecordglobal` — Прогнозы Global\n"
-        "• `/trackrecordrussia` — Прогнозы Россия Edge 🇷🇺\n"
-        "• `/weeklyreport` — Отчёт за неделю\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📦 *7. ПОРТФЕЛЬ*\n"
-        "• `/portfolio` — Твои позиции (через инлайн-кнопки)\n"
-        "  Добавить / Удалить / Обновить цены\n"
-        "• `/add BTC 0.5 65000` — Добавить позицию вручную\n"
-        "• `/remove BTC` — Удалить позицию\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔔 *8. ПОДПИСКИ*\n"
-        "• `/subscribe` — Настроить авторассылку дайджеста\n"
-        "  Выбери время: 06:00 / 08:00 / 10:00 / 12:00 UTC\n"
-        "  Или отключить\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🛡️ *КАК РАБОТАЕТ ЗАЩИТА*\n"
-        "• Режим рынка: бот определяет тренд/боковик/волатильность\n"
-        "• Киты: мониторит крупные сделки на Binance\n"
-        "• Корреляции: не открывает BTC+ETH одновременно (риск x2)\n"
-        "• Event Defense: стоп при новостях типа CPI, ФРС, Война\n"
-        "• Kelly Criterion: размер позиции по статистике\n"
-        "• ATR-стопы: стопы по реальной волатильности, не фиксированные\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚠️ _Это аналитика и симуляция. Не финансовый совет._\n"
-        "Рынок непредсказуем. Агенты могут ошибаться."
+        "AI-аналитик рынков. Команда агентов (🐂 Bull · 🐻 Bear · 🔍 Verifier · "
+        "⚖️ Synth) спорит на живых данных и выдаёт понятный план: что происходит "
+        "и куда может пойти рынок. Только спот, только лонг — без плеча и шортов.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚀 *С ЧЕГО НАЧАТЬ*\n"
+        "• `/profile` — настрой риск-профиль и горизонт. Сделай *первым*: агенты "
+        "подстроят анализ под тебя.\n"
+        "• `🆕 Новичок` / `/newbie` — гид + PDF и правила выживания первой недели.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 *АНАЛИЗ РЫНКА*\n"
+        "• `/daily` — главный прогноз: дебаты агентов → вердикт + график + куда "
+        "смотреть. Что делать: читай вывод и направление, дальше решай сам.\n"
+        "• `🎯 Лучшая сделка` / `/signal` — лучшая идея прямо сейчас (спот/лонг).\n"
+        "• `🏛 Рынки` / `/markets` — живые цены + сигналы.\n"
+        "• `📡 Скринер` / `/screener` — сканер аномалий по топ-монетам "
+        "(всплеск объёма, перегретость).\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🧭 *ТРЕНД И МОМЕНТУМ*\n"
+        "• `🧭 Тренд` / `/trend` — крипта в аптренде (по SMA50). Что делать: "
+        "монеты выше линии — в восходящем тренде, ниже — слабые. Кнопки графиков "
+        "и бирж прямо в карточке.\n"
+        "• `📈 Акции` / `/stocks` — топ акций по силе (6-мес моментум).\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💰 *ИНСТРУМЕНТЫ*\n"
+        "• `💰 DCA` / `/dca` — план усреднения: как заходить частями, а не всё "
+        "сразу. Что делать: следуй шагам плана по своему депозиту.\n"
+        "• `🧭 P2P` / `/p2p` — сканер P2P-спреда между площадками.\n"
+        "• `🔔 Алерты` / `/alerts` — пуш при смене режима тренда. `on` / `off`.\n"
+        "• `🧪 Бэктест` / `/backtest` — прогон стратегии на истории.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📈 *СТАТИСТИКА*\n"
+        "• `📊 Трек-рекорд` / `/trackrecord` — точность прошлых прогнозов.\n"
+        "• `💎 VIP` / `💎 Что я умею` — про премиум и возможности бота.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 *АВТОТОРГОВЛЯ — СКОРО*\n"
+        "Скоро: подключаешь API биржи (только спот, только лонг, без права "
+        "вывода средств) — и бот торгует сам по своим сигналам. Сейчас функция "
+        "*в активной разработке*. Пока — смотри сигналы и торгуй на бирже сам "
+        "по диплинкам из карточек.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ _Это аналитика, не финансовый совет. Рынок непредсказуем, "
+        "агенты могут ошибаться. Только спот/лонг._"
     )
     await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=_main_menu_kb())
 
@@ -3036,26 +2889,13 @@ async def _send_detailed_guide(chat_id: int) -> None:
     part2 = (
         "📖 *ПОДРОБНАЯ ИНСТРУКЦИЯ (ЧАСТЬ 2/2)*\n"
         + "═" * 30 + "\n\n"
-        "💰 *АВТОТРЕЙДИНГ*\n\n"
-        "📊 `/signalstatus` — *Панель трейдера*\n"
-        "👶 Как 5-летнему: \"Приборная доска машины\"\n"
-        "Показывает:\n"
-        "• Сколько денег осталось 💵\n"
-        "• Какие позиции открыты (что купил)\n"
-        "• Какие кандидаты на покупку\n"
-        "• Прибыль или убыток 📈📉\n\n"
-        "▶️ `/starttrade` — *Включить автопилот*\n"
-        "👶 Как 5-летнему: \"Бот, торгуй за меня!\"\n"
-        "Бот сам открывает и закрывает сделки по своей стратегии.\n\n"
-        "⏸️ `/stop` — *Выключить автопилот*\n"
-        "👶 Как 5-летнему: \"Стоп, я сам!\"\n"
-        "Бот перестаёт открывать новые сделки. Старые остаются.\n\n"
-        "❌ `/close BTC` — *Закрыть вручную*\n"
-        "👶 Как 5-летнему: \"Продай это прямо сейчас!\"\n"
-        "Бот закроет позицию по текущей цене, даже если не время.\n\n"
-        "❓ `/why BTC` — *Почему купил?*\n"
-        "👶 Как 5-летнему: \"Объясни, зачем ты это купил?\"\n"
-        "Бот расскажет: \"Я купил BTC потому что: тренд вверх, киты покупают, RSI низкий\"\n\n"
+        "🤖 *АВТОТОРГОВЛЯ — СКОРО*\n\n"
+        "👶 Как 5-летнему: \"Скоро бот сможет сам нажимать кнопки на бирже\"\n"
+        "Скоро ты подключишь *API своей биржи* (только спот, только лонг, без "
+        "права вывода денег), и бот будет торговать сам по своим сигналам — "
+        "тренд, моментум, DCA.\n"
+        "🔧 Сейчас функция *в разработке*. Пока — смотри сигналы (🧭 Тренд, "
+        "📈 Акции, 🎯 Лучшая сделка) и торгуй на бирже сам по диплинкам.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🛡️ *ЗАЩИТНЫЕ СИСТЕМЫ (10 МОДУЛЕЙ)*\n\n"
         "🌊 *1. Режим рынка (Regime Detector)*\n"
@@ -3334,7 +3174,7 @@ async def cmd_start(message: Message):
             InlineKeyboardButton(text="🔔 Алерты",             callback_data="cmd:alerts"),
         ],
         [
-            InlineKeyboardButton(text="📡 Сигнал-статус",      callback_data="cmd:signalstatus"),
+            InlineKeyboardButton(text="🤖 Автоторговля",       callback_data="cmd:signalstatus"),
             InlineKeyboardButton(text="🧪 Бэктест",            callback_data="cmd:backtest"),
         ],
         [
@@ -6580,8 +6420,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="p2p", description="🧭 P2P arbitrage scanner"),
         BotCommand(command="status", description="Краткий статус"),
         BotCommand(command="tt", description="🧪 Тест"),
-        BotCommand(command="signalstatus", description="📊 Статус трейдера"),
-        BotCommand(command="eval", description="📈 Валидация сигналов"),
+        BotCommand(command="signalstatus", description="🤖 Автоторговля (скоро)"),
         BotCommand(command="screener", description="📡 Сканер аномалий"),
         BotCommand(command="stocks", description="📈 Акции: тренд + моментум"),
         BotCommand(command="trend", description="🧭 Крипто-тренд (спот/лонг)"),
@@ -6589,15 +6428,9 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="alerts", description="🔔 Автоалерты смены тренда"),
         BotCommand(command="newbie", description="🆕 Гид для новичков (PDF + правила)"),
         BotCommand(command="instruction", description="📖 Инструкция для чайников"),
-        BotCommand(command="close", description="Закрыть позицию"),
-        BotCommand(command="why", description="Почему открыта позиция"),
-        BotCommand(command="stop", description="Остановить автотрейд"),
-        BotCommand(command="starttrade", description="Запустить автотрейд"),
         BotCommand(command="russia", description="Анализ РФ 🇷🇺"),
         BotCommand(command="profile", description="Настройки профиля"),
         BotCommand(command="subscribe", description="Авторассылка"),
-        BotCommand(command="autotrade_status", description="🎯 Status: PnL, win-rate, Kelly"),
-        BotCommand(command="audit", description="📊 AI-аудит закрытых сделок"),
         BotCommand(command="usage", description="🔢 Расход токенов"),
     ]
     await bot.set_my_commands(commands)
