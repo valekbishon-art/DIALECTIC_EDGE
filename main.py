@@ -2619,6 +2619,26 @@ async def _build_halal_card(kind: str, sma: int = 50):
     return res.text, _halal_card_kb(kind, res.picks)
 
 
+async def _send_halal_card(message: Message, text: str, kb):
+    """Шлёт карточку с inline-кнопками, переживая сбой Markdown-парсинга.
+
+    Важно: в тексте карточки есть deeplink-URL с '_' (BTC_USDT) — на legacy
+    Markdown это иногда даёт «can't parse entities» и раньше уводило в fallback
+    БЕЗ клавиатуры (кнопки пропадали). Теперь fallback всегда сохраняет kb.
+    """
+    try:
+        return await message.answer(
+            text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb
+        )
+    except Exception:  # noqa: BLE001 — Markdown подвёл, шлём без разметки, но С кнопками
+        try:
+            return await message.answer(
+                text, disable_web_page_preview=True, reply_markup=kb
+            )
+        except Exception:  # noqa: BLE001 — крайний случай: хотя бы текст
+            return await message.answer(text, reply_markup=kb)
+
+
 @dp.message(Command("stocks"))
 async def cmd_stocks(message: Message):
     """Скринер акций: курируемый вотчлист + тренд (SMA) и моментум. /stocks [sma]"""
@@ -2639,10 +2659,7 @@ async def cmd_stocks(message: Message):
         await wait.delete()
     except Exception:  # noqa: BLE001
         pass
-    try:
-        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
+    await _send_halal_card(message, text, kb)
 
 
 @dp.message(Command("trend"))
@@ -2665,10 +2682,7 @@ async def cmd_trend(message: Message):
         await wait.delete()
     except Exception:  # noqa: BLE001
         pass
-    try:
-        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb)
-    except Exception:  # noqa: BLE001
-        await message.answer(text)
+    await _send_halal_card(message, text, kb)
 
 
 @dp.message(Command("dca"))
@@ -2759,12 +2773,22 @@ async def _cb_halal_refresh(cb: CallbackQuery):
         pass
     try:
         text, kb = await _build_halal_card(kind, 50)
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Не удалось обновить, попробуй ещё раз", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    # Markdown может упасть на deeplink-URL — тогда правим без разметки, но С кнопками.
+    try:
         await cb.message.edit_text(
             text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb
         )
     except Exception:  # noqa: BLE001
         try:
-            await cb.answer("Не удалось обновить, попробуй ещё раз", show_alert=False)
+            await cb.message.edit_text(
+                text, disable_web_page_preview=True, reply_markup=kb
+            )
         except Exception:  # noqa: BLE001
             pass
 
@@ -2800,11 +2824,9 @@ async def _cb_halal_nav(cb: CallbackQuery):
         pass
     try:
         text, kb = await _build_halal_card(kind, 50)
-        await cb.message.answer(
-            text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb
-        )
     except Exception:  # noqa: BLE001
-        pass
+        return
+    await _send_halal_card(cb.message, text, kb)
 
 
 @dp.message(Command("instruction"))
