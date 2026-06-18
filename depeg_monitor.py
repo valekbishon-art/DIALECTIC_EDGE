@@ -84,8 +84,10 @@ def get_interval_seconds() -> int:
 
 
 def feature_enabled() -> bool:
-    """Авто-пуш в фоне. По умолчанию ВЫКЛ (команда /depeg работает всегда)."""
-    return os.getenv("FEATURE_DEPEG_ALERT", "0").strip() in ("1", "true", "True", "yes")
+    """Авто-пуш в фоне. По умолчанию ВКЛ (депеги редки → спама нет; первый
+    прогон только сохраняет baseline). Выключить: FEATURE_DEPEG_ALERT=0."""
+    return os.getenv("FEATURE_DEPEG_ALERT", "1").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 # --- Получение цен ----------------------------------------------------------

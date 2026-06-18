@@ -58,7 +58,21 @@ class TestTexts(unittest.TestCase):
         self.assertGreater(dm.get_entry_threshold(), 0.9)
         self.assertLess(dm.get_entry_threshold(), 1.0)
         self.assertGreaterEqual(dm.get_interval_seconds(), 60)
-        self.assertFalse(dm.feature_enabled())  # по умолчанию выкл
+        self.assertTrue(dm.feature_enabled())  # авто-алерт ВКЛ по умолчанию
+
+    def test_feature_can_be_disabled(self):
+        import os
+        old = os.environ.get("FEATURE_DEPEG_ALERT")
+        try:
+            os.environ["FEATURE_DEPEG_ALERT"] = "0"
+            self.assertFalse(dm.feature_enabled())
+            os.environ["FEATURE_DEPEG_ALERT"] = "on"
+            self.assertTrue(dm.feature_enabled())
+        finally:
+            if old is None:
+                os.environ.pop("FEATURE_DEPEG_ALERT", None)
+            else:
+                os.environ["FEATURE_DEPEG_ALERT"] = old
 
 
 class _FakeBot:
