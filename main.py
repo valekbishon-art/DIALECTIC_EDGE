@@ -2940,6 +2940,33 @@ async def cmd_edgeplan(message: Message):
         await message.answer(text, disable_web_page_preview=True, reply_markup=kb)
 
 
+@dp.message(Command("depeg"))
+async def cmd_depeg(message: Message):
+    """Монитор депега стейблкоинов: /depeg — текущие цены USDC/TUSD/USDP/FDUSD
+    и есть ли сейчас возможность «возврат к $1». Спот, без шортов/плеча."""
+    try:
+        import depeg_monitor
+        prices = await depeg_monitor.fetch_prices()
+        opps = depeg_monitor.detect_opportunities(prices)
+        text = depeg_monitor.format_status(prices, opps)
+    except Exception as e:  # noqa: BLE001 — сеть/данные подвели
+        logging.warning("cmd_depeg failed: %s", e)
+        await message.answer(
+            "⚠️ Не смог получить свежие цены стейблкоинов. "
+            "Попробуй ещё раз через минуту."
+        )
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❓ Что делать с этим", callback_data="explain:depeg"),
+    ]])
+    try:
+        await message.answer(text, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=kb)
+    except Exception:  # noqa: BLE001 — Markdown подвёл → плоский текст
+        await message.answer(text, disable_web_page_preview=True, reply_markup=kb)
+
+
 @dp.message(Command("instruction"))
 async def cmd_instruction(message: Message):
     """Полнейшая инструкция как для пятилетнего: /instruction"""
@@ -3310,6 +3337,7 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "pump": cmd_pump,
         "backtest": cmd_backtest,
         "edgeplan": cmd_edgeplan,
+        "depeg": cmd_depeg,
         "guide": lambda m: _send_bot_guide(m.chat.id),
         "instruction": lambda m: _send_detailed_guide(m.chat.id),
         "newbie": lambda m: _send_newbie_guide(m.chat.id),

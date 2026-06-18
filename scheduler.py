@@ -75,6 +75,20 @@ try:
 except ImportError:
     PUMP_ALERT_ENABLED = False
 
+# Фича ДЕПЕГ: алерт о депеге фиат-обеспеченных стейблов (возможен возврат к $1).
+# Импорт через try/except — старый код без depeg_monitor.py продолжает стартовать.
+# Подписчиков берём из спот-автоалертов (get_halal_alert_subscribers).
+try:
+    from depeg_monitor import (
+        DepegAlertSystem,
+        feature_enabled as depeg_feature_enabled,
+        get_interval_seconds as depeg_interval_seconds,
+    )
+    from database import get_halal_alert_subscribers  # подписчики спот-алертов
+    DEPEG_ALERT_ENABLED = True
+except ImportError:
+    DEPEG_ALERT_ENABLED = False
+
 # Post-mortem loop (24h-later анализ дайджеста).  Импорт через try/except,
 # чтобы старый код, без `core/post_mortem.py`, продолжал стартовать.
 try:
@@ -385,6 +399,16 @@ class Scheduler:
             except Exception as e:
                 logger.warning(f"Pump alert init error: {e}")
 
+        # Фича ДЕПЕГ: авто-алерт о депеге стейблов. По умолчанию ВЫКЛ
+        # (FEATURE_DEPEG_ALERT=1). Команда /depeg работает всегда.
+        self._depeg_alert = None
+        if DEPEG_ALERT_ENABLED and depeg_feature_enabled():
+            try:
+                self._depeg_alert = DepegAlertSystem(self.bot)
+                logger.info("✅ Депег-алерт стейблов инициализирован")
+            except Exception as e:
+                logger.warning(f"Depeg alert init error: {e}")
+
     async def start(self):
         self._running = True
         logger.info("⏰ Scheduler запущен")
@@ -405,6 +429,12 @@ class Scheduler:
         # Фича ПАМП: фоновый авто-цикл (только если FEATURE_PUMP_SCANNER=1).
         if PUMP_ALERT_ENABLED and self._pump_alert is not None:
             tasks.append(self._pump_scanner_loop())
+
+        # Фича ДЕПЕГ: фоновый авто-алерт (только если FEATURE_DEPEG_ALERT=1).
+        if DEPEG_ALERT_ENABLED and self._depeg_alert is not None:
+            tasks.append(self._depeg_alert_loop())
+            logger.info("⚖️ Депег-алерт стейблов: loop запущен (interval=%ss)",
+                        depeg_interval_seconds())
 
         if AUTO_TRACKER_ENABLED and self._auto_tracker:
             tasks.append(self._auto_tracker_loop())
@@ -1263,6 +1293,22 @@ class Scheduler:
                 logger.error(f"Halal alert loop error: {e}")
 
             await asyncio.sleep(6 * 3600)  # каждые 6 часов
+
+    async def _depeg_alert_loop(self):
+        """Депег-алерт: проверяет цены стейблов и шлёт алерт при новом депеге.
+        Подписчиков берём из спот-автоалертов (get_halal_alert_subscribers)."""
+        await asyncio.sleep(300)  # warm-up: 5 минут при старте
+        interval = depeg_interval_seconds()
+        while self._running:
+            try:
+                if self._depeg_alert is not None:
+                    subscribers = await get_halal_alert_subscribers()
+                    sent = await self._depeg_alert.check_and_alert(subscribers)
+                    if sent > 0:
+                        logger.info(f"⚖️ Депег-алерты отправлены: {sent}")
+            except Exception as e:
+                logger.error(f"Depeg alert loop error: {e}")
+            await asyncio.sleep(interval)
 
     async def _advisor_portfolio_watcher_loop(self):
         """M2: watcher для виртуального портфеля advisor-планов.
