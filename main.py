@@ -2511,6 +2511,9 @@ def _halal_card_kb(kind: str, picks: list[str]) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🔔 Алерты", callback_data="hsalert"),
         nav,
     ])
+    rows.append([
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data=f"explain:{kind}"),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2529,6 +2532,9 @@ def _pump_card_kb(picks: list[str]) -> InlineKeyboardMarkup:
     rows.append([
         InlineKeyboardButton(text="🔄 Обновить", callback_data="pumpref"),
         InlineKeyboardButton(text="🧭 Тренд", callback_data="hsnav:trend"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data="explain:pump"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2640,10 +2646,14 @@ async def cmd_dca(message: Message):
         text = halal_signals.build_dca_plan(deposit, tranches, days)
     except Exception as e:  # noqa: BLE001
         text = f"⚠️ Не получилось собрать DCA-план: {e}"
+    dca_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data="explain:dca"),
+    ]])
     try:
-        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+        await message.answer(text, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=dca_kb)
     except Exception:  # noqa: BLE001
-        await message.answer(text)
+        await message.answer(text, reply_markup=dca_kb)
 
 
 @dp.message(F.text == PERSISTENT_BTN_STOCKS)
@@ -2791,6 +2801,89 @@ async def _cb_halal_nav(cb: CallbackQuery):
     except Exception:  # noqa: BLE001
         return
     await _send_halal_card(cb.message, text, kb)
+
+
+@dp.callback_query(F.data.startswith("explain:"))
+async def _cb_explain(cb: CallbackQuery):
+    """Кнопка «❓ Что это / Как читать» — шлёт простое объяснение фичи.
+
+    Новое сообщение (не редактируем карточку), чтобы юзер видел и карточку,
+    и пояснение рядом. Ключ после двоеточия: trend|stocks|pump|dca|backtest|
+    debate|menu.
+    """
+    import explainers
+    key = (cb.data or "explain:menu").split(":", 1)[1] or "menu"
+    try:
+        await cb.answer()
+    except Exception:  # noqa: BLE001
+        pass
+    text = explainers.get(key)
+    try:
+        await bot.send_message(
+            cb.message.chat.id, text,
+            parse_mode="Markdown", disable_web_page_preview=True,
+        )
+    except Exception:  # noqa: BLE001 — Markdown подвёл → шлём плоским текстом
+        await bot.send_message(cb.message.chat.id, text, disable_web_page_preview=True)
+
+
+def _backtest_caption() -> str:
+    """Короткая подпись к графику бэктеста из docs/backtest_summary.json."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(__file__).resolve().parent / "docs" / "backtest_summary.json"
+    try:
+        m = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return (
+            "*📊 Бэктест спот-стратегии*\n\n"
+            "Дисциплинированный спот-тренд: держим крупные монеты в аптренде, "
+            "уходим в стейбл в медвежке. Только лонг, без плеча и шортов.\n\n"
+            "_Подробности — кнопка ❓ ниже._"
+        )
+    pc = lambda x: f"{x * 100:+.1f}%"
+    return (
+        "*📊 Бэктест спот-стратегии* (история "
+        f"{m.get('start_day','?')} → {m.get('end_day','?')}, ~{m.get('years',0):.1f} г.)\n"
+        "\n"
+        f"Юниверс: {m.get('universe','BTC, ETH, SOL, BNB')}. Только спот/лонг, без плеча и шортов.\n"
+        "\n"
+        f"• 🟢 Стратегия: *{pc(m.get('strat_total',0))}*, просадка {pc(m.get('strat_mdd',0))}, "
+        f"Sharpe {m.get('strat_sharpe',0):.2f}\n"
+        f"• 🟠 BTC «держать»: {pc(m.get('btc_total',0))}, просадка {pc(m.get('btc_mdd',0))}\n"
+        f"• 🔴 Корзина «держать»: {pc(m.get('basket_total',0))}, просадка {pc(m.get('basket_mdd',0))}\n"
+        "\n"
+        f"Главное: обгоняет «просто держать корзину» и по доходности, и по просадке, "
+        f"а в рынке только {pc(m.get('exposure',0))} времени — остальное в стейбле.\n"
+        "\n"
+        "_История, не гарантия будущего. Не инвестсовет._"
+    )
+
+
+@dp.message(Command("backtest"))
+async def cmd_backtest(message: Message):
+    """Бэктест спот-стратегии на реальной истории: /backtest"""
+    from pathlib import Path as _Path
+    png = _Path(__file__).resolve().parent / "docs" / "backtest_equity.png"
+    caption = _backtest_caption()
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data="explain:backtest"),
+    ]])
+    if png.exists():
+        try:
+            await bot.send_photo(
+                message.chat.id,
+                photo=BufferedInputFile(png.read_bytes(), filename="backtest.png"),
+                caption=caption, parse_mode="Markdown", reply_markup=kb,
+            )
+            return
+        except Exception:  # noqa: BLE001 — например подпись слишком длинная
+            pass
+    try:
+        await message.answer(caption, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=kb)
+    except Exception:  # noqa: BLE001
+        await message.answer(caption, reply_markup=kb)
 
 
 @dp.message(Command("instruction"))
@@ -6841,10 +6934,15 @@ def backtest_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-@dp.message(Command("backtest"))
+@dp.message(Command("papertrader"))
 @require_vip
-async def cmd_backtest(message: Message):
-    """Show backtest results with nice formatting and keyboard."""
+async def cmd_papertrader(message: Message):
+    """Бумажный трейдер (paper-trading), админ/диагностика: /papertrader.
+
+    Раньше висел на /backtest, но /backtest теперь = исторический бэктест
+    спот-стратегии (cmd_backtest выше). Эту фичу убрали из пользовательского
+    меню (спот-онли, без автоторговли), но команду оставили для диагностики.
+    """
     signals = await get_backtest_signals()
     stats = await get_backtest_stats()
     config = await get_backtest_config()
