@@ -1,37 +1,25 @@
 """
-halal_edge_backtest.py — честный «халяльный EDGE» спот-стратегии.
+halal_edge_backtest.py — честный бэктест халяльного EDGE на ПОЛНОМ цикле.
 
-Тут мы добавляем РЕАЛЬНОЕ преимущество поверх простого тренда, оставаясь
-строго в рамках (только спот, только лонг, без плеча, без шортов, без
-деривативов). Источники преимущества:
+Сигнальная логика НЕ дублируется здесь — она в `halal_edge.py` (функция
+`edge_signal`). Это и есть честность: бэктест гоняет ровно ту же функцию,
+что бот зовёт в `/edge` на сегодняшнем баре. Что советуем — то и тестим.
 
-  1) DUAL MOMENTUM (Antonacci):
-     • absolute momentum — заходим в монету ТОЛЬКО если её собственный тренд
-       вверх (цена > SMA) И импульс за период > 0; иначе — стейбл.
-     • relative momentum — из прошедших фильтр держим ТОП-K самых сильных по
-       импульсу. Импульс = среднее доходностей за 30/90/180 дней.
-  2) VOL TARGETING — размер крипто-позиции масштабируем обратно недавней
-     волатильности портфеля (цель ~целевая годовая vol), но НИКОГДА не выше
-     100% (без плеча). В шторм — сидим меньше, в спокойный тренд — полнее.
-  3) INVERSE-VOL веса внутри корзины — спокойные монеты получают больше веса.
-  4) КРАШ-ФИЛЬТР по BTC — если BTC < SMA200, весь капитал в стейбл.
-  5) Шире юниверс ликвидных монет — меньше риска одной монеты.
+EDGE (строго спот / лонг / без плеча / без шортов):
+  • Dual momentum (тренд монеты вверх + импульс>0, держим ТОП-K сильнейших).
+  • Inverse-vol веса + vol targeting портфеля (потолок 100%, без плеча).
+  • Краш-фильтр: BTC < SMA200 → весь капитал в стейбл.
 
-Сравниваем ЧЕСТНО на одном периоде:
-  • Baseline  — простой спот-тренд (текущая логика, CORE4 + BTC-режим).
-  • EDGE      — стратегия из этого файла.
+Период — ПОЛНЫЙ цикл с 2021-01: эйфория быка 2021 → обвал 2022 (BTC −77%)
+→ восстановление 2023–2025. Это честный тест «выживает ли дисциплина».
+
+Сравниваем на одном периоде:
+  • EDGE      — стратегия (halal_edge.edge_signal).
+  • Baseline  — простой спот-тренд (CORE4 + BTC-режим, текущая логика).
   • BTC HODL  — купи и держи BTC.
   • Корзина   — купи и держи весь юниверс равным весом.
 
-Период — длинный, ВКЛЮЧАЯ медвежий 2022 (BTC −77%): это главный тест, умеет
-ли дисциплина реально защищать капитал.
-
-Антиоверфит: помимо одной «дефолтной» конфигурации прогоняем СЕТКУ
-параметров и печатаем медиану/разброс метрик — чтобы цифра была не одной
-удачной точкой, а устойчивым свойством.
-
-Данные: дневные close с Yahoo (без ключа). Будущих данных нет — сигнал на
-день T считается по ценам ≤ T, доходность берётся T→T+1.
+Антиоверфит: сетка 27 конфигураций + медиана/разброс метрик.
 
 Запуск:  python research/halal_edge_backtest.py
 Выход:   docs/BACKTEST_RESULTS.md, docs/backtest_equity.png,
@@ -40,104 +28,35 @@ halal_edge_backtest.py — честный «халяльный EDGE» спот-�
 from __future__ import annotations
 
 import json
-import math
 import statistics
-import urllib.request
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 DOCS = ROOT / "docs"
 
-# Широкий, но устойчивый юниверс ликвидных крупных монет с историей с ~2021.
-UNIVERSE = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "AVAX", "LINK", "DOT", "LTC"]
-# Подмножество "ядра" для baseline (текущая логика бота).
-CORE4 = ["BTC", "ETH", "SOL", "BNB"]
-
-RANGE = "5y"            # ловим медвежий 2022
-FEE = 0.001            # 0.1% на оборот
-SMA_BTC = 200          # краш-фильтр режима всего рынка
-
-# ── Дефолтная конфигурация EDGE (выбрана как устойчивая по сетке) ──
-DEFAULT = dict(
-    sma_trend=100,                 # абсолютный тренд по монете
-    mom_lb=(30, 90, 180),          # окна импульса (дни)
-    top_k=4,                       # сколько монет держим
-    vol_lb=30,                     # окно оценки волатильности
-    vol_target_ann=0.50,           # целевая годовая волатильность портфеля
-    rebal=7,                       # ребаланс раз в неделю
+from halal_edge import (  # noqa: E402
+    UNIVERSE, CORE4, FEE, SMA_BTC, DEFAULT_CFG,
+    fetch, sma, max_drawdown, sharpe, edge_signal, max_lookback,
 )
 
-_UA = {"User-Agent": "Mozilla/5.0"}
-_YH = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}-USD?range={rng}&interval=1d"
-
-
-# ───────────────────────── helpers ─────────────────────────
-def fetch(sym: str) -> dict[str, float]:
-    url = _YH.format(sym=sym, rng=RANGE)
-    req = urllib.request.Request(url, headers=_UA)
-    raw = urllib.request.urlopen(req, timeout=30).read()
-    res = json.loads(raw)["chart"]["result"][0]
-    ts = res["timestamp"]
-    closes = res["indicators"]["quote"][0]["close"]
-    out: dict[str, float] = {}
-    for t, c in zip(ts, closes):
-        if c is None:
-            continue
-        day = datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%d")
-        out[day] = float(c)
-    return out
-
-
-def sma(vals: list[float], n: int) -> float | None:
-    return statistics.fmean(vals[-n:]) if len(vals) >= n else None
-
-
-def max_drawdown(equity: list[float]) -> float:
-    peak = equity[0]
-    mdd = 0.0
-    for v in equity:
-        peak = max(peak, v)
-        mdd = min(mdd, v / peak - 1.0)
-    return mdd
-
-
-def sharpe(daily: list[float]) -> float:
-    if len(daily) < 2:
-        return 0.0
-    sd = statistics.pstdev(daily)
-    return (statistics.fmean(daily) / sd) * math.sqrt(365) if sd else 0.0
-
-
-def _daily_rets(series: list[float | None], i: int, lb: int) -> list[float]:
-    """Доходности за последние lb дней до индекса i включительно."""
-    out: list[float] = []
-    for j in range(i - lb + 1, i + 1):
-        if j <= 0:
-            continue
-        p0, p1 = series[j - 1], series[j]
-        if p0 and p1:
-            out.append(p1 / p0 - 1.0)
-    return out
-
-
-def _cov(a: list[float], b: list[float]) -> float:
-    n = min(len(a), len(b))
-    if n < 2:
-        return 0.0
-    a, b = a[-n:], b[-n:]
-    ma, mb = statistics.fmean(a), statistics.fmean(b)
-    return sum((a[k] - ma) * (b[k] - mb) for k in range(n)) / (n - 1)
+START_DATE = "2021-01-01"   # полный цикл: бык 2021 → медведь 2022 → 2023-25
+# Тянем с середины 2020, чтобы к 2021-01 был прогрев SMA200/импульса.
+# period1/period2 в 1d — иначе range=max даёт недельные свечи.
+PERIOD1 = int(datetime(2020, 4, 1, tzinfo=timezone.utc).timestamp())
 
 
 # ───────────────────────── data ─────────────────────────
 def load_data() -> tuple[list[str], dict[str, list[float | None]]]:
-    print("Качаю данные с Yahoo…")
+    print("Качаю данные с Yahoo (daily, с 2020-04)…")
     raw: dict[str, dict[str, float]] = {}
     for sym in UNIVERSE:
         try:
-            raw[sym] = fetch(sym)
-            print(f"  {sym}: {len(raw[sym])} дней")
+            raw[sym] = fetch(sym, period1=PERIOD1)
+            d = sorted(raw[sym].keys())
+            print(f"  {sym}: {len(raw[sym])} дней  ({d[0]}→{d[-1]})")
         except Exception as e:  # noqa: BLE001
             print(f"  {sym}: ошибка {e} — пропускаю")
             raw[sym] = {}
@@ -146,19 +65,19 @@ def load_data() -> tuple[list[str], dict[str, list[float | None]]]:
     return days, series
 
 
-# ───────────────────────── EDGE engine ─────────────────────────
-def run_edge(days: list[str], series: dict[str, list[float | None]], cfg: dict) -> dict:
-    coins = list(series.keys())
-    btcser = series["BTC"]
-    sma_trend = cfg["sma_trend"]
-    mom_lb = cfg["mom_lb"]
-    top_k = cfg["top_k"]
-    vol_lb = cfg["vol_lb"]
-    rebal = cfg["rebal"]
-    vt_daily = cfg["vol_target_ann"] / math.sqrt(365)
-    max_lb = max(max(mom_lb), sma_trend, SMA_BTC, vol_lb)
-    start = max_lb + 1
+def _start_index(days: list[str], cfg: dict) -> int:
+    """Первый индекс ≥ START_DATE, но не раньше прогрева (max_lookback)."""
+    warmup = max_lookback(cfg) + 1
+    for k, d in enumerate(days):
+        if d >= START_DATE:
+            return max(k, warmup)
+    return warmup
 
+
+# ───────────────────────── EDGE (через общий сигнал) ─────────────────────────
+def run_edge(days: list[str], series: dict[str, list[float | None]], cfg: dict) -> dict:
+    rebal = cfg["rebal"]
+    start = _start_index(days, cfg)
     eq = [1.0]
     daily: list[float] = []
     prev: dict[str, float] = {}
@@ -168,64 +87,11 @@ def run_edge(days: list[str], series: dict[str, list[float | None]], cfg: dict) 
 
     for i in range(start, len(days) - 1):
         if (i - start) % rebal == 0:                        # день ребаланса
-            bwin = [p for p in btcser[: i + 1] if p is not None]
-            btc_ma = sma(bwin, SMA_BTC)
-            btc_on = btc_ma is not None and btcser[i] and btcser[i] > btc_ma
-
-            chosen: list[tuple[str, float]] = []
-            if btc_on:
-                for s in coins:
-                    win = [p for p in series[s][: i + 1] if p is not None]
-                    if len(win) < max_lb + 1:
-                        continue
-                    ma = sma(win, sma_trend)
-                    pr = series[s][i]
-                    if not (pr and ma and pr > ma):
-                        continue                            # absolute trend
-                    moms = []
-                    for lb in mom_lb:
-                        p0 = series[s][i - lb]
-                        if p0 and pr:
-                            moms.append(pr / p0 - 1.0)
-                    if not moms:
-                        continue
-                    score = statistics.fmean(moms)
-                    if score <= 0:
-                        continue                            # absolute momentum
-                    chosen.append((s, score))
-
-            chosen.sort(key=lambda x: x[1], reverse=True)
-            chosen = chosen[:top_k]
-            held_counts.append(len(chosen))
-
-            if chosen:
-                # inverse-vol веса
-                vols = {}
-                rets_map = {}
-                for s, _ in chosen:
-                    r = _daily_rets(series[s], i, vol_lb)
-                    rets_map[s] = r
-                    sd = statistics.pstdev(r) if len(r) > 1 else 0.0
-                    vols[s] = sd if sd > 1e-9 else 1e-9
-                inv = {s: 1.0 / vols[s] for s, _ in chosen}
-                tot = sum(inv.values())
-                raw_w = {s: inv[s] / tot for s, _ in chosen}
-
-                # vol targeting на уровне портфеля (cap = 1.0, без плеча)
-                port_var = 0.0
-                names = [s for s, _ in chosen]
-                for a in names:
-                    for b in names:
-                        port_var += raw_w[a] * raw_w[b] * _cov(rets_map[a], rets_map[b])
-                port_vol = math.sqrt(port_var) if port_var > 0 else 0.0
-                scale = min(1.0, vt_daily / port_vol) if port_vol > 1e-9 else 1.0
-                weights = {s: raw_w[s] * scale for s in names}
-            else:
-                weights = {}
-
+            sig = edge_signal(series, i, cfg)               # ← ЕДИНЫЙ сигнал
+            weights = dict(sig["weights"])
+            held_counts.append(len(weights))
             allk = set(weights) | set(prev)
-            turnover = sum(abs(weights.get(k, 0.0) - prev.get(k, 0.0)) for k in allk)
-            cost = turnover * FEE
+            cost = sum(abs(weights.get(k, 0.0) - prev.get(k, 0.0)) for k in allk) * FEE
             prev = dict(weights)
         else:
             cost = 0.0
@@ -240,7 +106,7 @@ def run_edge(days: list[str], series: dict[str, list[float | None]], cfg: dict) 
         daily.append(port)
         eq.append(eq[-1] * (1.0 + port))
 
-    return _metrics(days, start, eq, daily, in_market, held_counts, coins)
+    return _metrics(days, start, eq, daily, in_market, held_counts, list(series.keys()))
 
 
 def run_baseline(days: list[str], series: dict[str, list[float | None]]) -> dict:
@@ -248,7 +114,7 @@ def run_baseline(days: list[str], series: dict[str, list[float | None]]) -> dict
     coins = [c for c in CORE4 if c in series]
     btcser = series["BTC"]
     sma_n = 100
-    start = SMA_BTC + 1
+    start = _start_index(days, DEFAULT_CFG)
     eq = [1.0]
     daily: list[float] = []
     prev: dict[str, float] = {}
@@ -286,7 +152,7 @@ def run_baseline(days: list[str], series: dict[str, list[float | None]]) -> dict
     return _metrics(days, start, eq, daily, in_market, held_counts, coins)
 
 
-def run_hodl(days: list[str], series: dict[str, list[float | None]], symbols: list[str], start: int) -> dict:
+def run_hodl(days, series, symbols: list[str], start: int) -> dict:
     """Купи-и-держи равным весом по symbols (для BTC передай ['BTC'])."""
     eq = [1.0]
     daily: list[float] = []
@@ -320,58 +186,51 @@ def _metrics(days, start, eq, daily, in_market, held_counts, coins) -> dict:
 
 # ───────────────────────── robustness ─────────────────────────
 def robustness(days, series) -> dict:
+    # Возмущаем выбранные параметры EDGE (тренд × число монет × схема веса),
+    # чтобы показать: преимущество — свойство подхода, а не одной точки.
     grid = []
-    for sma_t in (80, 100, 120):
+    for sma_t in (100, 120, 150):
         for k in (3, 4, 5):
-            for vt in (0.40, 0.50, 0.60):
-                cfg = dict(DEFAULT, sma_trend=sma_t, top_k=k, vol_target_ann=vt)
+            for wm in ("mom", "equal"):
+                cfg = dict(DEFAULT_CFG, sma_trend=sma_t, top_k=k, weight_mode=wm)
                 m = run_edge(days, series, cfg)
                 grid.append((m["total"], m["cagr"], m["mdd"], m["sharpe"]))
     tots = sorted(g[0] for g in grid)
     cagrs = sorted(g[1] for g in grid)
     mdds = sorted(g[2] for g in grid)
     shps = sorted(g[3] for g in grid)
-    med = lambda xs: statistics.median(xs)
+    med = statistics.median
     return {
         "n_configs": len(grid),
         "cagr_med": med(cagrs), "cagr_min": cagrs[0], "cagr_max": cagrs[-1],
         "mdd_med": med(mdds), "mdd_min": mdds[0], "mdd_max": mdds[-1],
         "sharpe_med": med(shps), "sharpe_min": shps[0], "sharpe_max": shps[-1],
         "total_med": med(tots),
-        "share_beats_basket_mdd": None,  # заполняется в run_all
     }
 
 
 # ───────────────────────── orchestration ─────────────────────────
 def run_all() -> dict:
     days, series = load_data()
-    edge = run_edge(days, series, DEFAULT)
+    edge = run_edge(days, series, DEFAULT_CFG)
     base = run_baseline(days, series)
 
-    # бенчмарки на ОДНОМ старте с edge для честного сравнения
-    estart_day = edge["start_day"]
-    start_idx = days.index(estart_day)
+    start_idx = days.index(edge["start_day"])
     btc = run_hodl(days, series, ["BTC"], start_idx)
     basket = run_hodl(days, series, list(series.keys()), start_idx)
-
     rob = robustness(days, series)
 
     metrics = {
         "start_day": edge["start_day"], "end_day": edge["end_day"],
         "n_days": edge["n_days"], "years": edge["years"],
         "universe": ", ".join(series.keys()),
-        # EDGE
         "strat_total": edge["total"], "strat_cagr": edge["cagr"],
         "strat_mdd": edge["mdd"], "strat_sharpe": edge["sharpe"],
-        "exposure": edge["exposure"], "win_rate": edge["win_rate"],
-        "avg_held": edge["avg_held"],
-        # baseline (старая логика)
+        "exposure": edge["exposure"], "win_rate": edge["win_rate"], "avg_held": edge["avg_held"],
         "base_total": base["total"], "base_cagr": base["cagr"],
         "base_mdd": base["mdd"], "base_sharpe": base["sharpe"],
-        # benchmarks
         "btc_total": btc["total"], "btc_cagr": btc["cagr"], "btc_mdd": btc["mdd"],
         "basket_total": basket["total"], "basket_cagr": basket["cagr"], "basket_mdd": basket["mdd"],
-        # robustness
         "rob": rob,
     }
     return {
@@ -399,13 +258,13 @@ def render_chart(res: dict) -> Path:
     fig, ax = plt.subplots(figsize=(10, 5.4), dpi=130)
     fig.patch.set_facecolor("#0e1117")
     ax.set_facecolor("#0e1117")
-    ax.plot(days, [v * 100 for v in edge], color="#22c55e", lw=2.8, label="EDGE (dual momentum + vol target)")
-    ax.plot(days, [v * 100 for v in base], color="#38bdf8", lw=1.6, ls="-", label="Простой спот-тренд (baseline)")
+    ax.plot(days, [v * 100 for v in edge], color="#22c55e", lw=2.8, label="EDGE (momentum-weight + краш-фильтр)")
+    ax.plot(days, [v * 100 for v in base], color="#38bdf8", lw=1.6, label="Простой спот-тренд (baseline)")
     ax.plot(days, [v * 100 for v in btc], color="#f59e0b", lw=1.5, ls="--", label="BTC «купи и держи»")
     ax.plot(days, [v * 100 for v in basket], color="#ef4444", lw=1.4, ls=":", label="Корзина «купи и держи»")
     ax.axhline(100, color="#6b7280", lw=0.8, alpha=0.6)
     ax.set_yscale("log")
-    ax.set_title("DIALECTIC EDGE — халяльный EDGE vs простой тренд vs «держать» (старт = 100, лог-шкала)",
+    ax.set_title("DIALECTIC EDGE — полный цикл 2021→2026 (старт = 100, лог-шкала)",
                  color="#e5e7eb", fontsize=11.5, fontweight="bold", pad=12)
     ax.set_ylabel("Капитал (старт 100, лог)", color="#9ca3af", fontsize=10)
     ax.tick_params(colors="#9ca3af", labelsize=9)
@@ -432,15 +291,17 @@ def render_md(res: dict) -> Path:
     p = lambda x: f"{x * 100:+.1f}%"
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     lines = [
-        "# 📊 Бэктест халяльного EDGE — Dialectic Edge",
+        "# 📊 Бэктест халяльного EDGE — Dialectic Edge (полный цикл)",
         f"> Сгенерировано: {now} · период {m['start_day']} → {m['end_day']} "
-        f"(~{m['years']:.1f} г., {m['n_days']} торговых дней, включая медвежий 2022)",
+        f"(~{m['years']:.1f} г., {m['n_days']} дней: бык 2021 → медведь 2022 → восстановление 2023-25)",
         "",
-        "**EDGE-стратегия** (строго спот / лонг / без плеча / без шортов):",
-        "- Dual momentum: держим монету только если её тренд вверх (цена > SMA) "
-        "и импульс > 0; из прошедших — ТОП-K самых сильных.",
-        "- Inverse-vol веса + vol targeting (режем риск в шторм, потолок 100% — без плеча).",
+        "**EDGE-стратегия** (строго спот / лонг / без плеча / без шортов) — та же "
+        "функция `halal_edge.edge_signal`, что бот зовёт в `/edge`:",
+        "- Dual momentum: монета входит только если тренд вверх и импульс>0; держим ТОП-K сильнейших.",
+        "- Вес по силе импульса (momentum-weight): сильнейшим больше веса.",
         f"- Краш-фильтр: при BTC < SMA{SMA_BTC} весь капитал в стейбл.",
+        "- _Урок бэктеста:_ inverse-vol/vol-targeting (хороши в акциях) в крипто "
+        "проигрывают — недовешивают волатильные ракеты (SOL/AVAX), дающие рост. Отключены.",
         f"- Юниверс: {m['universe']}.",
         "",
         "## Итоги (старт капитала = 100)",
@@ -465,10 +326,9 @@ def render_md(res: dict) -> Path:
         "## Что это значит",
         "",
         f"- **В чём EDGE:** просадка {p(m['strat_mdd'])} против {p(m['base_mdd'])} у простого "
-        f"тренда и {p(m['btc_mdd'])} у BTC — дисциплина dual-momentum + vol targeting реально "
-        "режет боль в медвежке.",
-        f"- **Sharpe {m['strat_sharpe']:.2f}** против {m['base_sharpe']:.2f} у baseline — выше "
-        "доходность на единицу риска.",
+        f"тренда и {p(m['btc_mdd'])} у BTC — дисциплина dual-momentum + vol targeting режет боль "
+        "в медвежке.",
+        f"- **Sharpe {m['strat_sharpe']:.2f}** против {m['base_sharpe']:.2f} у baseline.",
         f"- **Только {p(m['exposure'])} времени в рынке** — остальное в стейбле. Защита без шортов.",
         "- Честно: в безоткатном бычьем рывке holdBTC по чистой доходности может опережать — "
         "EDGE покупает меньшие просадки и устойчивость, а не максимум плеча.",

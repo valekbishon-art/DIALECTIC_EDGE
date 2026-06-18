@@ -2854,11 +2854,11 @@ def _backtest_caption() -> str:
             f"CAGR медиана {pc(m.get('rob_cagr_med',0))}, просадка медиана {pc(m.get('rob_mdd_med',0))}.\n"
         )
     return (
-        "*📊 Бэктест халяльного EDGE* (история "
-        f"{m.get('start_day','?')} → {m.get('end_day','?')}, ~{m.get('years',0):.1f} г., "
-        "вкл. медвежий 2022)\n"
+        "*📊 Бэктест халяльного EDGE* (полный цикл "
+        f"{m.get('start_day','?')} → {m.get('end_day','?')}, ~{m.get('years',0):.1f} г.: "
+        "бык 2021 → медведь 2022 → 2023-25)\n"
         "\n"
-        f"Только спот/лонг, без плеча и шортов. Dual momentum + vol targeting + уход в стейбл в медвежке.\n"
+        f"Только спот/лонг, без плеча и шортов. Momentum-weight (самым сильным больше) + краш-фильтр (уход в стейбл при развороте BTC).\n"
         "\n"
         f"• 🟢 EDGE: *{pc(m.get('strat_total',0))}*, просадка {pc(m.get('strat_mdd',0))}, "
         f"Sharpe {m.get('strat_sharpe',0):.2f}\n"
@@ -2867,9 +2867,9 @@ def _backtest_caption() -> str:
         f"• 🔴 Корзина «держать»: {pc(m.get('basket_total',0))}, просадка {pc(m.get('basket_mdd',0))}\n"
         f"{rob_line}"
         "\n"
-        f"Главное: за {m.get('years',0):.1f} г. (с медвежкой 2022) EDGE обгоняет и простой тренд, и "
-        f"«держать», и по доходности, и по просадке. В рынке только {pc(m.get('exposure',0))} времени — "
-        "остальное в стейбле.\n"
+        f"Главное: за {m.get('years',0):.1f} г. полного цикла EDGE обгоняет простой тренд и "
+        f"«держать» — и по доходности, и по Sharpe. В рынке только {pc(m.get('exposure',0))} времени — "
+        "остальное в стейбле. Цена за рост — просадка глубже, чем у наивного тренда.\n"
         "\n"
         "_История, не гарантия будущего. Не инвестсовет._"
     )
@@ -2901,6 +2901,45 @@ async def cmd_backtest(message: Message):
         await message.answer(caption, reply_markup=kb)
 
 
+@dp.message(Command("plan", "edgeplan"))
+async def cmd_edgeplan(message: Message):
+    """EDGE-план на сегодня — ведём за руку: /plan [депозит]
+
+    Та же логика, что в бэктесте (halal_edge.edge_signal): смотрим рынок
+    сейчас и пошагово говорим, что купить, сколько в стейбле, когда выйти.
+    """
+    # депозит из текста: «/plan 1000» → суммы в $; по умолчанию доли на $100
+    deposit = 100.0
+    parts = (message.text or "").split()
+    if len(parts) > 1:
+        try:
+            deposit = max(1.0, float(parts[1].replace(",", ".").replace("$", "")))
+        except ValueError:
+            deposit = 100.0
+
+    try:
+        import halal_edge
+        plan = await asyncio.to_thread(halal_edge.live_plan, None, deposit)
+        text = halal_edge.render_plan_text(plan, deposit)
+    except Exception as e:  # noqa: BLE001 — сеть/данные подвели
+        logging.warning("cmd_edgeplan failed: %s", e)
+        await message.answer(
+            "⚠️ Не смог получить свежие данные рынка для EDGE-плана. "
+            "Попробуй ещё раз через минуту."
+        )
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🧪 Бэктест EDGE", callback_data="cmd:backtest"),
+        InlineKeyboardButton(text="❓ Что это", callback_data="explain:edge"),
+    ]])
+    try:
+        await message.answer(text, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=kb)
+    except Exception:  # noqa: BLE001 — Markdown подвёл → плоский текст
+        await message.answer(text, disable_web_page_preview=True, reply_markup=kb)
+
+
 @dp.message(Command("instruction"))
 async def cmd_instruction(message: Message):
     """Полнейшая инструкция как для пятилетнего: /instruction"""
@@ -2915,6 +2954,7 @@ async def cmd_newbie(message: Message):
 
 def _main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧭 EDGE-план: что купить сейчас", callback_data="cmd:edgeplan")],
         [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас", callback_data="cmd:signal")],
         [
             InlineKeyboardButton(text="📋 Дайджест", callback_data="cmd:daily"),
@@ -3269,6 +3309,7 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "screener": cmd_screener,
         "pump": cmd_pump,
         "backtest": cmd_backtest,
+        "edgeplan": cmd_edgeplan,
         "guide": lambda m: _send_bot_guide(m.chat.id),
         "instruction": lambda m: _send_detailed_guide(m.chat.id),
         "newbie": lambda m: _send_newbie_guide(m.chat.id),
@@ -3324,6 +3365,7 @@ async def cmd_start(message: Message):
     # рынки, скринер, P2P, DCA, алерты, сигнал, бэктест, трек-рекорд и т.д.).
     welcome_inline = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🆕 Я новичок — гид + PDF",  callback_data="cmd:newbie")],
+        [InlineKeyboardButton(text="🧭 EDGE-план: что купить сейчас", callback_data="cmd:edgeplan")],
         [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас",  callback_data="cmd:signal")],
         [
             InlineKeyboardButton(text="📊 Прогноз",            callback_data="cmd:daily"),
