@@ -2514,6 +2514,32 @@ def _halal_card_kb(kind: str, picks: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _pump_card_kb(picks: list[str]) -> InlineKeyboardMarkup:
+    """Inline-клавиатура под карточкой «🚀 Что разгоняется».
+
+    picks — топ-монеты (до 3) на график. Плюс 🔄 Обновить и переход на 🧭 Тренд.
+    """
+    import links
+    rows: list[list[InlineKeyboardButton]] = []
+    pick_row: list[InlineKeyboardButton] = []
+    for sym in (picks or [])[:3]:
+        pick_row.append(InlineKeyboardButton(text=f"📈 {sym}", url=links.crypto_chart_url(sym)))
+    if pick_row:
+        rows.append(pick_row)
+    rows.append([
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="pumpref"),
+        InlineKeyboardButton(text="🧭 Тренд", callback_data="hsnav:trend"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _build_pump_card():
+    """Собирает карточку «что разгоняется» (text, keyboard). Без сети-краша."""
+    import halal_signals
+    res = await halal_signals.build_pump_card()
+    return res.text, _pump_card_kb(res.picks)
+
+
 async def _build_halal_card(kind: str, sma: int = 50):
     """Собирает карточку (text, keyboard) для kind=stocks|trend. Без сети-краша."""
     import halal_signals
@@ -3133,6 +3159,7 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
         "signal": cmd_signal,
         "signalstatus": cmd_signal_status,
         "screener": cmd_screener,
+        "pump": cmd_pump,
         "backtest": cmd_backtest,
         "guide": lambda m: _send_bot_guide(m.chat.id),
         "instruction": lambda m: _send_detailed_guide(m.chat.id),
@@ -6261,8 +6288,52 @@ def _pump_ondemand_limit() -> int:
 PUMP_ONDEMAND_LIMIT = _pump_ondemand_limit()
 
 
-# [removed] @dp.message(Command("pump"))  — команда отключена (pump_scanner удалён)
+@dp.message(Command("pump"))
 @require_vip
+async def cmd_pump(message: Message):
+    """🚀 «Что разгоняется» — спот-сканер моментума (лонг-only, без плеча/шортов).
+
+    Раньше тут жил pump-fade (ставка против движения) — он удалён. Это новый,
+    честный лонг-моментум: показываем монеты, которые уже растут и держатся
+    выше короткой средней. Сигнал, не приказ.
+    """
+    wait = await message.answer("🚀 Сканирую, что разгоняется на споте…")
+    kb = None
+    try:
+        text, kb = await _build_pump_card()
+    except Exception as e:  # noqa: BLE001
+        text = f"⚠️ Не получилось собрать сканер: {e}"
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    await _send_halal_card(message, text, kb)
+
+
+@dp.message(F.text == PERSISTENT_BTN_PUMP)
+async def _kb_pump(message: Message):
+    await cmd_pump(message)
+
+
+@dp.callback_query(F.data == "pumpref")
+async def _cb_pump_refresh(cb: CallbackQuery):
+    """🔄 Обновить карточку «что разгоняется» (новым сообщением)."""
+    try:
+        await cb.answer("Обновляю…")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        text, kb = await _build_pump_card()
+        await bot.send_message(
+            cb.from_user.id, text, parse_mode="Markdown",
+            disable_web_page_preview=True, reply_markup=kb,
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            await bot.send_message(cb.from_user.id, "⚠️ Не получилось обновить, попробуй позже.")
+        except Exception:  # noqa: BLE001
+            pass
+
 
 # ─── /admin ───────────────────────────────────────────────────────────────────
 
@@ -6455,6 +6526,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="tt", description="🧪 Тест"),
         BotCommand(command="signalstatus", description="🤖 Автоторговля (скоро)"),
         BotCommand(command="screener", description="📡 Сканер аномалий"),
+        BotCommand(command="pump", description="🚀 Что разгоняется (спот-моментум)"),
         BotCommand(command="stocks", description="📈 Акции: тренд + моментум"),
         BotCommand(command="trend", description="🧭 Крипто-тренд (спот/лонг)"),
         BotCommand(command="dca", description="💧 План усреднения (DCA)"),

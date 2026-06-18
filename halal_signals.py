@@ -194,6 +194,77 @@ async def build_crypto_trend_card(sma: int = 50, universe: Sequence[str] | None 
     return CardResult(text, picks)
 
 
+# Расширенный список для сканера «что разгоняется» — мейджоры + крупные альты.
+PUMP_UNIVERSE = CRYPTO_UNIVERSE + ["DOGE", "TON", "TRX", "APT", "ARB",
+                                   "OP", "INJ", "SUI", "SEI", "RNDR"]
+
+
+def _ret(closes: Sequence[float], n: int) -> float | None:
+    """Доходность за последние n дней (без сглаживания)."""
+    if len(closes) <= n or closes[-n - 1] <= 0:
+        return None
+    return closes[-1] / closes[-n - 1] - 1.0
+
+
+async def build_pump_card(top: int = 8) -> CardResult:
+    """«🚀 Что разгоняется» — спот-сканер моментума: монеты с сильным ростом
+    за последнюю неделю, подтверждённым аптрендом (цена выше SMA20).
+
+    Это НЕ ставка против движения и не плечо — только лонг-моментум на споте:
+    показываем, что уже растёт и держится выше короткой средней.
+    Возвращает CardResult(text, picks).
+    """
+    uni = list(PUMP_UNIVERSE)
+    results = await asyncio.gather(*[fetch_closes(f"{c}-USD", "3mo") for c in uni])
+    rows_data = []
+    for coin, closes in zip(uni, results):
+        if not closes or len(closes) < 22:
+            continue
+        r7 = _ret(closes, 7)
+        r30 = _ret(closes, 30)
+        ma20 = _sma(closes, 20)
+        if r7 is None or ma20 is None or ma20 <= 0:
+            continue
+        above = closes[-1] > ma20          # подтверждение аптренда
+        rows_data.append((coin, closes, r7, r30, above))
+
+    # Разгон = рост за неделю > 0 И цена выше SMA20 (только лонг-моментум).
+    movers = [r for r in rows_data if r[2] > 0 and r[4]]
+    movers.sort(key=lambda r: r[2], reverse=True)
+
+    if not rows_data:
+        return CardResult(
+            "🚀 *Что разгоняется*\n\nНе удалось получить котировки (сеть). "
+            "Попробуй позже.", [])
+
+    rows = [
+        "ℹ️ *Что это:* спот-сканер моментума — монеты, которые сильнее всего "
+        "выросли за неделю и держатся выше средней за 20 дней (SMA20).",
+        "🎯 *Что делать:* это лонг-идеи «что уже разгоняется». Без плеча и "
+        "шортов. Не гонись за резким пиком — сверяйся с трендом (/trend).",
+        "",
+    ]
+    if movers:
+        pick = movers[:top]
+        for i, (coin, closes, r7, r30, _above) in enumerate(pick, 1):
+            r30s = f" · 30д {ui_kit.pct(r30)}" if r30 is not None else ""
+            rows.append(
+                f"{ui_kit.rank_emoji(i)} *{coin:<5}* `{_spark(closes)}`  "
+                f"7д {ui_kit.pct(r7)}{r30s}"
+            )
+            rows.append(f"        {links.crypto_line(coin)}")
+        picks = [c for c, *_ in pick[:3]]
+    else:
+        rows.append("_Сейчас никто не разгоняется: ничего не растёт за неделю "
+                    "выше SMA20. Рынок вялый — лучше подождать._")
+        picks = []
+
+    footer = ("_Моментум = что уже растёт. Сигнал, не приказ: вход частями "
+              "(см. /dca), риск контролируй сам. Спот/лонг. Не инвест-совет._")
+    text = ui_kit.card("🚀 Что разгоняется (спот, 7-дн моментум)", rows, footer)
+    return CardResult(text, picks)
+
+
 def build_dca_plan(deposit: float, tranches: int = 6, days: int = 5) -> str:
     """План усреднения (DCA): равные транши с интервалом. Чистый расчёт, без сети."""
     tranches = max(2, min(24, int(tranches)))
