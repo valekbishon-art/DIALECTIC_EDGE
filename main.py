@@ -2842,19 +2842,34 @@ def _backtest_caption() -> str:
             "_Подробности — кнопка ❓ ниже._"
         )
     pc = lambda x: f"{x * 100:+.1f}%"
+    base = m.get("base_total")
+    base_line = (
+        f"• 🔵 Простой тренд: {pc(m.get('base_total',0))}, просадка {pc(m.get('base_mdd',0))}, "
+        f"Sharpe {m.get('base_sharpe',0):.2f}\n"
+    ) if base is not None else ""
+    rob_line = ""
+    if m.get("rob_n_configs"):
+        rob_line = (
+            f"\n🧪 Робастность ({m['rob_n_configs']} конфигураций, не одна удачная точка): "
+            f"CAGR медиана {pc(m.get('rob_cagr_med',0))}, просадка медиана {pc(m.get('rob_mdd_med',0))}.\n"
+        )
     return (
-        "*📊 Бэктест спот-стратегии* (история "
-        f"{m.get('start_day','?')} → {m.get('end_day','?')}, ~{m.get('years',0):.1f} г.)\n"
+        "*📊 Бэктест халяльного EDGE* (история "
+        f"{m.get('start_day','?')} → {m.get('end_day','?')}, ~{m.get('years',0):.1f} г., "
+        "вкл. медвежий 2022)\n"
         "\n"
-        f"Юниверс: {m.get('universe','BTC, ETH, SOL, BNB')}. Только спот/лонг, без плеча и шортов.\n"
+        f"Только спот/лонг, без плеча и шортов. Dual momentum + vol targeting + уход в стейбл в медвежке.\n"
         "\n"
-        f"• 🟢 Стратегия: *{pc(m.get('strat_total',0))}*, просадка {pc(m.get('strat_mdd',0))}, "
+        f"• 🟢 EDGE: *{pc(m.get('strat_total',0))}*, просадка {pc(m.get('strat_mdd',0))}, "
         f"Sharpe {m.get('strat_sharpe',0):.2f}\n"
+        f"{base_line}"
         f"• 🟠 BTC «держать»: {pc(m.get('btc_total',0))}, просадка {pc(m.get('btc_mdd',0))}\n"
         f"• 🔴 Корзина «держать»: {pc(m.get('basket_total',0))}, просадка {pc(m.get('basket_mdd',0))}\n"
+        f"{rob_line}"
         "\n"
-        f"Главное: обгоняет «просто держать корзину» и по доходности, и по просадке, "
-        f"а в рынке только {pc(m.get('exposure',0))} времени — остальное в стейбле.\n"
+        f"Главное: за {m.get('years',0):.1f} г. (с медвежкой 2022) EDGE обгоняет и простой тренд, и "
+        f"«держать», и по доходности, и по просадке. В рынке только {pc(m.get('exposure',0))} времени — "
+        "остальное в стейбле.\n"
         "\n"
         "_История, не гарантия будущего. Не инвестсовет._"
     )
