@@ -40,6 +40,19 @@ def stock_links(ticker: str) -> list[tuple[str, str]]:
     ]
 
 
+def crypto_chart_url(symbol: str, quote_ccy: str = "USDT") -> str:
+    """TradingView-график для монеты — для inline URL-кнопки."""
+    c = symbol.strip().upper()
+    q = quote_ccy.upper()
+    return f"https://www.tradingview.com/chart/?symbol=BINANCE:{c}{q}"
+
+
+def stock_chart_url(ticker: str) -> str:
+    """TradingView-график для акции — для inline URL-кнопки."""
+    t = ticker.strip().upper()
+    return f"https://www.tradingview.com/chart/?symbol={t}"
+
+
 def line(pairs: list[tuple[str, str]], prefix: str = "🔗 ") -> str:
     """Список (label,url) → одна строка markdown-ссылок через ' · '."""
     return prefix + " · ".join(_md(lbl, url) for lbl, url in pairs)

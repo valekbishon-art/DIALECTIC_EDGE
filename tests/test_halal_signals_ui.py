@@ -98,9 +98,13 @@ def test_build_crypto_trend_card_mocked():
         with patch.object(hs, "fetch_closes", side_effect=_make):
             return await hs.build_crypto_trend_card(sma=50, universe=["BTC", "ETH"])
 
-    out = asyncio.new_event_loop().run_until_complete(run())
+    res = asyncio.new_event_loop().run_until_complete(run())
+    out = res.text
     assert "Крипто-тренд" in out
     assert "BTC" in out and "ETH" in out
+    # picks — топ-монеты в аптренде для inline-кнопок (могут быть пустыми).
+    assert isinstance(res.picks, list)
+    assert all(isinstance(s, str) for s in res.picks)
     for term in ("халя", "харам", "ислам", "halal", "haram"):
         assert term not in out.lower()
 
@@ -113,6 +117,9 @@ def test_build_stocks_card_mocked():
         with patch.object(hs, "fetch_closes", side_effect=_make):
             return await hs.build_stocks_card(sma=50, top=3)
 
-    out = asyncio.new_event_loop().run_until_complete(run())
+    res = asyncio.new_event_loop().run_until_complete(run())
+    out = res.text
     assert "Акции" in out
     assert "SMA50" in out
+    assert isinstance(res.picks, list)
+    assert all(isinstance(s, str) for s in res.picks)

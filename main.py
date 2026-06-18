@@ -767,8 +767,8 @@ def _trading_plan_grouped_lines(plans: list[dict] | None, prices: dict | None) -
             dn_level, dn_tag = (ma_b, tag_b) if ma_a >= ma_b else (ma_a, tag_a)
 
             head = f"{emoji} *{label}* — `${_fmt_money_compact(price_f)}`"
-            up = f"   ▲ выше `${_fmt_money_compact(up_level)}` ({up_tag}) → LONG"
-            dn = f"   ▼ ниже `${_fmt_money_compact(dn_level)}` ({dn_tag}) → SHORT"
+            up = f"   ▲ выше `${_fmt_money_compact(up_level)}` ({up_tag}) → покупка спот"
+            dn = f"   ▼ ниже `${_fmt_money_compact(dn_level)}` ({dn_tag}) → выход в стейбл"
             group_lines.extend([head, up, dn])
 
         if group_lines:
@@ -2582,6 +2582,43 @@ async def cmd_screener(message: Message):
         await message.answer(f"Ошибка сканера: {e}")
 
 
+def _halal_card_kb(kind: str, picks: list[str]) -> InlineKeyboardMarkup:
+    """Inline-клавиатура под карточкой /stocks или /trend.
+
+    kind: "stocks" | "trend".
+    picks: топ-тикеры (до 3) — на каждый URL-кнопка «📈 SYM» на график.
+    Плюс ряд действий: 🔄 Обновить, 🔔 Алерты, переход на другую карточку.
+    """
+    import links
+    rows: list[list[InlineKeyboardButton]] = []
+    pick_row: list[InlineKeyboardButton] = []
+    for sym in (picks or [])[:3]:
+        url = links.crypto_chart_url(sym) if kind == "trend" else links.stock_chart_url(sym)
+        pick_row.append(InlineKeyboardButton(text=f"📈 {sym}", url=url))
+    if pick_row:
+        rows.append(pick_row)
+    if kind == "trend":
+        nav = InlineKeyboardButton(text="📊 Акции", callback_data="hsnav:stocks")
+    else:
+        nav = InlineKeyboardButton(text="🧭 Тренд", callback_data="hsnav:trend")
+    rows.append([
+        InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hsref:{kind}"),
+        InlineKeyboardButton(text="🔔 Алерты", callback_data="hsalert"),
+        nav,
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _build_halal_card(kind: str, sma: int = 50):
+    """Собирает карточку (text, keyboard) для kind=stocks|trend. Без сети-краша."""
+    import halal_signals
+    if kind == "stocks":
+        res = await halal_signals.build_stocks_card(sma=sma)
+    else:
+        res = await halal_signals.build_crypto_trend_card(sma=sma)
+    return res.text, _halal_card_kb(kind, res.picks)
+
+
 @dp.message(Command("stocks"))
 async def cmd_stocks(message: Message):
     """Скринер акций: курируемый вотчлист + тренд (SMA) и моментум. /stocks [sma]"""
@@ -2593,9 +2630,9 @@ async def cmd_stocks(message: Message):
     except ValueError:
         pass
     wait = await message.answer("📈 Считаю силу акций (тренд + моментум)…")
+    kb = None
     try:
-        import halal_signals
-        text = await halal_signals.build_stocks_card(sma=sma)
+        text, kb = await _build_halal_card("stocks", sma)
     except Exception as e:  # noqa: BLE001
         text = f"⚠️ Не получилось собрать акции: {e}"
     try:
@@ -2603,7 +2640,7 @@ async def cmd_stocks(message: Message):
     except Exception:  # noqa: BLE001
         pass
     try:
-        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb)
     except Exception:  # noqa: BLE001
         await message.answer(text)
 
@@ -2619,9 +2656,9 @@ async def cmd_trend(message: Message):
     except ValueError:
         pass
     wait = await message.answer("🧭 Сканирую тренд по крупным спот-монетам…")
+    kb = None
     try:
-        import halal_signals
-        text = await halal_signals.build_crypto_trend_card(sma=sma)
+        text, kb = await _build_halal_card("trend", sma)
     except Exception as e:  # noqa: BLE001
         text = f"⚠️ Не получилось собрать тренд: {e}"
     try:
@@ -2629,7 +2666,7 @@ async def cmd_trend(message: Message):
     except Exception:  # noqa: BLE001
         pass
     try:
-        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb)
     except Exception:  # noqa: BLE001
         await message.answer(text)
 
@@ -2707,6 +2744,67 @@ async def cmd_alerts(message: Message):
         await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
     except Exception:  # noqa: BLE001
         await message.answer(text)
+
+
+# ─── Inline-кнопки под карточками /stocks и /trend ────────────────────────────
+@dp.callback_query(F.data.startswith("hsref:"))
+async def _cb_halal_refresh(cb: CallbackQuery):
+    """🔄 Обновить — пересобрать карточку на месте."""
+    kind = (cb.data or "").split(":", 1)[1] if ":" in (cb.data or "") else "trend"
+    if kind not in ("stocks", "trend"):
+        kind = "trend"
+    try:
+        await cb.answer("Обновляю…")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        text, kb = await _build_halal_card(kind, 50)
+        await cb.message.edit_text(
+            text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Не удалось обновить, попробуй ещё раз", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data == "hsalert")
+async def _cb_halal_alert_toggle(cb: CallbackQuery):
+    """🔔 Алерты — переключить подписку на спот-автоалерты."""
+    try:
+        from database import get_user_halal_alert_status, set_halal_alert_sub
+        uid = cb.from_user.id
+        cur = await get_user_halal_alert_status(uid)
+        await set_halal_alert_sub(uid, not cur)
+        await cb.answer(
+            "🔔 Автоалерты включены" if not cur else "🔕 Автоалерты выключены",
+            show_alert=False,
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            await cb.answer("Не получилось переключить алерты", show_alert=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data.startswith("hsnav:"))
+async def _cb_halal_nav(cb: CallbackQuery):
+    """Переход на соседнюю карточку (Акции ↔ Тренд) новым сообщением."""
+    kind = (cb.data or "").split(":", 1)[1] if ":" in (cb.data or "") else "trend"
+    if kind not in ("stocks", "trend"):
+        kind = "trend"
+    try:
+        await cb.answer()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        text, kb = await _build_halal_card(kind, 50)
+        await cb.message.answer(
+            text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=kb
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @dp.message(Command("instruction"))

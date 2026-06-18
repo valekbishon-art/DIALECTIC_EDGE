@@ -17,10 +17,22 @@ import asyncio
 import json
 import statistics
 import urllib.request
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 import links
 import ui_kit
+
+
+class CardResult(NamedTuple):
+    """Результат сборки карточки: текст + топ-тикеры для inline-кнопок.
+
+    text  — готовый markdown для Telegram.
+    picks — символы топ-пиков (крипта: 'BTC'; акции: 'AAPL'), по которым
+            main.py строит URL-кнопки на график. Может быть пустым.
+    """
+
+    text: str
+    picks: list[str]
 
 _YH = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
 _UA = {"User-Agent": "Mozilla/5.0"}
@@ -79,8 +91,11 @@ def _spark(closes: Sequence[float], points: int = 24) -> str:
     return ui_kit.sparkline(tail[::step])
 
 
-async def build_stocks_card(sma: int = 50, top: int = 8) -> str:
-    """Карточка по акциям: топ по моментуму среди тех, кто в аптренде."""
+async def build_stocks_card(sma: int = 50, top: int = 8) -> CardResult:
+    """Карточка по акциям: топ по моментуму среди тех, кто в аптренде.
+
+    Возвращает CardResult(text, picks) — picks = тикеры топ-пиков для кнопок.
+    """
     try:
         from stock_screener import WATCHLIST
     except Exception:  # noqa: BLE001
@@ -99,8 +114,9 @@ async def build_stocks_card(sma: int = 50, top: int = 8) -> str:
         rows_data.append((sym, closes, up, ext, mom))
 
     if not rows_data:
-        return ("📈 *Акции — скринер*\n\nНе удалось получить котировки (сеть). "
-                "Попробуй позже.")
+        return CardResult(
+            "📈 *Акции — скринер*\n\nНе удалось получить котировки (сеть). "
+            "Попробуй позже.", [])
 
     # Сортируем: сначала в аптренде, потом по моментуму.
     rows_data.sort(key=lambda r: (r[2], r[4]), reverse=True)
@@ -120,11 +136,16 @@ async def build_stocks_card(sma: int = 50, top: int = 8) -> str:
     n_up = len(holds)
     footer = (f"_В аптренде {n_up} из {len(rows_data)}. Равный вес среди зелёных, "
               f"спот/лонг. Не инвест-совет; цифры по балансу сверяй по отчёту._")
-    return ui_kit.card(f"📈 Акции — топ по силе (SMA{sma}, 6м моментум)", rows, footer)
+    text = ui_kit.card(f"📈 Акции — топ по силе (SMA{sma}, 6м моментум)", rows, footer)
+    picks = [r[0] for r in pick[:3]]
+    return CardResult(text, picks)
 
 
-async def build_crypto_trend_card(sma: int = 50, universe: Sequence[str] | None = None) -> str:
-    """Карточка крипто-тренда: кто сейчас в аптренде (price>SMA), равный вес."""
+async def build_crypto_trend_card(sma: int = 50, universe: Sequence[str] | None = None) -> CardResult:
+    """Карточка крипто-тренда: кто сейчас в аптренде (price>SMA), равный вес.
+
+    Возвращает CardResult(text, picks) — picks = монеты в аптренде для кнопок.
+    """
     uni = list(universe or CRYPTO_UNIVERSE)
     results = await asyncio.gather(*[fetch_closes(f"{c}-USD", "1y") for c in uni])
     hold, cash = [], []
@@ -139,8 +160,9 @@ async def build_crypto_trend_card(sma: int = 50, universe: Sequence[str] | None 
         (hold if up else cash).append((coin, ext))
 
     if not hold and not cash:
-        return ("🧭 *Крипто-тренд*\n\nНе удалось получить котировки (сеть). "
-                "Попробуй позже.")
+        return CardResult(
+            "🧭 *Крипто-тренд*\n\nНе удалось получить котировки (сеть). "
+            "Попробуй позже.", [])
 
     hold.sort(key=lambda x: x[1], reverse=True)
     rows = []
@@ -155,7 +177,9 @@ async def build_crypto_trend_card(sma: int = 50, universe: Sequence[str] | None 
         rows.append("*В стейбл (ниже SMA, ждём):* " + ", ".join(c for c, _ in cash))
     footer = (f"_В аптренде {len(hold)} из {len(hold)+len(cash)}. Правило: выше SMA{sma} → "
               f"купи спот равным весом; ниже → продай в стейбл. Не инвест-совет._")
-    return ui_kit.card(f"🧭 Крипто-тренд (SMA{sma}, спот/лонг)", rows, footer)
+    text = ui_kit.card(f"🧭 Крипто-тренд (SMA{sma}, спот/лонг)", rows, footer)
+    picks = [coin for coin, _ in hold[:3]]
+    return CardResult(text, picks)
 
 
 def build_dca_plan(deposit: float, tranches: int = 6, days: int = 5) -> str:

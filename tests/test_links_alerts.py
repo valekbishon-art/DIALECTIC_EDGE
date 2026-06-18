@@ -75,3 +75,18 @@ def test_load_handles_garbage():
     assert ha._load(None) == set()
     assert ha._load("not json") == set()
     assert ha._load('["BTC","ETH"]') == {"BTC", "ETH"}
+
+
+# ─── Inline chart-URL helpers (для кнопок под карточками) ─────────────────────
+def test_crypto_chart_url():
+    import links
+    u = links.crypto_chart_url("btc")
+    assert u.startswith("https://")
+    assert "BINANCE:BTCUSDT" in u
+
+
+def test_stock_chart_url():
+    import links
+    u = links.stock_chart_url("nvda")
+    assert u.startswith("https://")
+    assert "NVDA" in u
