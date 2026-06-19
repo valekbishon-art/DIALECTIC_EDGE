@@ -299,6 +299,7 @@ def persistent_kb() -> ReplyKeyboardMarkup:
                 KeyboardButton(text=PERSISTENT_BTN_TREND),
                 KeyboardButton(text=PERSISTENT_BTN_STOCKS),
                 KeyboardButton(text=PERSISTENT_BTN_SCREENER),
+                KeyboardButton(text=PERSISTENT_BTN_PUMP),
             ],
             [
                 KeyboardButton(text=PERSISTENT_BTN_P2P),
@@ -1402,7 +1403,7 @@ def _eli5_for_actionable_trade(plan: dict) -> str:
     """Объясняет одну actionable-сделку «как пятилетнему».
 
     Rule-based, никаких LLM-вызовов — кнопка должна отвечать мгновенно.
-    Берёт direction/entry/stop/target/size и собирает понятную фразу.
+    Берёт direction/entry/stop/target/size и собирает понятную ��разу.
     """
     sym = (plan.get("symbol") or "?").upper()
     direction = (plan.get("direction") or "").upper()
@@ -1424,7 +1425,7 @@ def _eli5_for_actionable_trade(plan: dict) -> str:
         "TON": "тон",
     }.get(sym, sym)
 
-    verb = "По��упаем" if direction == "LONG" else "Шортим"
+    verb = "По����упаем" if direction == "LONG" else "Шортим"
 
     parts = [f"{verb} {asset_accusative} по {_money_format_price(entry)}."]
 
@@ -3115,7 +3116,7 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
 
 
 async def _send_bot_guide(chat_id: int) -> None:
-    """Полный гид по командам — спот/лонг, без автотрейда (в разработке)."""
+    """Полный гид по командам — спот/лонг, без автотрейда (в разработк��)."""
     text = (
         "📘 *DIALECTIC EDGE — ГИД ПО КОМАНДАМ*\n"
         "━━━━━━━━���━━━━━━━━━━━━━━━━\n\n"
@@ -4646,7 +4647,7 @@ def _markets_section_keyboard(
                 callback_data=f"markets:section:{k2}",
             ),
         ])
-    # Pagination row — показываем только если секция многостраничная.
+    # Pagination row — показываем только если секция многострани��ная.
     # Юзер просил «листать как книжку»: ◀ Prev / i / N / Next ▶ на одном
     # сооб��ении (edit_message_text), без рассыпания на 3 портянки.
     if total_pages > 1:
@@ -4981,7 +4982,7 @@ def _signal_glossary_text() -> str:
         "*σ̂ (сигма).*  Стандартное отклонение дневного движения.  Грубо — "
         "«насколько актив обычно колеблется за день».  BTC ≈ 1.5%, XRP ≈ "
         "2.0%, мелочь до 5%.\n"
-        "• *Stop 1.5σ̂* — стоп поставлен на 1.5 обычных дневных движения "
+        "• *Stop 1.5σ̂* — стоп поставлен на 1.5 обычны�� дневных движения "
         "выше шума.  Достаточно близко чтобы лосс был малень��ий, "
         "достаточно далеко чтобы случайная свеча не выбила.\n"
         "• *Target 3.0σ̂* — цель в 2 раза дальше стопа = R/R 2:1.\n"
@@ -6598,17 +6599,48 @@ async def cmd_pump(message: Message):
     честный лонг-моментум: показываем монеты, которые уже растут и держатся
     выше короткой средней. Сигнал, не приказ.
     """
-    wait = await message.answer("🚀 Сканирую, что разгоняется на споте…")
-    kb = None
     try:
-        text, kb = await _build_pump_card()
+        from pump_scanner import PumpConfig, format_pump_alert, scan_pumps
     except Exception as e:  # noqa: BLE001
-        text = f"⚠️ Не получилось собрать сканер: {e}"
+        logger.error("pump: import failed: %s", e)
+        await message.answer("Памп-сканер временно недоступен.")
+        return
+
+    notice = await message.answer("🚀 Сканирую рынок на пампы…")
     try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
+        signals = await scan_pumps(cfg=PumpConfig.from_env(), max_symbols=0)
+    except Exception as e:  # noqa: BLE001
+        logger.error("pump: scan failed: %s", e)
+        await message.answer(f"Ошибка памп-сканера: {e}")
+        return
+
+    try:
+        if notice is not None:
+            await notice.delete()
+    except Exception:  # noqa: BLE001 — удаление статус-сообщения best-effort
         pass
-    await _send_halal_card(message, text, kb)
+
+    if not signals:
+        await message.answer(
+            "🚀 *Памп-сканер*\n\nСейчас активных пампов не вижу — рынок спокоен.\n"
+            "_Авто-алерты придут сами, как только что-то поедет._",
+            parse_mode="Markdown",
+        )
+        return
+
+    top = signals[:PUMP_ONDEMAND_LIMIT]
+    await message.answer(
+        f"🚀 *Памп-сканер* — нашёл *{len(signals)}*, показываю топ-{len(top)}:",
+        parse_mode="Markdown",
+    )
+    for sig in top:
+        try:
+            text = format_pump_alert(sig)
+            await message.answer(
+                text, parse_mode="Markdown", disable_web_page_preview=True,
+            )
+        except Exception as e:  # noqa: BLE001 — один битый сигнал не рушит ответ
+            logger.debug("pump: render failed for %s: %s", getattr(sig, "asset", "?"), e)
 
 
 @dp.message(F.text == PERSISTENT_BTN_PUMP)
@@ -7373,7 +7405,7 @@ async def cmd_calc(message: Message):
         note = " ".join(args[4:]) if len(args) > 4 else ""
         tid = await add_trade(user_id, symbol, qty, price, note)
         await message.answer(
-            f"✅ Записал покупку `#{tid}`: {symbol} — {qty:g} @ {_fmt_money(price)}\n"
+            f"✅ ��аписал покупку `#{tid}`: {symbol} — {qty:g} @ {_fmt_money(price)}\n"
             f"Вложено: *{_fmt_money(qty * price)}*\n\n"
             f"Когда продашь: `/calc sell {tid} <цена>`",
             parse_mode="Markdown", reply_markup=_calc_menu_kb())
@@ -7777,7 +7809,7 @@ async def cmd_autotrade_reset(message: Message):
     # 2. Сбрасываем менеджер сессий полностью (чтобы _loaded=True не дал
     #    подтянуть старое из GitHub в следующем цикле автотрейдера)
     _sm.hard_reset(start_capital=new_capital)
-    # 3. Пушим свежий BACKTEST.md — иначе цикл прочитает «Текущий: $51»
+    # 3. Пушим свежий BACKTEST.md — иначе цикл прочитает «��екущий: $51»
     pushed_ok = False
     try:
         from signal_trader import _export_backtest_snapshot
