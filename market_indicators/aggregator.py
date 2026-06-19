@@ -50,13 +50,7 @@ from .smart_money_wallets_io import (
     get_lookback_hours as smw_get_lookback_hours,
     smart_money_wallets_score_contribution,
 )
-from .liquidation_magnet import LiquidationMagnetSignal
-from .liquidation_magnet_io import (
-    feature_enabled as liquidation_magnet_feature_enabled,
-    fetch_liquidation_magnet_signal,
-    format_liquidation_magnet_for_agents,
-    liquidation_magnet_score_contribution,
-)
+# liquidation_magnet удалён — деривативы/ликвидации (вне спот-режима).
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +68,6 @@ class EnrichedData:
     # Smart-money wallets (Etherscan API v2). Заполняется только при
     # FEATURE_SMART_MONEY_WALLETS=1 и наличии ETHERSCAN_API_KEY.
     smart_money_wallets: SmartMoneyWalletsSignal = None
-    # Liquidation magnet (Bybit/Binance public OI + L/S ratio).
-    # Заполняется только при FEATURE_LIQUIDATION_MAGNET=1.
-    liquidation_magnet: LiquidationMagnetSignal = None
 
     def __post_init__(self):
         if self.onchain is None:
@@ -91,8 +82,6 @@ class EnrichedData:
             self.regime = RegimeSignals()
         if self.smart_money_wallets is None:
             self.smart_money_wallets = SmartMoneyWalletsSignal()
-        if self.liquidation_magnet is None:
-            self.liquidation_magnet = LiquidationMagnetSignal()
 
 
 async def build_enriched_context(
@@ -144,14 +133,7 @@ async def build_enriched_context(
         else None
     )
 
-    # Liquidation magnet — за фичефлагом. Публичные endpoints Binance + Bybit,
-    # ключей не требует. Грациозный fallback: UNKNOWN при fetch fail.
-    liq_magnet_enabled = liquidation_magnet_feature_enabled()
-    liq_magnet_task = (
-        fetch_liquidation_magnet_signal()
-        if liq_magnet_enabled
-        else None
-    )
+    # liquidation_magnet удалён (деривативы/ликвидации вне спот-режима).
 
     # Динамический gather: всегда 3 core-task + опциональные extras в фикс. порядке.
     extras_labels: list[str] = []
@@ -162,9 +144,6 @@ async def build_enriched_context(
     if smw_task is not None:
         extras_labels.append("sm-wallets")
         extras_tasks.append(smw_task)
-    if liq_magnet_task is not None:
-        extras_labels.append("liq-magnet")
-        extras_tasks.append(liq_magnet_task)
 
     extras_suffix = (" + " + " + ".join(extras_labels)) if extras_labels else ""
     logger.info(
@@ -181,8 +160,6 @@ async def build_enriched_context(
             enriched.regime = value
         elif label == "sm-wallets":
             enriched.smart_money_wallets = value
-        elif label == "liq-magnet":
-            enriched.liquidation_magnet = value
 
     enriched.onchain = onchain_data
     enriched.macro = macro_data
@@ -266,31 +243,14 @@ async def build_enriched_context(
                 f"(bull={len(smw_bull)} bear={len(smw_bear)})"
             )
 
-    # Liquidation magnet вклад — ±2 max. Контрарианский indicator,
-    # weak (±1) в большинстве случаев, strong (±2) при экстремальном L/S.
-    if liq_magnet_enabled:
-        lm_delta, lm_bull, lm_bear = liquidation_magnet_score_contribution(
-            enriched.liquidation_magnet
-        )
-        if lm_delta != 0:
-            score.total_score += lm_delta
-        if lm_bull:
-            score.bullish_signals.extend(lm_bull)
-        if lm_bear:
-            score.bearish_signals.extend(lm_bear)
-        if lm_delta != 0 or lm_bull or lm_bear:
-            logger.info(
-                f"[AGGREGATOR] Liq-magnet score delta: {lm_delta:+d} "
-                f"(bull={len(lm_bull)} bear={len(lm_bear)})"
-            )
-
-        # Пересчитываем preliminary verdict после добавки smart-money
-        if score.total_score >= 4:
-            score.preliminary_verdict = "BULLISH"
-        elif score.total_score <= -4:
-            score.preliminary_verdict = "BEARISH"
-        else:
-            score.preliminary_verdict = "NEUTRAL"
+    # liquidation_magnet scoring удалён (деривативы вне спот-режима).
+    # Пересчитываем preliminary verdict после добавок smart-money/regime/wallets.
+    if score.total_score >= 4:
+        score.preliminary_verdict = "BULLISH"
+    elif score.total_score <= -4:
+        score.preliminary_verdict = "BEARISH"
+    else:
+        score.preliminary_verdict = "NEUTRAL"
 
     # Добавляем стоп-факторы (могут оверрайднуть verdict)
     score.has_critical_bearish = critical_bearish
@@ -343,11 +303,7 @@ async def build_enriched_context(
         context_parts.append("")
         context_parts.append(smw_str)
 
-    # 4d. LIQUIDATION MAGNET (leveraged positioning + OI velocity) — если fetched.
-    if liq_magnet_enabled and enriched.liquidation_magnet is not None:
-        lm_str = format_liquidation_magnet_for_agents(enriched.liquidation_magnet)
-        context_parts.append("")
-        context_parts.append(lm_str)
+    # liquidation_magnet блок удалён (деривативы вне спот-режима).
 
     # 5. СИГНАЛ БЛОК для Bull/Bear дебатов
     signal_block = format_signal_block_for_debates(enriched.score, enriched.onchain, enriched.macro)
@@ -423,7 +379,7 @@ def enrich_prices_with_scores(
     return enriched_prices
 
 
-# ─── Test ────────────────────────────────────────────────────────────────────────
+# ─── Test ─────────���──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     async def test():

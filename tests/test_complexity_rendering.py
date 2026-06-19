@@ -455,15 +455,21 @@ class TestForUserFormat(unittest.TestCase):
         просто без обёрток."""
         agents = format_prices_for_agents(self._prices())
         user = format_prices_for_agents(self._prices(), for_user=True)
+        # Общие данные (цены, уровни, тренд) — одинаковы в обоих форматах.
         for needle in (
             "Bitcoin (BTC): $79,110",
             "Ethereum (ETH): $2,223",
-            "▲ выше $81,956 (MA200) → LONG",
+            "▲ выше $81,956 (MA200)",
             "↔️ ТРЕНД: SIDEWAYS",
             "📉 ТРЕНД: DOWNTREND",
         ):
             self.assertIn(needle, agents)
             self.assertIn(needle, user)
+        # А directional-метки различаются: агенты видят LONG/SHORT, юзер —
+        # спот/стейбл (шорт вне проекта, не показываем пользователю).
+        self.assertIn("(MA200) → LONG", agents)
+        self.assertIn("(MA200) → покупка спот", user)
+        self.assertNotIn("SHORT", user)
 
     def test_user_format_does_not_explode_on_empty_macro(self):
         """Когда секции пустые (MACRO/SPX/OIL отсутствуют) — нет

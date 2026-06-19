@@ -319,6 +319,19 @@ def _stars_for_chart(stars: str) -> str:
     return stars.replace("⭐", "★")
 
 
+def _direction_verdict(pct: int) -> tuple[str, str]:
+    """Спот-направление из силы сигнала. Детерминированно, без LONG/SHORT-жаргона.
+
+    Возвращает (текст, цвет). Только лонг/спот: либо «в тренде → держим спот»,
+    либо «нейтрально → ждём», либо «вне тренда → в стейбле».
+    """
+    if pct >= 60:
+        return "СПОТ / ЛОНГ — рынок в тренде, держим равным весом", COLORS["bull"]
+    if pct <= 35:
+        return "В СТЕЙБЛ — вне тренда, ждём разворота вверх", COLORS["bear"]
+    return "НЕЙТРАЛЬНО — ждём подтверждения тренда", COLORS["gold"]
+
+
 def generate_main_chart(report: str, prices: dict, stars: str, pct: int):
     if not MATPLOTLIB_OK:
         return None
@@ -329,7 +342,7 @@ def generate_main_chart(report: str, prices: dict, stars: str, pct: int):
 
     try:
         _setup_dark_style()
-        fig = plt.figure(figsize=(10, 6), facecolor=COLORS["bg"])
+        fig = plt.figure(figsize=(10.5, 6.8), facecolor=COLORS["bg"])
 
         now            = datetime.now().strftime("%d.%m.%Y %H:%M")
         bull_pct, bear_pct = _parse_bull_bear_score(report, prices)
@@ -344,43 +357,50 @@ def generate_main_chart(report: str, prices: dict, stars: str, pct: int):
         except Exception:
             models_str = ""
 
-        grid_top = 0.80 if finbert else 0.88
-        gs  = GridSpec(2, 2, figure=fig, hspace=0.45, wspace=0.35,
-                       left=0.08, right=0.95, top=grid_top, bottom=0.08)
+        verdict_txt, verdict_color = _direction_verdict(pct)
 
-        fig.text(0.5, 0.96, "DIALECTIC EDGE — MARKET ANALYSIS",
-                 ha="center", va="top", fontsize=13, fontweight="bold",
+        grid_top = 0.74 if finbert else 0.78
+        gs  = GridSpec(2, 2, figure=fig, hspace=0.62, wspace=0.32,
+                       left=0.08, right=0.95, top=grid_top, bottom=0.085)
+
+        fig.text(0.5, 0.975, "DIALECTIC EDGE — АНАЛИЗ РЫНКА",
+                 ha="center", va="top", fontsize=14, fontweight="bold",
                  color=COLORS["gold"])
-        fig.text(0.5, 0.915, f"{now}   |   Сигнал: {stars} ({pct}%)",
+        fig.text(0.5, 0.935, f"{now}   ·   Сигнал {stars} ({pct}%)",
                  ha="center", va="top", fontsize=9, color=COLORS["subtext"])
+
+        # Направление куда смотреть — крупная цветная плашка (спот-формулировка).
+        fig.text(
+            0.5, 0.893, f"▶  {verdict_txt}",
+            ha="center", va="top", fontsize=11.5, fontweight="bold",
+            color="white",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor=verdict_color,
+                      edgecolor="none", alpha=0.92),
+        )
         if finbert:
             fl = str(finbert.get("label", "")).upper()
             fc = str(finbert.get("confidence", "")).upper()
             fig.text(
-                0.5, 0.875,
+                0.5, 0.83,
                 f"FinBERT: {fl} · уверенность классификатора: {fc} — полоса «Уровень сигнала» = эта уверенность, "
                 f"не прогноз «рынок вверх/вниз».",
                 ha="center", va="top", fontsize=7.2, color=COLORS["subtext"],
             )
 
         ax1 = fig.add_subplot(gs[0, 0])
-        ax1.set_title("Баланс аргументов", color=COLORS["text"], fontsize=10, pad=8)
-        ax1.barh([""], [bull_pct], color=COLORS["bull"], height=0.5,
-                 label=f"Bull {bull_pct:.0f}%")
+        ax1.set_title("Баланс аргументов (Bull / Bear)",
+                      color=COLORS["text"], fontsize=10, pad=8)
+        ax1.barh([""], [bull_pct], color=COLORS["bull"], height=0.55)
         ax1.barh([""], [bear_pct], left=[bull_pct],
-                 color=COLORS["bear"], height=0.5,
-                 label=f"Bear {bear_pct:.0f}%")
+                 color=COLORS["bear"], height=0.55)
         ax1.set_xlim(0, 100)
         ax1.set_xlabel("% аргументов", fontsize=8)
-        ax1.axvline(50, color=COLORS["border"], linewidth=1, linestyle="--")
-        ax1.text(bull_pct / 2, 0, f"{bull_pct:.0f}%",
+        ax1.axvline(50, color=COLORS["text"], linewidth=1.2, linestyle="--", alpha=0.7)
+        ax1.text(bull_pct / 2, 0, f"Bull {bull_pct:.0f}%",
                  ha="center", va="center", fontsize=9, color="white", fontweight="bold")
-        ax1.text(bull_pct + bear_pct / 2, 0, f"{bear_pct:.0f}%",
+        ax1.text(bull_pct + bear_pct / 2, 0, f"Bear {bear_pct:.0f}%",
                  ha="center", va="center", fontsize=9, color="white", fontweight="bold")
         ax1.set_yticks([])
-        ax1.legend(loc="upper right", fontsize=7,
-                   facecolor=COLORS["surface"], edgecolor=COLORS["border"],
-                   labelcolor=COLORS["text"])
         ax1.text(
             0.5, -0.42,
             "Шкала: итог дебатов + Fear & Greed, не «кто чаще сказал рост/риск».",

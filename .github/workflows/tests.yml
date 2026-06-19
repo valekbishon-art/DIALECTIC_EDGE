@@ -46,12 +46,16 @@ jobs:
           #   tests → core.market_complexity → core/__init__.py
           #   → decision_engine → analysis_service → database (aiosqlite)
           #   → news_fetcher (feedparser) → core/correlation (numpy).
+          # pytest нужен только чтобы import-цепочка тестов-на-pytest
+          # (test_import_smoke / test_scheduler_start / test_halal_signals_ui)
+          # не роняла `unittest discover` на этапе импорта модуля.
           pip install \
             aiohttp==3.10.5 \
             aiosqlite==0.20.0 \
             feedparser==6.0.11 \
             numpy \
-            certifi
+            certifi \
+            pytest
 
       - name: Run unit tests (fast subset)
         run: |
@@ -80,6 +84,9 @@ jobs:
           #   * google-generativeai, redis, streamlit, pandas → AI-провайдеры,
           #     кэш, опциональные модули.
           pip install -r requirements.txt
+          # pytest не в requirements.txt (не runtime-зависимость), но без него
+          # `unittest discover` падает на import тестов-на-pytest.
+          pip install pytest
 
       - name: Smoke-import handlers + providers (CI honesty check)
         # Если кто-то сломает handler-модуль (опечатка импорта, кривое

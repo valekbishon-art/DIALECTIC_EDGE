@@ -32,7 +32,10 @@ os.environ.setdefault("BOT_TOKEN", "test:test")
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast job)")
 class TestSignalExplainKeyboard(unittest.TestCase):
-    """Структура клавиатуры — глоссарий + снайпинг с UID в callback_data."""
+    """Структура клавиатуры — единственная кнопка-глоссарий с UID в callback_data.
+
+    Снайпинг-кнопка удалена (снайпинг листингов = спекуляция, исключён из проекта).
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -46,10 +49,10 @@ class TestSignalExplainKeyboard(unittest.TestCase):
         kb = self._kb(42)
         self.assertIsInstance(kb, InlineKeyboardMarkup)
 
-    def test_single_row_two_buttons(self):
+    def test_single_row_one_button(self):
         kb = self._kb(42)
         self.assertEqual(len(kb.inline_keyboard), 1)
-        self.assertEqual(len(kb.inline_keyboard[0]), 2)
+        self.assertEqual(len(kb.inline_keyboard[0]), 1)
 
     def test_button_text_human_readable(self):
         kb = self._kb(42)
@@ -67,11 +70,13 @@ class TestSignalExplainKeyboard(unittest.TestCase):
         btn = kb.inline_keyboard[0][0]
         self.assertEqual(btn.callback_data, "sigexplain:42")
 
-    def test_sniping_callback_data_carries_user_id_and_capital(self):
+    def test_no_sniping_button(self):
+        # Снайпинг-кнопка удалена — в клавиатуре её быть не должно.
         kb = self._kb(42, 250)
-        btn = kb.inline_keyboard[0][1]
-        self.assertIn("Снайпинг", btn.text)
-        self.assertEqual(btn.callback_data, "sniping:42:250.00")
+        for row in kb.inline_keyboard:
+            for btn in row:
+                self.assertNotIn("Снайпинг", btn.text)
+                self.assertFalse((btn.callback_data or "").startswith("sniping:"))
 
     def test_callback_data_uid_isolation(self):
         # Разные UID → разные callback_data → бот сможет отделить чужой клик.
