@@ -1,8 +1,10 @@
-"""Tests for the on-demand /pump command and the Pitch→Pump menu swap.
+"""Tests for the on-demand /pump command (no longer in persistent menu).
 
-Andrey's task 3: the persistent menu loses the 💎 Питч button (pitch now lives
-only in the /start welcome) and gains a 🚀 Памп button + /pump command that runs
-the same pump_scanner as the auto-alerts (with the PR #75 integrity guards).
+The persistent menu was redesigned in PR #89 — bottom bar now shows only
+6 buttons: 🎯 Лучшая сделка, 📊 Прогноз, 🏛 Рынки, 🧭 Анализ,
+💼 Инструменты, ⚙️ Ещё. The 🚀 Памп button was removed from the main
+keyboard (pump lives only via /pump command or auto-alerts).  Pitch
+(💎 Питч) was removed earlier and lives only in /start welcome.
 
 aiogram-gated (CI unit-fast subset has no aiogram). ``import main`` is safe —
 config.BOT_TOKEN falls back to a placeholder, same as test_markets_sections.
@@ -21,11 +23,18 @@ except ImportError:
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram not installed (unit-fast subset)")
 class TestPumpMenuWiring(unittest.TestCase):
-    def test_pump_button_replaces_pitch_in_persistent_kb(self):
+    def test_pump_button_not_in_persistent_kb(self):
+        """The new simplified keyboard has no 🚀 Памп — pump is /pump only."""
         import main
         kb_text = str(main.persistent_kb())
-        self.assertIn("🚀 Памп", kb_text)
+        self.assertNotIn("🚀 Памп", kb_text)
         self.assertNotIn("💎 Питч", kb_text)
+        # New category buttons are present instead
+        self.assertIn("🧭 Анализ", kb_text)
+        self.assertIn("💼 Инструменты", kb_text)
+        self.assertIn("⚙️ Ещё", kb_text)
+        # Прогноз stays per user request
+        self.assertIn("📊 Прогноз", kb_text)
 
     def test_button_constants(self):
         import main
