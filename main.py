@@ -3658,6 +3658,12 @@ async def _kb_newbie(message: Message):
 async def _kb_guide(message: Message):
     await _send_bot_guide(message.chat.id)
 
+
+@dp.message(F.text == PERSISTENT_BTN_PUMP)
+async def _kb_pump(message: Message):
+    # Зарегистрирован ДО catch-all handle_text_input, иначе тот перехватит текст.
+    await cmd_pump(message)
+
 # ─── /profile ─────────────────────────────────────────────────────────────────
 
 @dp.message(Command("profile"))
@@ -6643,11 +6649,6 @@ async def cmd_pump(message: Message):
             logger.debug("pump: render failed for %s: %s", getattr(sig, "asset", "?"), e)
 
 
-@dp.message(F.text == PERSISTENT_BTN_PUMP)
-async def _kb_pump(message: Message):
-    await cmd_pump(message)
-
-
 @dp.callback_query(F.data == "pumpref")
 async def _cb_pump_refresh(cb: CallbackQuery):
     """🔄 Обновить карточку «что разгоняется» (новым сообщением)."""
@@ -7281,6 +7282,9 @@ def _calc_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📋 История", callback_data="calc:list"),
             InlineKeyboardButton(text="📊 Статистика", callback_data="calc:stats"),
         ],
+        [
+            InlineKeyboardButton(text="🧭 EDGE-план", callback_data="cmd:edgeplan"),
+        ],
     ])
 
 
@@ -7469,7 +7473,7 @@ async def handle_calc_callback(callback: CallbackQuery):
     if data == "calc:buy":
         user_trade_state[user_id] = {"step": "buy_symbol"}
         await callback.message.answer(
-            "➕ *Новая покупка*\nКакую монету купил? Напиши тике��, например `BTC`.\n\n(отмена — /calc)",
+            "➕ *Новая покупка*\nКакую монету купил? Напиши тикер, например `BTC`.\n\n(отмена — /calc)",
             parse_mode="Markdown")
         await callback.answer()
         return
@@ -7524,11 +7528,24 @@ async def _handle_trade_text(message: Message, user_id: int, text: str) -> bool:
     step = state.get("step")
 
     if step == "buy_symbol":
-        sym = text.strip().upper().lstrip("$")
+        parts = text.strip().split()
+        sym = parts[0].upper().strip("$").replace(",", "") if parts else ""
         if not sym.isalnum() or len(sym) > 12:
             await message.answer("Это не похоже на тикер. Напиши, например, `BTC`.", parse_mode="Markdown")
             return True
         state["symbol"] = sym
+        # Пользователь мог сразу написать «BTC 0.5» — подхватим количество,
+        # если второй токен это чистое число монет (без $, т.к. $-сумма ≠ qty).
+        if len(parts) >= 2 and "$" not in parts[1]:
+            try:
+                qty = float(parts[1].replace(",", "."))
+                assert qty > 0
+                state["qty"] = qty
+                state["step"] = "buy_price"
+                await message.answer(f"По какой цене за 1 {sym}? Например `60000`.", parse_mode="Markdown")
+                return True
+            except Exception:
+                pass
         state["step"] = "buy_qty"
         await message.answer(f"Сколько {sym} купил? Введи количество монет, например `0.5`.", parse_mode="Markdown")
         return True
