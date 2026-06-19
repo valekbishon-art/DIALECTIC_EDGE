@@ -283,11 +283,17 @@ PERSISTENT_BTN_VIP      = "💎 VIP"
 PERSISTENT_BTN_WHATIDO  = "💎 Что я умею"
 PERSISTENT_BTN_NEWBIE   = "🆕 Новичок"
 PERSISTENT_BTN_GUIDE    = "📘 Команды"
+# Категории-разделы нижнего меню (открывают тематические подменю отдельным сообщением)
+PERSISTENT_BTN_ANALYSIS = "🧭 Анализ"
+PERSISTENT_BTN_TOOLS    = "💼 Инструменты"
+PERSISTENT_BTN_MORE     = "⚙️ Ещё"
 
 
 def persistent_kb() -> ReplyKeyboardMarkup:
-    """Главное меню снизу. Висит постоянно. Спот-инструменты: прогноз, рынки,
-    скринер, P2P, настройки, помощь."""
+    """Главное меню снизу — минимум кнопок. Только самое важное:
+    лучшая сделка, прогноз, рынки + 3 раздела (Анализ / Инструменты / Ещё),
+    которые открывают тематические подменю отдельным сообщением.
+    Так нижняя панель чистая, а всё остальное — на расстоянии одного тапа."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -296,30 +302,9 @@ def persistent_kb() -> ReplyKeyboardMarkup:
                 KeyboardButton(text=PERSISTENT_BTN_MARKETS),
             ],
             [
-                KeyboardButton(text=PERSISTENT_BTN_TREND),
-                KeyboardButton(text=PERSISTENT_BTN_STOCKS),
-                KeyboardButton(text=PERSISTENT_BTN_SCREENER),
-                KeyboardButton(text=PERSISTENT_BTN_PUMP),
-            ],
-            [
-                KeyboardButton(text=PERSISTENT_BTN_P2P),
-                KeyboardButton(text=PERSISTENT_BTN_DCA),
-                KeyboardButton(text=PERSISTENT_BTN_ALERTS),
-            ],
-            [
-                KeyboardButton(text=PERSISTENT_BTN_SIGSTAT),
-                KeyboardButton(text=PERSISTENT_BTN_BACKTEST),
-                KeyboardButton(text=PERSISTENT_BTN_TRACK),
-            ],
-            [
-                KeyboardButton(text=PERSISTENT_BTN_VIP),
-                KeyboardButton(text=PERSISTENT_BTN_WHATIDO),
-                KeyboardButton(text=PERSISTENT_BTN_NEWBIE),
-            ],
-            [
-                KeyboardButton(text=PERSISTENT_BTN_GUIDE),
-                KeyboardButton(text=PERSISTENT_BTN_SETTINGS),
-                KeyboardButton(text=PERSISTENT_BTN_HELP),
+                KeyboardButton(text=PERSISTENT_BTN_ANALYSIS),
+                KeyboardButton(text=PERSISTENT_BTN_TOOLS),
+                KeyboardButton(text=PERSISTENT_BTN_MORE),
             ],
         ],
         resize_keyboard=True,
@@ -2880,30 +2865,135 @@ def _backtest_caption() -> str:
     )
 
 
-@dp.message(Command("backtest"))
-async def cmd_backtest(message: Message):
-    """Бэктест спот-стратегии на реальной истории: /backtest"""
+def _backtest_stocks_caption() -> str:
+    """Короткая подпись к графику бэктеста по АКЦИЯМ из docs/backtest_stocks_summary.json."""
+    import json as _json
     from pathlib import Path as _Path
-    png = _Path(__file__).resolve().parent / "docs" / "backtest_equity.png"
-    caption = _backtest_caption()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❓ Что это / Как читать", callback_data="explain:backtest"),
-    ]])
+    p = _Path(__file__).resolve().parent / "docs" / "backtest_stocks_summary.json"
+    try:
+        m = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return (
+            "*📊 Бэктест EDGE по акциям*\n\n"
+            "Та же логика, что и по крипте, но на 15 крупных акциях США. "
+            "Только спот/лонг, без плеча и шортов.\n\n"
+            "_Подробности — кнопка ❓ ниже._"
+        )
+    pc = lambda x: f"{x * 100:+.1f}%"
+    rob_line = ""
+    if m.get("rob_n_configs"):
+        beat = m.get("rob_frac_beat", 0) * 100
+        rob_line = (
+            f"\n🧪 Робастность ({m['rob_n_configs']} конфигураций, не одна удачная точка): "
+            f"Sharpe медиана {m.get('rob_sharpe_med',0):.2f}, "
+            f"и {beat:.0f}% вариантов обошли SPY.\n"
+        )
+    return (
+        "*📊 Бэктест EDGE по АКЦИЯМ* (полный цикл "
+        f"{m.get('start_day','?')} → {m.get('end_day','?')}, ~{m.get('years',0):.1f} г.: "
+        "covid-крах 2020 → медведь 2022 → рост 2023-25)\n"
+        "\n"
+        "15 US large-cap. Только спот/лонг, без плеча и шортов. Momentum-weight + "
+        "краш-фильтр (уход в кэш при развороте рынка SPY).\n"
+        "\n"
+        f"• 🟢 EDGE: *{pc(m.get('strat_total',0))}*, просадка {pc(m.get('strat_mdd',0))}, "
+        f"Sharpe {m.get('strat_sharpe',0):.2f}\n"
+        f"• 🔵 Корзина 15 акций: {pc(m.get('basket_total',0))}, просадка {pc(m.get('basket_mdd',0))}\n"
+        f"• 🔴 SPY «купи и держи»: {pc(m.get('spy_total',0))}, просадка {pc(m.get('spy_mdd',0))}, "
+        f"Sharpe {m.get('spy_sharpe',0):.2f}\n"
+        f"{rob_line}"
+        "\n"
+        f"Главное: за {m.get('years',0):.1f} г. EDGE обогнал индекс SPY и по доходности, и по "
+        "Sharpe, И с меньшей просадкой. В рынке только "
+        f"{m.get('exposure',0)*100:.0f}% времени — остальное в кэше.\n"
+        "\n"
+        "_История, не гарантия будущего. Не инвестсовет._"
+    )
+
+
+async def _send_backtest_asset(chat_id: int, asset: str):
+    """Отправляет график+подпись бэктеста по выбранному активу: 'crypto' | 'stocks'."""
+    from pathlib import Path as _Path
+    base = _Path(__file__).resolve().parent / "docs"
+    if asset == "stocks":
+        png = base / "backtest_stocks_equity.png"
+        caption = _backtest_stocks_caption()
+        explain_key = "explain:backtest_stocks"
+        fname = "backtest_stocks.png"
+    else:  # crypto (по умолчанию)
+        png = base / "backtest_equity.png"
+        caption = _backtest_caption()
+        explain_key = "explain:backtest"
+        fname = "backtest.png"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❓ Что это / Как читать", callback_data=explain_key)],
+        [InlineKeyboardButton(text="🔁 Другой бэктест", callback_data="cmd:backtest")],
+    ])
     if png.exists():
         try:
             await bot.send_photo(
-                message.chat.id,
-                photo=BufferedInputFile(png.read_bytes(), filename="backtest.png"),
+                chat_id,
+                photo=BufferedInputFile(png.read_bytes(), filename=fname),
                 caption=caption, parse_mode="Markdown", reply_markup=kb,
             )
             return
         except Exception:  # noqa: BLE001 — например подпись слишком длинная
             pass
     try:
-        await message.answer(caption, parse_mode="Markdown",
-                             disable_web_page_preview=True, reply_markup=kb)
+        await bot.send_message(chat_id, caption, parse_mode="Markdown",
+                               disable_web_page_preview=True, reply_markup=kb)
     except Exception:  # noqa: BLE001
-        await message.answer(caption, reply_markup=kb)
+        await bot.send_message(chat_id, caption, reply_markup=kb)
+
+
+def _backtest_choose_kb() -> InlineKeyboardMarkup:
+    """Меню выбора актива для бэктеста: крипта или акции."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📈 Крипта", callback_data="bt:crypto"),
+            InlineKeyboardButton(text="📊 Акции", callback_data="bt:stocks"),
+        ],
+        [InlineKeyboardButton(text="❓ Как читать бэктест", callback_data="explain:backtest_stocks")],
+    ])
+
+
+@dp.message(Command("backtest"))
+async def cmd_backtest(message: Message):
+    """Бэктест спот-стратегии: выбор актива (крипта/акции). /backtest"""
+    text = (
+        "*📊 Бэктест EDGE-стратегии*\n"
+        "\n"
+        "Проверка стратегии на реальной истории цен. Выбери актив:\n"
+        "\n"
+        "• *📈 Крипта* — топ-монеты, фильтр режима по BTC.\n"
+        "• *📊 Акции* — 15 крупных акций США, фильтр режима по SPY.\n"
+        "\n"
+        "Логика одинаковая — только спот/лонг, без плеча и шортов."
+    )
+    try:
+        await message.answer(text, parse_mode="Markdown",
+                             disable_web_page_preview=True, reply_markup=_backtest_choose_kb())
+    except Exception:  # noqa: BLE001
+        await message.answer(text, reply_markup=_backtest_choose_kb())
+
+
+@dp.callback_query(F.data.startswith("bt:"))
+async def handle_backtest_asset(callback: CallbackQuery):
+    """Выбор актива бэктеста: bt:crypto | bt:stocks → шлёт график + подпись."""
+    try:
+        await callback.answer()
+    except Exception:  # noqa: BLE001
+        pass
+    asset = (callback.data or "bt:crypto").split(":", 1)[1] or "crypto"
+    try:
+        await _send_backtest_asset(callback.message.chat.id, asset)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"backtest asset '{asset}' failed: {e}")
+        try:
+            await bot.send_message(callback.from_user.id,
+                                   "⚠️ Не получилось открыть бэктест. Попробуй ещё раз.")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ─── EDGE: профиль стратегии (выбор пресета для /plan) ��───────────────
@@ -3489,48 +3579,20 @@ async def cmd_start(message: Message):
     # можно сразу идти на «📊 Покажи прогноз сейчас» или ⚙️ Настройки.
     # Полное inline-меню: все функции бота прямо на /start (тренд, акции,
     # рынки, скринер, P2P, DCA, алерты, сигнал, бэктест, трек-рекорд и т.д.).
+    # Компактный экран: 3 главных действия + 3 раздела. Остальное — внутри разделов,
+    # чтобы не заваливать пользователя кнопками.
     welcome_inline = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🆕 Я новичок — гид + PDF",  callback_data="cmd:newbie")],
-        [InlineKeyboardButton(text="🤝 Проведи меня за руку (тур)", callback_data="tour:go")],
         [InlineKeyboardButton(text="🧭 EDGE-план: что купить сейчас", callback_data="cmd:edgeplan")],
-        [InlineKeyboardButton(text="🎯 Лучшая сделка сейчас",  callback_data="cmd:signal")],
         [
+            InlineKeyboardButton(text="🎯 Сделка",             callback_data="cmd:signal"),
             InlineKeyboardButton(text="📊 Прогноз",            callback_data="cmd:daily"),
             InlineKeyboardButton(text="🏛 Рынки",              callback_data="cmd:markets"),
         ],
         [
-            InlineKeyboardButton(text="🧭 Тренд",              callback_data="hsnav:trend"),
-            InlineKeyboardButton(text="📈 Акции",              callback_data="hsnav:stocks"),
-        ],
-        [
-            InlineKeyboardButton(text="🧪 Скринер",            callback_data="cmd:screener"),
-            InlineKeyboardButton(text="🧭 P2P арбитраж",       callback_data="cmd:p2p"),
-        ],
-        [
-            InlineKeyboardButton(text="💰 DCA-план",           callback_data="cmd:dca"),
-            InlineKeyboardButton(text="🔔 Алерты",             callback_data="cmd:alerts"),
-        ],
-        [
-            InlineKeyboardButton(text="🧮 Калькулятор сделок", callback_data="calc:menu"),
-        ],
-        [
-            InlineKeyboardButton(text="⚖️ Депег стейблов",     callback_data="cmd:depeg"),
-        ],
-        [
-            InlineKeyboardButton(text="🤖 Автоторговля",       callback_data="cmd:signalstatus"),
-            InlineKeyboardButton(text="🧪 Бэктест",            callback_data="cmd:backtest"),
-        ],
-        [
-            InlineKeyboardButton(text="📊 Трек-рекорд",        callback_data="cmd:trackrecord"),
-            InlineKeyboardButton(text="💎 VIP",                callback_data="cmd:premium"),
-        ],
-        [
-            InlineKeyboardButton(text="💎 Что я умею",         callback_data="cmd:pitch"),
-            InlineKeyboardButton(text="⚙️ Настройки",          callback_data="cmd:profile"),
-        ],
-        [
-            InlineKeyboardButton(text="📘 Команды",            callback_data="cmd:guide"),
-            InlineKeyboardButton(text="❓ Помощь",             callback_data="cmd:help"),
+            InlineKeyboardButton(text="🧭 Анализ",             callback_data="menu:analysis"),
+            InlineKeyboardButton(text="💼 Инструменты",        callback_data="menu:tools"),
+            InlineKeyboardButton(text="⚙️ Ещё",                callback_data="menu:more"),
         ],
     ])
 
@@ -3663,6 +3725,122 @@ async def _kb_guide(message: Message):
 async def _kb_pump(message: Message):
     # Зарегистрирован ДО catch-all handle_text_input, иначе тот перехватит текст.
     await cmd_pump(message)
+
+
+# ─── Разделы меню: тематические подменю (Анализ / Инструменты / Ещё) ──────────────────
+# Нижняя панель держит только самое важное. Остальные функции сгруппированы по смыслу
+# и открываются отдельным сообщением со своими inline-кнопками. Кнопки переиспользуют
+# уже существующие callback'и (cmd:*, hsnav:*, calc:menu, tour:go) — ничего не дублируем.
+
+def _menu_analysis_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🧭 Тренд",          callback_data="hsnav:trend"),
+            InlineKeyboardButton(text="📈 Акции",          callback_data="hsnav:stocks"),
+        ],
+        [
+            InlineKeyboardButton(text="🧪 Скринер",        callback_data="cmd:screener"),
+            InlineKeyboardButton(text="🚀 Что разгоняется", callback_data="cmd:pump"),
+        ],
+        [
+            InlineKeyboardButton(text="🧪 Бэктест",        callback_data="cmd:backtest"),
+            InlineKeyboardButton(text="⚖️ Депег стейблов",  callback_data="cmd:depeg"),
+        ],
+    ])
+
+
+def _menu_tools_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🧭 EDGE-план",      callback_data="cmd:edgeplan"),
+            InlineKeyboardButton(text="🎯 Сделка сейчас",  callback_data="cmd:signal"),
+        ],
+        [
+            InlineKeyboardButton(text="💰 DCA-план",       callback_data="cmd:dca"),
+            InlineKeyboardButton(text="🧮 Калькулятор",    callback_data="calc:menu"),
+        ],
+        [
+            InlineKeyboardButton(text="🤖 Автоторговля",   callback_data="cmd:signalstatus"),
+            InlineKeyboardButton(text="🔔 Алерты",         callback_data="cmd:alerts"),
+        ],
+        [
+            InlineKeyboardButton(text="🌐 P2P арбитраж",   callback_data="cmd:p2p"),
+            InlineKeyboardButton(text="📊 Трек-рекорд",    callback_data="cmd:trackrecord"),
+        ],
+    ])
+
+
+def _menu_more_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🆕 Я новичок — гид", callback_data="cmd:newbie"),
+            InlineKeyboardButton(text="🤝 Тур по боту",     callback_data="tour:go"),
+        ],
+        [
+            InlineKeyboardButton(text="💎 Что я умею",      callback_data="cmd:pitch"),
+            InlineKeyboardButton(text="💎 VIP-доступ",      callback_data="cmd:premium"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Настройки",       callback_data="cmd:profile"),
+            InlineKeyboardButton(text="📘 Команды",         callback_data="cmd:guide"),
+        ],
+        [
+            InlineKeyboardButton(text="❓ Помощь",          callback_data="cmd:help"),
+        ],
+    ])
+
+
+# Раздел → (заголовок, фабрика клавиатуры)
+_MENU_SECTIONS = {
+    "analysis": (
+        "🧭 *Анализ рынка*\nЧто происходит на рынке прямо сейчас. Выбери инструмент:",
+        _menu_analysis_kb,
+    ),
+    "tools": (
+        "💼 *Инструменты и портфель*\nПлан сделок, расчёты, автоторговля и алерты:",
+        _menu_tools_kb,
+    ),
+    "more": (
+        "⚙️ *Ещё*\nГиды, профиль, подписка и помощь:",
+        _menu_more_kb,
+    ),
+}
+
+
+async def _send_menu_section(chat_id: int, section: str):
+    """Шлёт тематическое подменю отдельным сообщением."""
+    title, kb_fn = _MENU_SECTIONS.get(section, _MENU_SECTIONS["analysis"])
+    try:
+        await bot.send_message(chat_id, title, parse_mode="Markdown",
+                               disable_web_page_preview=True, reply_markup=kb_fn())
+    except Exception:  # noqa: BLE001
+        await bot.send_message(chat_id, title, reply_markup=kb_fn())
+
+
+@dp.callback_query(F.data.startswith("menu:"))
+async def handle_menu_section(callback: CallbackQuery):
+    """Inline-кнопки разделов из /start: menu:analysis | menu:tools | menu:more."""
+    try:
+        await callback.answer()
+    except Exception:  # noqa: BLE001
+        pass
+    section = (callback.data or "menu:analysis").split(":", 1)[1] or "analysis"
+    await _send_menu_section(callback.message.chat.id, section)
+
+
+@dp.message(F.text == PERSISTENT_BTN_ANALYSIS)
+async def _kb_analysis(message: Message):
+    await _send_menu_section(message.chat.id, "analysis")
+
+
+@dp.message(F.text == PERSISTENT_BTN_TOOLS)
+async def _kb_tools(message: Message):
+    await _send_menu_section(message.chat.id, "tools")
+
+
+@dp.message(F.text == PERSISTENT_BTN_MORE)
+async def _kb_more(message: Message):
+    await _send_menu_section(message.chat.id, "more")
 
 # ─── /profile ─────────────────────────────────────────────────────────────────
 
