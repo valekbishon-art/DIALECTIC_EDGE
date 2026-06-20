@@ -58,19 +58,31 @@ async def main() -> int:
         return 1
 
     # ── 2. Run the full analysis pipeline (same as /daily) ──
+    # run_full_analysis(user_id, ...) requires a user_id and returns a
+    # (report, prices) tuple. For the cron run there is no requesting user,
+    # so we generate the canonical digest "as the bot owner": the first id in
+    # ADMIN_IDS, falling back to 0 (get_profile handles a missing profile).
+    def _cron_user_id() -> int:
+        raw = os.getenv("ADMIN_IDS", "") or ""
+        for tok in raw.replace(";", ",").split(","):
+            tok = tok.strip()
+            if tok.lstrip("-").isdigit():
+                return int(tok)
+        return 0
+
     logger.info("Starting AI analysis pipeline...")
     try:
         from analysis_service import run_full_analysis
-        result = await run_full_analysis()
+        report, _prices = await run_full_analysis(_cron_user_id())
     except Exception as e:
         logger.error("Analysis pipeline failed: %s", e)
         return 1
 
-    if not result or not result.get("full_report"):
+    if not report:
         logger.error("Analysis returned empty result")
         return 1
 
-    full_report = result["full_report"]
+    full_report = report
     logger.info("Analysis complete (%d chars)", len(full_report))
 
     # ── 3. Build digest context + short report ──
