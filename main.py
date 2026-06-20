@@ -4362,9 +4362,18 @@ async def _run_daily_for_horizon(
                     except Exception:
                         pass
                 full = pg_digest["digest_text"] or ""
+                # The cache stores only the digest TEXT (not prices), so the
+                # chart's "Ключевые активы" table would render empty. Pull live
+                # prices (cheap — market data only, no LLM/debate) so the chart
+                # is complete when serving the morning cache.
+                try:
+                    cache_prices, _ = await get_full_realtime_context()
+                except Exception as e:
+                    logger.warning("live prices for cached digest failed: %s", e)
+                    cache_prices = {}
                 await store_and_link_debate(user_id, full, full)
                 await send_daily_digest_bundle(
-                    chat_id, user_id, full, {}, horizon=pack,
+                    chat_id, user_id, full, cache_prices or {}, horizon=pack,
                 )
                 await bot.send_message(
                     chat_id,
