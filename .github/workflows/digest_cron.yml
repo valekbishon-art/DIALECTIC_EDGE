@@ -70,7 +70,10 @@ jobs:
       - name: Write Railway env to .env
         env:
           RAILWAY_ENV: ${{ secrets.RAILWAY_ENV }}
-        run: printf '%s\n' "$RAILWAY_ENV" > .env
+        run: |
+          cat > .env << 'EOF'
+          ${{ secrets.RAILWAY_ENV }}
+          EOF
 
       - name: Generate & cache digest
         run: python cron_digest.py
@@ -101,7 +104,10 @@ jobs:
       - name: Write Railway env to .env
         env:
           RAILWAY_ENV: ${{ secrets.RAILWAY_ENV }}
-        run: printf '%s\n' "$RAILWAY_ENV" > .env
+        run: |
+          cat > .env << 'EOF'
+          ${{ secrets.RAILWAY_ENV }}
+          EOF
 
       - name: Broadcast digest if the live bot did not (fallback)
         run: python cron_broadcast.py
