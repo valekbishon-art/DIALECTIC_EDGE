@@ -81,13 +81,27 @@ async def main() -> int:
         logger.warning("build_digest_context failed: %s — saving raw report", e)
         ctx = {}
 
-    # Build short report (Telegram-formatted digest).
+    # Build short report (Telegram-formatted digest) the SAME way the bot does
+    # in send_daily_digest_bundle: parse_report_parts -> extract stars/pct ->
+    # build_short_report(parts, stars, pct, horizon=swing). The result is a list
+    # of message chunks; we join them for storage / serving.
     short_report = ""
     try:
-        # Import build_short_report from main.py — it's defined locally there.
-        # We replicate the minimal call here.
-        from main import build_short_report
-        short_report = build_short_report(full_report) or ""
+        from main import (
+            build_short_report,
+            parse_report_parts,
+            extract_signal_pct_and_stars,
+        )
+        from core.horizons import get_horizon, DEFAULT_HORIZON_KEY
+
+        parts = parse_report_parts(full_report)
+        pct_val, stars_str = extract_signal_pct_and_stars(full_report)
+        pack = get_horizon(DEFAULT_HORIZON_KEY)
+        messages = build_short_report(parts, stars_str, pct_val, horizon=pack, prices={})
+        if isinstance(messages, (list, tuple)):
+            short_report = "\n\n".join(m for m in messages if m)
+        else:
+            short_report = str(messages or "")
     except Exception as e:
         logger.warning("build_short_report failed: %s", e)
 
@@ -103,10 +117,29 @@ async def main() -> int:
     )
     if ok:
         logger.info("Digest saved to PostgreSQL for %s", today)
-        return 0
     else:
         logger.error("Failed to save digest to PostgreSQL")
-        return 1
+
+    # ── 5. Fallback: push the digest to the GitHub data table ──
+    # PostgreSQL (Neon) is the primary store; the GitHub commit is a redundant
+    # fallback so the bot can still serve today's digest if the DB is down.
+    github_ok = False
+    try:
+        from github_export import push_digest_cache
+        github_ok = await push_digest_cache(
+            report=full_report,
+            date_str=today.isoformat(),
+            full_debates=full_report,
+        )
+        if github_ok:
+            logger.info("Digest also pushed to GitHub table for %s", today)
+        else:
+            logger.warning("GitHub digest push returned False (check GITHUB_TOKEN)")
+    except Exception as e:
+        logger.warning("GitHub digest push failed: %s", e)
+
+    # Success if the digest landed in at least one store.
+    return 0 if (ok or github_ok) else 1
 
 
 if __name__ == "__main__":

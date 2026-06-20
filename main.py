@@ -258,7 +258,7 @@ def feedback_keyboard(report_type: str) -> InlineKeyboardMarkup:
 # Юзеру не надо помнить /команды — он просто тыкает в нижний ряд.
 # Подписи к кнопкам строго совпадают с тем что обрабатывают
 # `_PERSISTENT_KB_TRIGGERS` ниже (любое расхождение → кнопка не сработает).
-PERSISTENT_BTN_DAILY    = "📊 Прогноз"
+PERSISTENT_BTN_DAILY    = "🧠 Диалектика"
 PERSISTENT_BTN_PITCH    = "💎 Питч"   # legacy: pitch lives only in /start now
 PERSISTENT_BTN_PUMP     = "🚀 Памп"
 PERSISTENT_BTN_MARKETS  = "🏛 Рынки"
@@ -3508,6 +3508,8 @@ async def handle_cmd_shortcuts(callback: CallbackQuery):
 
     mapping = {
         "profile": cmd_profile,
+        "dialectica": cmd_dialectica,
+        "digest_base": cmd_digest_base,
         "daily": cmd_daily,
         "markets": cmd_markets,
         "status": cmd_status,
@@ -3586,7 +3588,7 @@ async def cmd_start(message: Message):
         [InlineKeyboardButton(text="🧭 EDGE-план: что купить сейчас", callback_data="cmd:edgeplan")],
         [
             InlineKeyboardButton(text="🎯 Сделка",             callback_data="cmd:signal"),
-            InlineKeyboardButton(text="📊 Прогноз",            callback_data="cmd:daily"),
+            InlineKeyboardButton(text="🧠 Диалектика",         callback_data="cmd:dialectica"),
             InlineKeyboardButton(text="🏛 Рынки",              callback_data="cmd:markets"),
         ],
         [
@@ -3640,7 +3642,7 @@ async def cmd_start(message: Message):
 
 @dp.message(F.text == PERSISTENT_BTN_DAILY)
 async def _kb_daily(message: Message):
-    await cmd_daily(message)
+    await cmd_dialectica(message)
 
 
 
@@ -4130,6 +4132,92 @@ async def deliver_scheduled_daily(user_id: int) -> None:
         logger.warning("Рассылка дайджеста user %s: %s", user_id, e)
 
 
+async def broadcast_dialectica_digest() -> int:
+    """Рассылка утреннего Дайджеста Диалектики (09:00 MSK) всем, у кого есть доступ.
+
+    Получатели — пользователи с активным премиумом *или* фри-триалом
+    (payments.db.list_access_user_ids). У кого нет ни того, ни другого — не
+    получают ничего.
+
+    Дайджест берётся ОДИН РАЗ из дневного кэша PostgreSQL/Neon (его готовит
+    cron в 08:50 MSK), а затем рассылается всем — без повторного прогона AI на
+    каждого пользователя. По завершении день помечается broadcast_done=TRUE,
+    чтобы GitHub-Actions фолбэк не дублировал отправку.
+
+    Возвращает число пользователей, которым успешно ушёл дайджест.
+    """
+    from datetime import date as _date
+    today = _date.today()
+
+    # 0. Защита от дубля: если за сегодня дайджест уже разослан — выходим.
+    #    (живой бот и GitHub-фолбэк координируются через флаг broadcast_done).
+    try:
+        from payments.db import is_digest_broadcast
+        if await is_digest_broadcast(today):
+            logger.info("broadcast: дайджест за %s уже разослан — пропуск", today)
+            return 0
+    except Exception as e:
+        logger.warning("broadcast: is_digest_broadcast check failed: %s", e)
+
+    # 1. Берём готовый дайджест из PostgreSQL (его кладёт cron_digest.py).
+    report: str = ""
+    prices: dict = {}
+    try:
+        from payments.db import get_today_digest
+        cached = await get_today_digest()
+        if cached:
+            report = cached.get("digest_text") or cached.get("short_report") or ""
+    except Exception as e:
+        logger.warning("broadcast: get_today_digest failed: %s", e)
+
+    # 2. Фолбэк на локальный кэш бота, если в БД пусто.
+    if not report:
+        try:
+            pack = get_horizon(DEFAULT_HORIZON_KEY)
+            local = storage.get_cached_report(horizon=pack.key)
+            if local:
+                report = local.get("report") or ""
+                prices = local.get("prices") or {}
+        except Exception as e:
+            logger.warning("broadcast: local cache fallback failed: %s", e)
+
+    if not report:
+        logger.warning("broadcast: нет готового дайджеста на %s — рассылка пропущена", today)
+        return 0
+
+    # 3. Получатели: премиум ИЛИ активный триал.
+    try:
+        from payments.db import list_access_user_ids, mark_digest_broadcast
+        recipients = await list_access_user_ids()
+    except Exception as e:
+        logger.error("broadcast: не удалось получить получателей: %s", e)
+        return 0
+
+    if not recipients:
+        logger.info("broadcast: нет получателей с премиум/триалом")
+        return 0
+
+    pack = get_horizon(DEFAULT_HORIZON_KEY)
+    sent = 0
+    for uid in recipients:
+        try:
+            await send_daily_digest_bundle(uid, uid, report, prices, horizon=pack)
+            sent += 1
+        except Exception as e:
+            logger.warning("broadcast: ошибка отправки user %s: %s", uid, e)
+        # Throttle: ~20 msg/sec лимит Telegram. Держим запас.
+        await asyncio.sleep(0.06)
+
+    try:
+        await mark_digest_broadcast(today)
+    except Exception as e:
+        logger.warning("broadcast: mark_digest_broadcast failed: %s", e)
+
+    logger.info("📬 Дайджест Диалектики разослан: %s/%s получателей (%s)",
+                sent, len(recipients), today)
+    return sent
+
+
 # ─── Multi-horizon picker ─────────────────────────────────────────────────────
 
 # Алиасы CLI-аргументов /daily для обратной совместимости. `force/fresh/new/новый`
@@ -4346,6 +4434,132 @@ async def _run_daily_for_horizon(
                 pass
 
 
+# ─── Диалектика (интро + база дайджестов) ────────────────────────────────────
+
+_DIALECTICA_INTRO = (
+    "🧠 *Диалектика*\n\n"
+    "Это SaaS-система, внутри которой работает целая команда AI-агентов. "
+    "Они круглосуточно собирают рыночные данные, новости и геополитику, "
+    "спорят между собой (бык против медведя, проверяющий, синтезатор) и на "
+    "выходе дают тебе взвешенный анализ по рынку и отдельным активам — "
+    "без «угадайки» и хайпа.\n\n"
+    "Каждое утро система готовит свежий *Дайджест Диалектики* на горизонт "
+    "*7–14 дней*. Можешь запросить новый прямо сейчас или открыть базу "
+    "дайджестов за последние 14 дней.\n\n"
+    "Выбирай 👇"
+)
+
+
+def _dialectica_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🆕 Выдать новый Дайджест Диалектики",
+                              callback_data="cmd:daily")],
+        [InlineKeyboardButton(text="🗂 База Дайджестов",
+                              callback_data="cmd:digest_base")],
+    ])
+
+
+async def cmd_dialectica(message: Message):
+    """Интро-экран Диалектики с двумя кнопками: новый дайджест / база дайджестов."""
+    await message.answer(
+        _DIALECTICA_INTRO,
+        parse_mode="Markdown",
+        reply_markup=_dialectica_keyboard(),
+    )
+
+
+async def cmd_digest_base(message: Message):
+    """«База Дайджестов» — список дайджестов за последние 14 дней из PostgreSQL (Neon)."""
+    try:
+        from payments.db import get_recent_digests
+        digests = await get_recent_digests(14)
+    except Exception as e:
+        logger.error(f"digest_base fetch failed: {e}")
+        digests = []
+
+    if not digests:
+        await message.answer(
+            "🗂 *База Дайджестов*\n\n"
+            "Пока пусто — за последние 14 дней нет сохранённых дайджестов.\n"
+            "Они появляются автоматически каждое утро (или нажми "
+            "«🆕 Выдать новый Дайджест Диалектики»).",
+            parse_mode="Markdown",
+            reply_markup=_dialectica_keyboard(),
+        )
+        return
+
+    _RU_MONTHS = {
+        1: "янв", 2: "фев", 3: "мар", 4: "апр", 5: "май", 6: "июн",
+        7: "июл", 8: "авг", 9: "сен", 10: "окт", 11: "ноя", 12: "дек",
+    }
+    rows: list[list[InlineKeyboardButton]] = []
+    for d in digests:
+        dt = d["digest_date"]
+        label = f"{dt.day:02d} {_RU_MONTHS.get(dt.month, '')}"
+        regime = (d.get("market_regime") or "").strip()
+        if regime:
+            label += f" · {regime[:24]}"
+        rows.append([InlineKeyboardButton(
+            text=f"📄 {label}",
+            callback_data=f"dgview:{dt.isoformat()}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к Диалектике",
+                                      callback_data="cmd:dialectica")])
+
+    await message.answer(
+        f"🗂 *База Дайджестов* — последние 14 дней\n\n"
+        f"Сохранено: *{len(digests)}*. Выбери дату, чтобы открыть дайджест 👇",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.startswith("dgview:"))
+async def handle_digest_view(callback: CallbackQuery):
+    """Открывает сохранённый дайджест за выбранную дату из базы."""
+    await callback.answer()
+    date_str = (callback.data or "").split(":", 1)[1] if ":" in (callback.data or "") else ""
+    try:
+        from datetime import date as _date
+        target = _date.fromisoformat(date_str)
+    except Exception:
+        await bot.send_message(callback.from_user.id, "⚠️ Не удалось разобрать дату дайджеста.")
+        return
+
+    try:
+        from payments.db import get_digest_by_date
+        digest = await get_digest_by_date(target)
+    except Exception as e:
+        logger.error(f"dgview fetch failed: {e}")
+        digest = None
+
+    if not digest:
+        await bot.send_message(
+            callback.from_user.id,
+            f"⚠️ Дайджест за {date_str} не найден в базе.",
+        )
+        return
+
+    body = (digest.get("short_report") or "").strip() or (digest.get("digest_text") or "").strip()
+    if not body:
+        body = "_(пустой дайджест)_"
+    # Telegram-лимит сообщения ~4096 символов — режем с запасом.
+    MAX = 3900
+    header = f"📄 *Дайджест Диалектики — {date_str}*\n\n"
+    if len(body) > MAX:
+        body = body[:MAX] + "\n\n…(дайджест обрезан)"
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ К базе дайджестов", callback_data="cmd:digest_base")],
+    ])
+    await bot.send_message(
+        callback.from_user.id,
+        header + body,
+        parse_mode="Markdown",
+        reply_markup=back_kb,
+        disable_web_page_preview=True,
+    )
+
+
 @dp.message(Command("daily"))
 @require_vip
 async def cmd_daily(message: Message):
@@ -4360,8 +4574,7 @@ async def cmd_daily(message: Message):
         )
         return
 
-    horizon_key, requested_force = _parse_daily_args(message.text or "")
-    admin = is_admin(user_id)
+    _, requested_force = _parse_daily_args(message.text or "")
     force_fresh = _resolve_force_fresh(user_id, requested_force)
     if requested_force and not force_fresh:
         # Юзер попросил force, но он не админ — отдаём дневной кэш и поясняем.
@@ -4371,10 +4584,9 @@ async def cmd_daily(message: Message):
             parse_mode="Markdown",
         )
 
-    if horizon_key is None:
-        # Без аргументов — показываем пикер. force, если был, не теряется.
-        await _send_horizon_picker(message, force_fresh=force_fresh, allow_force=admin)
-        return
+    # Горизонт зафиксирован на swing (7–14 дней). Выбор горизонта убран —
+    # любой переданный аргумент горизонта игнорируется, всегда отдаём swing.
+    horizon_key = DEFAULT_HORIZON_KEY
 
     await _run_daily_for_horizon(
         chat_id=message.chat.id,
@@ -7206,7 +7418,8 @@ async def main():
     scheduler = Scheduler(
         bot=bot,
         send_daily_fn=deliver_scheduled_daily,
-        check_predictions_fn=check_pending_predictions
+        check_predictions_fn=check_pending_predictions,
+        broadcast_daily_fn=broadcast_dialectica_digest,
     )
 
     # Start signal trader in background

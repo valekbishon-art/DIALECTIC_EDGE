@@ -310,8 +310,9 @@ class TestBuildSignalsMessageStar(unittest.TestCase):
         # рынка (цены/трейдеры) сохранены.
         self.assertNotIn("ЛУЧШАЯ СДЕЛКА", msg)
         self.assertNotIn(" → ", msg)          # нет строк-сигналов 'BTC → LONG'
-        self.assertIn("/carry", msg)
-        self.assertIn("/arb", msg)
+        # carry/arb-блок полностью убран из MARKET SIGNALS.
+        self.assertNotIn("/carry", msg)
+        self.assertNotIn("/arb", msg)
         self.assertIn("ТРЕЙДЕРЫ", msg)
 
     def test_no_best_block_when_all_weak(self):
@@ -354,8 +355,9 @@ class TestBuildSignalsMessageStar(unittest.TestCase):
         self.assertNotIn("ТОП-3 СДЕЛОК", msg)
         self.assertNotIn("ЛУЧШАЯ СДЕЛКА", msg)
         self.assertNotIn("🥇", msg)
-        self.assertIn("/carry", msg)
-        self.assertIn("/arb", msg)
+        # carry/arb-блок полностью убран из MARKET SIGNALS.
+        self.assertNotIn("/carry", msg)
+        self.assertNotIn("/arb", msg)
 
     def test_falls_back_to_singular_header_when_one_qualifies(self):
         # 1 сильный + 1 слабый — заголовок «ЛУЧШАЯ СДЕЛКА» (singular).
@@ -374,7 +376,8 @@ class TestBuildSignalsMessageStar(unittest.TestCase):
         # Directional-заголовки убраны полностью — только указатель на реальный edge.
         self.assertNotIn("ЛУЧШАЯ СДЕЛКА", msg)
         self.assertNotIn("ТОП-", msg)
-        self.assertIn("/carry", msg)
+        # carry/arb-блок полностью убран из MARKET SIGNALS.
+        self.assertNotIn("/carry", msg)
 
 
 if __name__ == "__main__":

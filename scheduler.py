@@ -14,7 +14,7 @@ scheduler.py — Фоновые задачи по расписанию.
 import asyncio
 import logging
 import os
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from config import ADMIN_IDS
 from database import (
     get_daily_subscribers,
@@ -323,10 +323,13 @@ logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-    def __init__(self, bot, send_daily_fn, check_predictions_fn):
+    def __init__(self, bot, send_daily_fn, check_predictions_fn, broadcast_daily_fn=None):
         self.bot = bot
         self.send_daily = send_daily_fn
         self.check_predictions = check_predictions_fn
+        # Рассылка утреннего Дайджеста Диалектики в 09:00 MSK (premium/trial).
+        self.broadcast_daily = broadcast_daily_fn
+        self._last_broadcast_date: date | None = None
         self._running = False
         self._last_export_date: date | None = None
         self._last_p2p_alert_keys: dict[str, datetime] = {}
@@ -419,6 +422,11 @@ class Scheduler:
             self._midnight_reset_loop(),
             self._daily_github_export_loop(),
         ]
+
+        # Рассылка утреннего Дайджеста Диалектики в 09:00 MSK (premium/trial).
+        if self.broadcast_daily is not None:
+            tasks.append(self._dialectica_broadcast_loop())
+            logger.info("📬 Dialectica broadcast loop включён (09:00 MSK)")
 
         if ALERT_SYSTEM_ENABLED and self._alert_system:
             tasks.append(self._alert_checker_loop())
@@ -814,6 +822,40 @@ class Scheduler:
                             logger.warning(f"Ошибка рассылки для {user['user_id']}: {e}")
             except Exception as e:
                 logger.error(f"Daily digest loop error: {e}")
+            await asyncio.sleep(60)
+
+    async def _dialectica_broadcast_loop(self):
+        """Рассылает утренний Дайджест Диалектики в 09:00 MSK раз в сутки.
+
+        Получатели — пользователи с активным премиумом ИЛИ фри-триалом
+        (см. broadcast_dialectica_digest в main.py). Дайджест готовит cron в
+        08:50 MSK и кладёт в PostgreSQL/Neon, поэтому к 09:00 он уже готов.
+
+        Москва — фиксированный UTC+3 (без переходов на летнее время), поэтому
+        целевое время считаем как UTC+3 без зависимости от таймзоны сервера.
+        """
+        if self.broadcast_daily is None:
+            return
+        # Небольшая задержка на старте, чтобы БД успела инициализироваться.
+        await asyncio.sleep(45)
+        while self._running:
+            try:
+                msk_now = datetime.now(timezone.utc) + timedelta(hours=3)
+                today = msk_now.date()
+                if (
+                    msk_now.hour == 9
+                    and msk_now.minute < 5
+                    and self._last_broadcast_date != today
+                ):
+                    self._last_broadcast_date = today
+                    logger.info("📬 09:00 MSK — запускаю рассылку Дайджеста Диалектики")
+                    try:
+                        sent = await self.broadcast_daily()
+                        logger.info("📬 Рассылка завершена: %s получателей", sent)
+                    except Exception as e:
+                        logger.error("Dialectica broadcast error: %s", e)
+            except Exception as e:
+                logger.error("Dialectica broadcast loop error: %s", e)
             await asyncio.sleep(60)
 
     async def _prediction_checker_loop(self):

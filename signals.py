@@ -710,13 +710,19 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
             lines.append("")
 
     # Вердикт
+    lines.append("━━━━━━━━━━━━━━")
     if verdict and verdict.get("verdict"):
         v = verdict["verdict"]
         emoji = "🐂" if v == "BULLISH" else "🐻" if v == "BEARISH" else "⚪️"
+        v_ru = {
+            "BULLISH": "Бычий настрой — перевес покупателей",
+            "BEARISH": "Медвежий настрой — перевес продавцов",
+            "NEUTRAL": "Ситуация неопределена",
+        }.get(v, v)
         lines.append(f"{emoji} *НАШ ВЕРДИКТ*")
-        lines.append(v)
+        lines.append(v_ru)
     else:
-        lines.append("🎯 *НАШ ВЕРДИКТ*")
+        lines.append("⚪️ *НАШ ВЕРДИКТ*")
         lines.append("Ситуация неопределена")
 
     lines.append("")
@@ -783,19 +789,14 @@ def build_signals_message(signals: list, binance_data: dict, verdict: Optional[d
                 lines.append(f"   _Подтверждения: {confirm_str}_")
             lines.append("")
 
-        # Список directional LONG/SHORT-сигналов УБРАН (робастно убыточен по
-        # бэктесту 2020-26). Цены/фандинг выше оставлены — полезно. Реальный edge:
-        lines.append("💱 *Что РЕАЛЬНО делать* (проверено бэктестом, не угадайка цены):")
-        lines.append("• /carry — режим рынка + carry-сделка по шагам")
-        lines.append("• /arb — кросс-биржевой funding-арбитраж")
-        lines.append("_Directional LONG/SHORT-сигналы убраны как убыточные._")
-    else:
-        lines.append("💱 *Что делать:* /carry · /arb — реальный edge (carry/арбитраж).")
+        # Directional LONG/SHORT- и carry/arb-блоки убраны из MARKET SIGNALS.
+        # Цены / funding / диапазон дня выше — это и есть полезный сигнал.
+        pass
 
     lines.extend([
         "",
-        "⚠️ _Это информация, не финансовый совет._",
-        "_DYOR._"
+        "━━━━━━━━━━━━━━",
+        "⚠️ _Это информация, не финансовый совет. DYOR._",
     ])
 
     return "\n".join(lines)
