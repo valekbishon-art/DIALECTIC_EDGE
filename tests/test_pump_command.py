@@ -33,8 +33,9 @@ class TestPumpMenuWiring(unittest.TestCase):
         self.assertIn("🧭 Анализ", kb_text)
         self.assertIn("💼 Инструменты", kb_text)
         self.assertIn("⚙️ Ещё", kb_text)
-        # Прогноз stays per user request
-        self.assertIn("📊 Прогноз", kb_text)
+        # «Прогноз» переименован в «Диалектика» (per user request)
+        self.assertIn("🧠 Диалектика", kb_text)
+        self.assertNotIn("📊 Прогноз", kb_text)
 
     def test_button_constants(self):
         import main

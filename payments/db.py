@@ -173,9 +173,18 @@ CREATE TABLE IF NOT EXISTS daily_digests (
     digest_text     TEXT NOT NULL,
     short_report    TEXT DEFAULT '',
     market_regime   TEXT DEFAULT '',
+    broadcast_done  BOOLEAN DEFAULT FALSE,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 """
+
+# Idempotent migrations for daily_digests (column added after the table shipped).
+#   broadcast_done — set TRUE once the 09:00 MSK digest broadcast went out for
+#                    that date. Lets the GitHub-Actions fallback skip sending
+#                    when the live bot scheduler already delivered the digest.
+_MIGRATE_DIGEST_COLUMNS = [
+    "ALTER TABLE daily_digests ADD COLUMN IF NOT EXISTS broadcast_done BOOLEAN DEFAULT FALSE;",
+]
 
 
 async def init_postgres() -> bool:
@@ -192,6 +201,8 @@ async def init_postgres() -> bool:
             for stmt in _MIGRATE_TRIAL_COLUMNS:
                 await conn.execute(text(stmt))
             await conn.execute(text(_CREATE_DAILY_DIGESTS))
+            for stmt in _MIGRATE_DIGEST_COLUMNS:
+                await conn.execute(text(stmt))
         logger.info("PostgreSQL tables ready (vip_users + trial cols, daily_digests)")
         return True
     except Exception as e:
@@ -730,6 +741,147 @@ async def get_today_digest() -> Optional[dict]:
     except Exception as e:
         logger.warning("get_today_digest failed: %s", e)
         return None
+
+
+async def get_recent_digests(days: int = 14) -> list[dict]:
+    """Return the last ``days`` cached digests (newest first) for «База Дайджестов».
+
+    Each item: {digest_date, short_report, market_regime, created_at}.
+    The heavy ``digest_text`` is intentionally omitted — the list view only needs
+    date + regime; the full text is fetched on demand via :func:`get_digest_by_date`.
+    """
+    if not _is_enabled():
+        return []
+    try:
+        from sqlalchemy import text
+
+        cutoff = date.today() - timedelta(days=days)
+        async with await _get_session() as session:
+            rows = await session.execute(
+                text("""
+                    SELECT digest_date, short_report, market_regime, created_at
+                    FROM daily_digests
+                    WHERE digest_date >= :cutoff
+                    ORDER BY digest_date DESC
+                """),
+                {"cutoff": cutoff},
+            )
+            out: list[dict] = []
+            for r in rows.fetchall():
+                out.append({
+                    "digest_date": r[0],
+                    "short_report": r[1] or "",
+                    "market_regime": r[2] or "",
+                    "created_at": r[3],
+                })
+            return out
+    except Exception as e:
+        logger.warning("get_recent_digests failed: %s", e)
+        return []
+
+
+async def get_digest_by_date(digest_date: date) -> Optional[dict]:
+    """Fetch one cached digest by its date. Returns None if not found."""
+    if not _is_enabled():
+        return None
+    try:
+        from sqlalchemy import text
+
+        async with await _get_session() as session:
+            row = await session.execute(
+                text("""
+                    SELECT digest_text, short_report, market_regime, created_at
+                    FROM daily_digests WHERE digest_date = :d
+                """),
+                {"d": digest_date},
+            )
+            result = row.one_or_none()
+            if not result:
+                return None
+            return {
+                "digest_text": result[0],
+                "short_report": result[1],
+                "market_regime": result[2],
+                "created_at": result[3],
+            }
+    except Exception as e:
+        logger.warning("get_digest_by_date(%s) failed: %s", digest_date, e)
+        return None
+
+
+async def is_digest_broadcast(digest_date: date) -> bool:
+    """True if the 09:00 broadcast for ``digest_date`` already went out.
+
+    Used by the GitHub-Actions fallback to avoid double-sending when the live
+    bot scheduler already delivered the digest.
+    """
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import text
+
+        async with await _get_session() as session:
+            row = await session.execute(
+                text("SELECT broadcast_done FROM daily_digests WHERE digest_date = :d"),
+                {"d": digest_date},
+            )
+            result = row.one_or_none()
+            return bool(result and result[0])
+    except Exception as e:
+        logger.warning("is_digest_broadcast(%s) failed: %s", digest_date, e)
+        return False
+
+
+async def mark_digest_broadcast(digest_date: date) -> bool:
+    """Mark the digest for ``digest_date`` as already broadcast (idempotent)."""
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import text
+
+        async with await _get_session() as session:
+            await session.execute(
+                text("UPDATE daily_digests SET broadcast_done = TRUE WHERE digest_date = :d"),
+                {"d": digest_date},
+            )
+            await session.commit()
+        return True
+    except Exception as e:
+        logger.warning("mark_digest_broadcast(%s) failed: %s", digest_date, e)
+        return False
+
+
+async def list_access_user_ids() -> list[int]:
+    """Return user_ids that currently have access: active paid VIP OR active free
+    trial. Blocked users and trial_disabled users are excluded.
+
+    This is the recipient set for the 09:00 MSK digest broadcast — i.e. exactly
+    the users honoured by :func:`has_access` (premium *or* trial), so users with
+    neither receive nothing.
+    """
+    if not _is_enabled():
+        return []
+    try:
+        from sqlalchemy import text
+
+        now = datetime.now(timezone.utc)
+        async with await _get_session() as session:
+            rows = await session.execute(
+                text("""
+                    SELECT user_id FROM vip_users
+                    WHERE COALESCE(blocked, FALSE) = FALSE
+                      AND (
+                            (is_vip = TRUE AND (subscription_end IS NULL OR subscription_end > :now))
+                         OR (COALESCE(trial_disabled, FALSE) = FALSE
+                             AND trial_end IS NOT NULL AND trial_end > :now)
+                      )
+                """),
+                {"now": now},
+            )
+            return [int(r[0]) for r in rows.fetchall()]
+    except Exception as e:
+        logger.warning("list_access_user_ids failed: %s", e)
+        return []
 
 
 async def close_postgres() -> None:
