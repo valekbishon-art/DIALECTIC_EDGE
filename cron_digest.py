@@ -57,6 +57,24 @@ async def main() -> int:
         logger.error("PostgreSQL init failed")
         return 1
 
+    # ── 1b. Initialize the local SQLite DB (database.py) ──
+    # The analysis pipeline also writes to SQLite tables (daily_context,
+    # predictions, ai_call_metrics, ...). On a fresh GitHub Actions runner the
+    # SQLite file is empty, so we must create the schema here. On Railway the
+    # file persists, so init_db() is an idempotent no-op there.
+    try:
+        from database import init_db
+        await init_db()
+    except Exception as e:
+        logger.error("SQLite init_db failed: %s", e)
+        return 1
+    # ai_call_metrics lives in its own module; non-fatal if it can't init.
+    try:
+        from core.ai_metrics import init_ai_metrics_db
+        await init_ai_metrics_db()
+    except Exception as e:
+        logger.warning("ai_metrics init failed (non-fatal): %s", e)
+
     # ── 2. Run the full analysis pipeline (same as /daily) ──
     # run_full_analysis(user_id, ...) requires a user_id and returns a
     # (report, prices) tuple. For the cron run there is no requesting user,
