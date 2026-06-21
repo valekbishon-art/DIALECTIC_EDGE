@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Tuple
 
 from agents import DebateOrchestrator
@@ -366,7 +366,7 @@ async def run_full_analysis(
     if not custom_mode:
         _storage.cache_report(report, prices_dict, owner_user_id=user_id, horizon=pack.key)
         try:
-            date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+            date_str = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")
             from main import parse_report_parts
             parts = parse_report_parts(report)
             full_debates = ""

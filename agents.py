@@ -26,7 +26,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from ai_provider import ai
 from config import DEBATE_ROUNDS, DISCLAIMER
@@ -425,12 +425,12 @@ BEAR выдавать ТОЛЬКО если все три условия:
 🚨 НАПРАВЛЕНИЕ — НИКАКОГО КОНТРАРИАНА:
 Мы НЕ играем «все полезли в лонг → шортим». Направление сделки всегда совпадает
 с движением цены, по которому открывается триггер:
-    ✅ пробой/закрытие ВВЕРХ выше уровня → LONG (или CASH с флипом в LONG)
+    ✅ пробой/закрытие ВВЕРХ выше уровня → LONG (или CASH с флипом �� LONG)
     ✅ пробой/закрытие ВНИЗ ниже уровня → SHORT (или CASH с флипом в SHORT)
     ❌ "пробой $X вверх → SHORT" — ЭТО ИНВЕРСИЯ, ЗАПРЕЩЕНО
     ❌ "пробой $Y вниз → LONG" — ЭТО ИНВЕРСИЯ, ЗАПРЕЩЕНО
 В key_trigger и invalidation НЕ указывай LONG/SHORT ярлыки вообще — пиши только
-price-event («пробой $82000 вверх», «закрытие ниже $77000»). Направление сделки
+price-event («пробой $82000 вверх», «з��крытие ниже $77000»). Направление сделки
 рендерится только из plans[].direction, и валидируется отдельно. Если выдашь
 инверсию — пост-валидатор автоматически снимет ярлыки, но логирует это как
 галлюцинацию модели.
@@ -916,7 +916,7 @@ def _is_bidirectional_trigger(text: str) -> bool:
 # LONG-сторона, пробой ВНИЗ = bearish breakdown = SHORT-сторона. Контрарианская
 # логика «все полезли в лонг → шорти» в нашей системе НЕ предусмотрена —
 # направление сделки выражается через plans[].direction, не через текстовые
-# подсказки в key_trigger/invalidation. Поэтому при детекте инверсии мы
+# подсказки �� key_trigger/invalidation. Поэтому при детекте инверсии мы
 # вычищаем direction-ярлыки целиком — Telegram-юзер видит чистый price-event,
 # а direction берёт из блока «📋 ТОРГОВЫЙ ПЛАН».
 _DIRECTION_INVERSION_PATTERNS = [
@@ -1236,7 +1236,7 @@ def _render_trade_plan_from_json(
     stale-price guard: если plan.entry уехал >3% от рынка, plan переводится в CASH.
 
     `stop_factor` ('bearish'|'bullish'|None) — code-side override: even если LLM
-    придумал LONG при MVRV>3.5 — его план превратится в CASH с понятной причиной.
+    придумал LONG при MVRV>3.5 — его план превратится в CASH с понятной причи��ой.
     """
     pack = horizon_pack or get_horizon(None)
     min_rr = pack.min_rr
@@ -1658,7 +1658,7 @@ class DebateOrchestrator:
         return self._format_report(history, final_synthesis, news_context, custom_mode)
 
     def _format_report(self, history, synthesis, news_context, custom_mode) -> str:
-        now   = datetime.now().strftime("%d.%m.%Y %H:%M")
+        now   = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")
         title = "🔍 *АНАЛИЗ НОВОСТИ*" if custom_mode else "📊 *DIALECTIC EDGE — DAILY*"
 
         try:
