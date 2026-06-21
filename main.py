@@ -889,7 +889,7 @@ def build_short_report(parts: dict, stars: str, pct: int, horizon: HorizonPack |
         lines.append(f"⏱ *Горизонт:* {horizon.label_pretty}")
     lines.extend([
         "",
-        f"🎯 *��ердикт:* {verdict_emoji} *{verdict_label}*",
+        f"🎯 *Вердикт:* {verdict_emoji} *{verdict_label}*",
         f"📊 *Сигнал:* {stars} ({pct}%)",
     ])
 

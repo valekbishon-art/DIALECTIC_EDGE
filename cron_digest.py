@@ -27,7 +27,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 # Load .env if present (local runs).
 try:
@@ -138,7 +138,8 @@ async def main() -> int:
     market_regime = ctx.get("regime", "")
 
     # ── 4. Save to PostgreSQL ──
-    today = date.today()
+    # MSK-дата (UTC+3, без DST) — ключ должен совпадать с тем, под каким бот служит дайджест
+    today = (datetime.now(timezone.utc) + timedelta(hours=3)).date()
     ok = await save_digest(
         digest_date=today,
         digest_text=full_report,

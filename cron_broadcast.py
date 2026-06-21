@@ -29,7 +29,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 try:
     from dotenv import load_dotenv
@@ -59,7 +59,8 @@ async def main() -> int:
         logger.error("PostgreSQL init failed")
         return 1
 
-    today = date.today()
+    # MSK-дата (UTC+3, без DST) — единый ключ с scheduler._dialectica_broadcast_loop
+    today = (datetime.now(timezone.utc) + timedelta(hours=3)).date()
 
     # ── 2. Skip if the live bot already broadcast today's digest ──
     if await is_digest_broadcast(today):
