@@ -5,6 +5,187 @@
 
 ---
 
+## 📊 29.09.2026 14:38
+
+Вердикт: Нейтральный
+План: явной сделки нет, работаем только от триггеров наблюдения.
+
+<details><summary>📋 Полный отчёт (всё что видит пользователь)</summary>
+
+📊 *DIALECTIC EDGE — DAILY*
+🕐 _29.09.2026 14:38_
+
+💬 *Прежде чем читать:*
+Это структурированный AI-анализ на реальных данных.
+🐂 Bull = OpenRouter/Nemotron 3 Super 120B | 🐻 Bear = ? | 🔍 Verifier = ? | ⚖️ Synth = ?
+
+──────────────────────────────
+📶 *Уровень сигнала:* ⭐⭐⭐☆☆ (55% — уверенность FinBERT в тоне новостей)
+_Это не гарантированное направление рынка._
+
+
+🗣 *ХОД ДЕБАТОВ*
+
+
+*── Раунд 1 ──*
+
+🐂 Bull Researcher:
+[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐻 Bear Skeptic:
+[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+
+*── Раунд 2 ──*
+
+🔍 Data Verifier:
+[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐂 Bull Researcher:
+Bear’s arguments were not transmitted to me due to a provider error (the Bear Skeptic agent returned “Все провайдеры недоступны”). Because I have no actual quotes to rebut, I cannot point‑to‑specific Bear claims and either refute them with data or concede them. Instead, I will restate the bullish case for BTC using only the verified numbers supplied in the context, and I will explicitly note that I am not defending any hallucinated statements (none were made in my prior round).
+
+**Bullish points supported by the data**
+
+1. **VIX 15.88 < 20** – indicates a comfortable risk‑on environment (Yahoo [^VIX]). 
+2. **MVRV = 1.54** – BTC is trading at fair value (ON‑CHAIN METRICS (BTC): MVRV 1.54). 
+3. **SOPR 0.000 < 0.95** – signals capitulation‑type selling pressure (СИСТЕМА БАЛЛОВ: SOPR 0.000 < 0.95 → capitulation). 
+4. **Exchange Activity** shows low on‑chain movement, interpreted as HODLing (ON‑CHAIN METRICS (BTC): Exchange Activity 🟢🔵 HODLing фаза). 
+5. **CME Basis +0.223 %** (CME $84,450 vs spot $84,262) reflects institutional contango, a bullish signal (🐋 SMART‑MONEY СИГНАЛЫ). 
+6. **Fear & Greed Index 73/100 (Greed)**, down ‑1 point, still in the greed zone (Alternative.me Crypto F&G). 
+7. **FinBERT sentiment ‑0.330 → NEUTRAL** – the textual news tone is neither strongly bearish nor bullish, leaving room for price‑driven moves (FINBERT SENTIMENT block). 
+
+**Risk considerations (as required by the user’s moderate profile)** 
+
+- **Coinbase Premium ‑0.06 %** points to modest US‑sell pressure (🐋 SMART‑MONEY СИГНАЛЫ). 
+- **S&P 500** is sideways (above MA50 7,641, below MA200 7,209) – no strong equity tailwind. 
+- **Nasdaq 100** is in an uptrend, but the move is modest (+3.3 % vs MA50, +10.6 % vs MA200). 
+- **Oil** is in a downtrend (WTI $91.71, MA50 $88.41, MA200 $81.88) – could weigh on risk assets if macro‑risk rises. 
+- **Gold** and the **US Dollar Index** are both in downtrends/sideways, limiting safe‑haven flows into BTC. 
+
+**Conclusion for a 7‑14‑day swing** 
+
+Given the risk‑on VIX, fair‑value MVRV, capitulation‑type SOPR, HODLing‑type exchange activity, and institutional contango on CME, the net bias leans slightly bullish for BTC over the next week‑to‑two‑weeks. The moderate FinBERT sentiment and modest Coinbase‑Premium drag suggest the move, if any, should be modest in size. A prudent swing trade would therefore involve a small position (≤10 % of portfolio, per user profile) with a stop‑loss around 7‑10 % and a target near the next resistance level implied by the CME basis (≈ $84,450‑$84,500) or a modest upside to the $86‑$88 range if the risk‑on sentiment strengthens. 
+
+*All figures above are taken verbatim from the supplied “РЕАЛЬНЫЕ РЫНОЧНЫЕ ДАННЫЕ”, “ON‑CHAIN МЕТРИКИ”, “СИСТЕМА БАЛЛОВ”, “🐋 SMART‑MONEY СИГНАЛЫ”, and “FINBERT SENTIMENT” blocks; no external or invented numbers are used.*
+
+──────────────────────────────
+⚖️ *ВЕРДИКТ И ТОРГОВЫЙ ПЛАН*
+
+🏆 ВЕРДИКТ СУДЬИ: НЕЙТРАЛЬНЫЙ
+⏱ ГОРИЗОНТ: 📈 7-14 дней
+⚠️ CONSERVATIVE SIZING ACTIVE (0/3 trades before full size) — new prompts bake-in
+
+📋 ТОРГОВЫЙ ПЛАН:
+• нет идей с положительным ожиданием — стой в стороне
+
+📊 QE/QT РЕЖИМ: NEUTRAL — ликвидность нейтральна
+
+
+─────────────────────────
+🤝 *Честно о боте:*
+Это AI-анализ на основе публичных данных — не предсказание будущего.
+Рынок непредсказуем. Агенты могут ошибаться и иногда ошибаются.
+Где данных не хватало — агенты должны были это указать явно.
+Используй как один из инструментов мышления, не как сигнал к действию.
+
+⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
+
+</details>
+
+<details><summary>🗣 Все раунды дебатов</summary>
+
+============ Раунд 1 ============
+
+*── Раунд 1 ──*
+
+🐂 Bull Researcher:
+[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐻 Bear Skeptic:
+[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+============ Раунд 2 ============
+
+*── Раунд 2 ──*
+
+🔍 Data Verifier:
+[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐂 Bull Researcher:
+Bear’s arguments were not transmitted to me due to a provider error (the Bear Skeptic agent returned “Все провайдеры недоступны”). Because I have no actual quotes to rebut, I cannot point‑to‑specific Bear claims and either refute them with data or concede them. Instead, I will restate the bullish case for BTC using only the verified numbers supplied in the context, and I will explicitly note that I am not defending any hallucinated statements (none were made in my prior round).
+
+**Bullish points supported by the data**
+
+1. **VIX 15.88 < 20** – indicates a comfortable risk‑on environment (Yahoo [^VIX]). 
+2. **MVRV = 1.54** – BTC is trading at fair value (ON‑CHAIN METRICS (BTC): MVRV 1.54). 
+3. **SOPR 0.000 < 0.95** – signals capitulation‑type selling pressure (СИСТЕМА БАЛЛОВ: SOPR 0.000 < 0.95 → capitulation). 
+4. **Exchange Activity** shows low on‑chain movement, interpreted as HODLing (ON‑CHAIN METRICS (BTC): Exchange Activity 🟢🔵 HODLing фаза). 
+5. **CME Basis +0.223 %** (CME $84,450 vs spot $84,262) reflects institutional contango, a bullish signal (🐋 SMART‑MONEY СИГНАЛЫ). 
+6. **Fear & Greed Index 73/100 (Greed)**, down ‑1 point, still in the greed zone (Alternative.me Crypto F&G). 
+7. **FinBERT sentiment ‑0.330 → NEUTRAL** – the textual news tone is neither strongly bearish nor bullish, leaving room for price‑driven moves (FINBERT SENTIMENT block). 
+
+**Risk considerations (as required by the user’s moderate profile)** 
+
+- **Coinbase Premium ‑0.06 %** points to modest US‑sell pressure (🐋 SMART‑MONEY СИГНАЛЫ). 
+- **S&P 500** is sideways (above MA50 7,641, below MA200 7,209) – no strong equity tailwind. 
+- **Nasdaq 100** is in an uptrend, but the move is modest (+3.3 % vs MA50, +10.6 % vs MA200). 
+- **Oil** is in a downtrend (WTI $91.71, MA50 $88.41, MA200 $81.88) – could weigh on risk assets if macro‑risk rises. 
+- **Gold** and the **US Dollar Index** are both in downtrends/sideways, limiting safe‑haven flows into BTC. 
+
+**Conclusion for a 7‑14‑day swing** 
+
+Given the risk‑on VIX, fair‑value MVRV, capitulation‑type SOPR, HODLing‑type exchange activity, and institutional contango on CME, the net bias leans slightly bullish for BTC over the next week‑to‑two‑weeks. The moderate FinBERT sentiment and modest Coinbase‑Premium drag suggest the move, if any, should be modest in size. A prudent swing trade would therefore involve a small position (≤10 % of portfolio, per user profile) with a stop‑loss around 7‑10 % and a target near the next resistance level implied by the CME basis (≈ $84,450‑$84,500) or a modest upside to the $86‑$88 range if the risk‑on sentiment strengthens. 
+
+*All figures above are taken verbatim from the supplied “РЕАЛЬНЫЕ РЫНОЧНЫЕ ДАННЫЕ”, “ON‑CHAIN МЕТРИКИ”, “СИСТЕМА БАЛЛОВ”, “🐋 SMART‑MONEY СИГНАЛЫ”, and “FINBERT SENTIMENT” blocks; no external or invented numbers are used.*
+
+──────────────────────────────
+
+</details>
+
+---
+
 ## 📊 2026-09-28
 
 Вердикт: Нейтральный
@@ -254,6 +435,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-09-27
 
 Вердикт: Нейтральный
@@ -414,6 +597,8 @@ FinBERT -0,119 подтверждает мою позицию: значение 
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -700,6 +885,8 @@ Verifier также не указал никаких конкретных гал
 
 ---
 
+---
+
 ## 📊 2026-09-25
 
 Вердикт: Нейтральный
@@ -970,6 +1157,8 @@ FinBERT sentiment = **‑0,126 → NEUTRAL** (уверенность сигна�
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -1259,6 +1448,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-09-23
 
 Вердикт: Нейтральный
@@ -1512,6 +1703,8 @@ Because Bear and Verifier did not supply actionable critiques, there is no basis
 
 ---
 
+---
+
 ## 📊 2026-09-22
 
 Вердикт: Нейтральный
@@ -1674,6 +1867,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -1867,6 +2062,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -2079,6 +2276,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-09-19
 
 Вердикт: Нейтральный
@@ -2269,6 +2468,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -2545,6 +2746,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-09-17
 
 Вердикт: Нейтральный
@@ -2723,6 +2926,8 @@ Given the lack of a verifiable Bear critique, I rely on the sourced data above. 
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -2986,185 +3191,6 @@ Since Bear did not offer a concrete point to refute, there is nothing to contrad
 - **Coinbase Premium:** –0.11 % (US institutional sell pressure) is present, but it is outweighed by the combination of the above bullish indicators (VIX < 20, MVRV fair, NEAR strong momentum) which together give a net positive bias for a swing‑trade horizon of 7‑14 days.
 
 **Conclusion:** With no substantive Bear critique to address and Verifier confirming the absence of hallucinations, the bullish stance remains supported by the verifiable market data: NEAR’s strong 30‑day growth, a risk‑on VIX environment, fair MVRV for BTC, and a neutral FinBERT reading that does not contradict the technical setup. The recommended swing‑trade approach (LONG on NEAR, with a stop‑loss around 7‑10 % and a target near the projected TP levels) stays appropriate for a moderate‑risk, 1‑14‑day horizon.
-
-──────────────────────────────
-⚖️ *ВЕРДИКТ И ТОРГОВЫЙ ПЛАН*
-
-🏆 ВЕРДИКТ СУДЬИ: НЕЙТРАЛЬНЫЙ
-⏱ ГОРИЗОНТ: 📈 7-14 дней
-⚠️ CONSERVATIVE SIZING ACTIVE (0/3 trades before full size) — new prompts bake-in
-
-📋 ТОРГОВЫЙ ПЛАН:
-• нет идей с положительным ожиданием — стой в стороне
-
-📊 QE/QT РЕЖИМ: NEUTRAL — ликвидность нейтральна
-
-
-─────────────────────────
-🤝 *Честно о боте:*
-Это AI-анализ на основе публичных данных — не предсказание будущего.
-Рынок непредсказуем. Агенты могут ошибаться и иногда ошибаются.
-Где данных не хватало — агенты должны были это указать явно.
-Используй как один из инструментов мышления, не как сигнал к действию.
-
-⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
-
-</details>
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
-## 📊 2026-09-15
-
-Вердикт: Нейтральный
-План: явной сделки нет, работаем только от триггеров наблюдения.
-
-<details><summary>📋 Полный отчёт (всё что видит пользователь)</summary>
-
-📊 *DIALECTIC EDGE — DAILY*
-🕐 _15.09.2026 13:30_
-
-💬 *Прежде чем читать:*
-Это структурированный AI-анализ на реальных данных.
-🐂 Bull = OpenRouter/Nemotron 3 Super 120B | 🐻 Bear = ? | 🔍 Verifier = ? | ⚖️ Synth = ?
-
-──────────────────────────────
-📶 *Уровень сигнала:* ⭐⭐⭐⭐☆ (85% — уверенность FinBERT в тоне новостей)
-_Это не гарантированное направление рынка._
-
-
-🗣 *ХОД ДЕБАТОВ*
-
-
-*── Раунд 1 ──*
-
-🐂 Bull Researcher:
-Бычьих аргументов в текущих данных недостаточно — сильных сигналов с подтверждённым источником не выделил, склоняюсь к нейтральной позиции.
-
-🐻 Bear Skeptic:
-[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.",
- "status": "NOT_FOUND"
- }
-}
-]
-
-
-*── Раунд 2 ──*
-
-🔍 Data Verifier:
-[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.",
- "status": "NOT_FOUND"
- }
-}
-]
-
-🐂 Bull Researcher:
-Bear говорит: «[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: { "error": { "code": 404, "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.", "status": "NOT_FOUND" } }]»
-
-Это не содержательный аргумент, а техническая ошибка агента, поэтому я не могу опровергнуть или подтвердить какие‑либо конкретные доводы Bear. Поскольку Bear не привёл проверяемых фактов, моя позиция остаётся нейтральной. FinBERT -0.112 → NEUTRAL подтверждает, что текущий новостной фон не даёт явного бычьего или медвежьего смещения, что согласуется с моим выводом о отсутствии достаточных бычьих сигналов для открытия позиции.
-
-──────────────────────────────
-⚖️ *ВЕРДИКТ И ТОРГОВЫЙ ПЛАН*
-
-🏆 ВЕРДИКТ СУДЬИ: НЕЙТРАЛЬНЫЙ
-⏱ ГОРИЗОНТ: 📈 7-14 дней
-⚠️ CONSERVATIVE SIZING ACTIVE (0/3 trades before full size) — new prompts bake-in
-
-📋 ТОРГОВЫЙ ПЛАН:
-• нет идей с положительным ожиданием — стой в стороне
-
-📊 QE/QT РЕЖИМ: NEUTRAL — ликвидность нейтральна
-
-
-─────────────────────────
-🤝 *Честно о боте:*
-Это AI-анализ на основе публичных данных — не предсказание будущего.
-Рынок непредсказуем. Агенты могут ошибаться и иногда ошибаются.
-Где данных не хватало — агенты должны были это указать явно.
-Используй как один из инструментов мышления, не как сигнал к действию.
-
-⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
-
-</details>
-
-<details><summary>🗣 Все раунды дебатов</summary>
-
-📊 *DIALECTIC EDGE — DAILY*
-🕐 _15.09.2026 13:30_
-
-💬 *Прежде чем читать:*
-Это структурированный AI-анализ на реальных данных.
-🐂 Bull = OpenRouter/Nemotron 3 Super 120B | 🐻 Bear = ? | 🔍 Verifier = ? | ⚖️ Synth = ?
-
-──────────────────────────────
-📶 *Уровень сигнала:* ⭐⭐⭐⭐☆ (85% — уверенность FinBERT в тоне новостей)
-_Это не гарантированное направление рынка._
-
-
-🗣 *ХОД ДЕБАТОВ*
-
-
-*── Раунд 1 ──*
-
-🐂 Bull Researcher:
-Бычьих аргументов в текущих данных недостаточно — сильных сигналов с подтверждённым источником не выделил, склоняюсь к нейтральной позиции.
-
-🐻 Bear Skeptic:
-[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.",
- "status": "NOT_FOUND"
- }
-}
-]
-
-
-*── Раунд 2 ──*
-
-🔍 Data Verifier:
-[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.",
- "status": "NOT_FOUND"
- }
-}
-]
-
-🐂 Bull Researcher:
-Bear говорит: «[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: { "error": { "code": 404, "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.", "status": "NOT_FOUND" } }]»
-
-Это не содержательный аргумент, а техническая ошибка агента, поэтому я не могу опровергнуть или подтвердить какие‑либо конкретные доводы Bear. Поскольку Bear не привёл проверяемых фактов, моя позиция остаётся нейтральной. FinBERT -0.112 → NEUTRAL подтверждает, что текущий новостной фон не даёт явного бычьего или медвежьего смещения, что согласуется с моим выводом о отсутствии достаточных бычьих сигналов для открытия позиции.
 
 ──────────────────────────────
 ⚖️ *ВЕРДИКТ И ТОРГОВЫЙ ПЛАН*
