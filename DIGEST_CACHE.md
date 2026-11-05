@@ -5,6 +5,153 @@
 
 ---
 
+## 📊 05.11.2026 16:31
+
+Вердикт: Нейтральный
+План: явной сделки нет, работаем только от триггеров наблюдения.
+
+<details><summary>📋 Полный отчёт (всё что видит пользователь)</summary>
+
+📊 *DIALECTIC EDGE — DAILY*
+🕐 _05.11.2026 16:31_
+
+💬 *Прежде чем читать:*
+Это структурированный AI-анализ на реальных данных.
+🐂 Bull | 🐻 Bear | 🔍 Verifier | ⚖️ Synth
+
+──────────────────────────────
+📶 *Уровень сигнала:* ⭐⭐⭐☆☆ (55% — уверенность FinBERT в тоне новостей)
+_Это не гарантированное направление рынка._
+
+
+🗣 *ХОД ДЕБАТОВ*
+
+
+*── Раунд 1 ──*
+
+🐂 Bull Researcher:
+[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐻 Bear Skeptic:
+[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+
+*── Раунд 2 ──*
+
+🔍 Data Verifier:
+[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐂 Bull Researcher:
+[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+──────────────────────────────
+⚖️ *ВЕРДИКТ И ТОРГОВЫЙ ПЛАН*
+
+🏆 ВЕРДИКТ СУДЬИ: НЕЙТРАЛЬНЫЙ
+⏱ ГОРИЗОНТ: 📈 7-14 дней
+⚠️ CONSERVATIVE SIZING ACTIVE (0/3 trades before full size) — new prompts bake-in
+
+📋 ТОРГОВЫЙ ПЛАН:
+• нет идей с положительным ожиданием — стой в стороне
+
+📊 QE/QT РЕЖИМ: NEUTRAL — ликвидность нейтральна
+
+
+─────────────────────────
+🤝 *Честно о боте:*
+Это AI-анализ на основе публичных данных — не предсказание будущего.
+Рынок непредсказуем. Агенты могут ошибаться и иногда ошибаются.
+Где данных не хватало — агенты должны были это указать явно.
+Используй как один из инструментов мышления, не как сигнал к действию.
+
+⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
+
+</details>
+
+<details><summary>🗣 Все раунды дебатов</summary>
+
+============ Раунд 1 ============
+
+*── Раунд 1 ──*
+
+🐂 Bull Researcher:
+[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐻 Bear Skeptic:
+[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+============ Раунд 2 ============
+
+*── Раунд 2 ──*
+
+🔍 Data Verifier:
+[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+🐂 Bull Researcher:
+[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
+ "error": {
+ "code": 404,
+ "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+ "status": "NOT_FOUND"
+ }
+}
+]
+
+──────────────────────────────
+
+</details>
+
+---
+
 ## 📊 2026-11-04
 
 Вердикт: Нейтральный
@@ -181,6 +328,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -365,6 +514,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 03.11.2026 16:02
 
 Вердикт: Нейтральный
@@ -509,6 +660,8 @@ _Это не гарантированное направление рынка._
 ──────────────────────────────
 
 </details>
+
+---
 
 ---
 
@@ -701,6 +854,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-11-01
 
 Вердикт: Нейтральный
@@ -877,6 +1032,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -1077,6 +1234,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-10-30
 
 Вердикт: Нейтральный
@@ -1253,6 +1412,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -1461,6 +1622,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-10-28
 
 Вердикт: Нейтральный
@@ -1637,6 +1800,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -1853,6 +2018,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-10-26
 
 Вердикт: Нейтральный
@@ -2029,6 +2196,8 @@ _Это не гарантированное направление рынка._
 ⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
 
 </details>
+
+---
 
 ---
 
@@ -2253,6 +2422,8 @@ _Это не гарантированное направление рынка._
 
 ---
 
+---
+
 ## 📊 2026-10-24
 
 Вердикт: Нейтральный
@@ -2348,209 +2519,6 @@ _Это не гарантированное направление рынка._
 
 📊 *DIALECTIC EDGE — DAILY*
 🕐 _24.10.2026 12:49_
-
-💬 *Прежде чем читать:*
-Это структурированный AI-анализ на реальных данных.
-🐂 Bull | 🐻 Bear | 🔍 Verifier | ⚖️ Synth
-
-──────────────────────────────
-📶 *Уровень сигнала:* ⭐⭐⭐☆☆ (55% — уверенность FinBERT в тоне новостей)
-_Это не гарантированное направление рынка._
-
-
-🗣 *ХОД ДЕБАТОВ*
-
-
-*── Раунд 1 ──*
-
-🐂 Bull Researcher:
-[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-🐻 Bear Skeptic:
-[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-
-*── Раунд 2 ──*
-
-🔍 Data Verifier:
-[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-🐂 Bull Researcher:
-[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-──────────────────────────────
-⚖️ *ВЕРДИКТ И ТОРГОВЫЙ ПЛАН*
-
-🏆 ВЕРДИКТ СУДЬИ: НЕЙТРАЛЬНЫЙ
-⏱ ГОРИЗОНТ: 📈 7-14 дней
-⚠️ CONSERVATIVE SIZING ACTIVE (0/3 trades before full size) — new prompts bake-in
-
-📋 ТОРГОВЫЙ ПЛАН:
-• нет идей с положительным ожиданием — стой в стороне
-
-📊 QE/QT РЕЖИМ: NEUTRAL — ликвидность нейтральна
-
-
-─────────────────────────
-🤝 *Честно о боте:*
-Это AI-анализ на основе публичных данных — не предсказание будущего.
-Рынок непредсказуем. Агенты могут ошибаться и иногда ошибаются.
-Где данных не хватало — агенты должны были это указать явно.
-Используй как один из инструментов мышления, не как сигнал к действию.
-
-⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
-
-</details>
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
-## 📊 2026-10-23
-
-Вердикт: Нейтральный
-План: явной сделки нет, работаем только от триггеров наблюдения.
-
-<details><summary>📋 Полный отчёт (всё что видит пользователь)</summary>
-
-📊 *DIALECTIC EDGE — DAILY*
-🕐 _23.10.2026 13:33_
-
-💬 *Прежде чем читать:*
-Это структурированный AI-анализ на реальных данных.
-🐂 Bull | 🐻 Bear | 🔍 Verifier | ⚖️ Synth
-
-──────────────────────────────
-📶 *Уровень сигнала:* ⭐⭐⭐☆☆ (55% — уверенность FinBERT в тоне новостей)
-_Это не гарантированное направление рынка._
-
-
-🗣 *ХОД ДЕБАТОВ*
-
-
-*── Раунд 1 ──*
-
-🐂 Bull Researcher:
-[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-🐻 Bear Skeptic:
-[Ошибка агента Bear Skeptic: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-
-*── Раунд 2 ──*
-
-🔍 Data Verifier:
-[Ошибка агента Data Verifier: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-🐂 Bull Researcher:
-[Ошибка агента Bull Researcher: Все провайдеры недоступны. Последняя ошибка: Gemini HTTP 404: {
- "error": {
- "code": 404,
- "message": "This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
- "status": "NOT_FOUND"
- }
-}
-]
-
-──────────────────────────────
-⚖️ *ВЕРДИКТ И ТОРГОВЫЙ ПЛАН*
-
-🏆 ВЕРДИКТ СУДЬИ: НЕЙТРАЛЬНЫЙ
-⏱ ГОРИЗОНТ: 📈 7-14 дней
-⚠️ CONSERVATIVE SIZING ACTIVE (0/3 trades before full size) — new prompts bake-in
-
-📋 ТОРГОВЫЙ ПЛАН:
-• нет идей с положительным ожиданием — стой в стороне
-
-📊 QE/QT РЕЖИМ: NEUTRAL — ликвидность нейтральна
-
-
-─────────────────────────
-🤝 *Честно о боте:*
-Это AI-анализ на основе публичных данных — не предсказание будущего.
-Рынок непредсказуем. Агенты могут ошибаться и иногда ошибаются.
-Где данных не хватало — агенты должны были это указать явно.
-Используй как один из инструментов мышления, не как сигнал к действию.
-
-⚠️ *Не является финансовым советом. DYOR. Торговля = риск потери капитала.*
-
-</details>
-
-<details><summary>🗣 Все раунды дебатов</summary>
-
-📊 *DIALECTIC EDGE — DAILY*
-🕐 _23.10.2026 13:33_
 
 💬 *Прежде чем читать:*
 Это структурированный AI-анализ на реальных данных.
